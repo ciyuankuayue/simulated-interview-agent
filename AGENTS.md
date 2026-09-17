@@ -45,7 +45,7 @@
   - `web/`       controller，SSE 流式推送
   - `agent/`     角色编排（技术深挖官 / 项目质疑官 / Critic）
   - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）
-  - `llm/`       LlmService（封装 DeepSeek 调用 + 超时重试；发 `tools` 字段做 function calling）
+  - `llm/`       LlmService（封装 DeepSeek 调用 + 超时重试；发 `tools` 字段做 function calling）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool），不混用 JDK HttpClient**（决策 2026-09-17）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度
   - `domain/`    实体与持久化
 

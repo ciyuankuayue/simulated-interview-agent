@@ -53,3 +53,6 @@ application-local.yml
 # ===== 系统 =====
 .DS_Store
 Thumbs.db
+
+# ===== 临时验证工具（DeepSeek function calling 验通 demo，验完即弃，勿入库） =====
+scripts/deepseek-fc-demo/

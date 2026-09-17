@@ -16,8 +16,12 @@
 | S5 | `./docs/handoff.md`（本文件） | 🔵 当前 | 任务拆解 |
 | S6 | 代码实现 | 🔵 进行中 | T1 工程骨架已建且本机编译验通（`/api/health` → UP）；T2–T10 待做 |
 
-**未 commit 文件（遵守 NEVER 自动 commit，你审完再提）**：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`、`pom.xml`、`mvnw`、`mvnw.cmd`、`.mvn/wrapper/`、`src/`（T1 骨架）、`scripts/deepseek-fc-demo/`（临时，验完即弃）。
-**临时文件（不要 commit，验完即弃）**：`scripts/deepseek-fc-demo/`（仅验证用）。
+**未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
+- 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
+- 工程：`pom.xml`（JPA/MySQL/Redis/H2/OkHttp/Lombok 依赖）、`mvnw`+`mvnw.cmd`+`.mvn/wrapper/`、`docker-compose.yml`（MySQL 8 + Redis 7 一键起）
+- 配置：`src/main/resources/application.yml`（**H2 本地默认**）、`src/main/resources/application-mysql.yml`（新增，真 MySQL，需 `mysql` profile）
+- 代码：`src/main/java/com/bupt/mockinterview/`（web/HealthController、web/DepCheckController、domain/** 10 实体 + SessionStatus 枚举 + 10 Repository）
+- ⚠️ 不提交：`application-h2.yml` 已删（不进库）；`scripts/deepseek-fc-demo/`（仅验证用）。
 
 ## 2. 已锁定的关键决策
 
@@ -37,6 +41,10 @@
 10. **L3 对比实验纳入 MVP 关键路径**（不后置，D2 做）：RAG 先手写余弦相似度检索，再换向量库，当场记录对比数字（召回率/耗时/代码量）。这组数字是项目最硬「评估闭环」面试证据，首版 demo 就要能讲。
 11. **RabbitMQ 砍出 MVP，仅作可选 stretch**：单人面试练习工具同步调用足够，MQ 的异步/削峰/重试属过度设计。D3 不强制引入；消息队列相关从已有八股知识答即可。
 12. **前端用 Thymeleaf 服务端渲染 + SSE**：不引入 npm / 任何前端构建链；复用已有 `SseEmitter` + `EventSource` 经验，专注 AI 后端。
+13. **数据源：H2 本地默认，MySQL 为显式 profile**（2026-09-17 修正，覆盖原「base=MySQL 默认」）：
+    - `application.yml` 默认即 **H2 内存库**（`jdbc:h2:mem:mock_interview;MODE=MySQL`，H2Dialect，`ddl-auto:create-drop`），**零参数 `mvnw clean spring-boot:run` 即可起**，免 Docker 验 T1–T3 编译 + 10 实体建表。
+    - 真 MySQL 8 抽到 `application-mysql.yml`，需显式开 profile：`-Dspring-boot.run.profiles=mysql` 或 `SPRING_PROFILES_ACTIVE=mysql`（URL 已用 `characterEncoding=UTF-8`，修掉 `utf8mb4` 的 Java 字符集崩溃）。原 `application-h2.yml` 已删。
+    - ⚠️ **最终生产 / 真库验收必须走 `mysql` profile + 真实 Redis**（Docker `docker compose up -d` 起 MySQL 8 + Redis 7）。H2 仅本地验证用，重启即清空，**不能**上生产。Redis 同理：本地可用 H2 跑通但生产 Redis 必须起。
 
 ## 3. 任务拆解（第一版可跑闭环）
 
@@ -47,13 +55,21 @@
   - 基础包：`com.bupt.mockinterview`（如需改名在 T1 阶段就改）。
   - 验收：你本机跑 `.\mvnw.cmd -DskipTests package` + `.\mvnw.cmd spring-boot:run` → 访问 http://localhost:8080/api/health 返回 `{"status":"UP"}`。沙盒外网限流，无法在此编译验证。
   - 2026-09-17 修正：原 mvnw 依赖 maven-wrapper.jar（本机下载失败留坏 jar）+ 中文 `@rem` 在 GBK cmd 下乱码当命令执行。已改为**纯 ASCII** 且**直接下载 Maven 3.9.9 发行包**解压调用（存 `.mvn/wrapper/dists/`，已 gitignore；不再用 maven-wrapper.jar）。
-- [ ] **T2 配置与外部依赖接入**
-  - `application.yml`：MySQL 8 / Redis 连接；`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY` 从环境变量读（`${...}`），**绝不写死 key**。
-  - Redis 用 docker 起；提供 `docker run` 一行命令注到 README 或本文件。
-  - 验收：应用能连 MySQL + Redis。
-- [ ] **T3 domain 持久化层**
+- [x] **T2 配置与外部依赖接入**（2026-09-17 配置落盘；本机验连待你跑）
+  - `pom.xml`：解注释 `spring-boot-starter-data-jpa` + `mysql-connector-j`(runtime) + `spring-boot-starter-data-redis`。**RabbitMQ 不引入**（决策 #11）。LLM 调用走 JDK 内置 HttpClient，不引 okhttp。
+  - `application.yml`（**本地默认 = H2 内存库**）：`jdbc:h2:mem:mock_interview;MODE=MySQL`，H2Dialect，`ddl-auto:create-drop`；Redis 配置（`${REDIS_HOST:localhost}:${REDIS_PORT:6379}`）仍在此，down 不影响启动、用到才连。
+  - `application-mysql.yml`（新增，真 MySQL 8，需 `mysql` profile 才生效）：`jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/mock_interview?...createDatabaseIfNotExist=true&characterEncoding=UTF-8`，账号/端口可环境变量覆盖，默认 root/root；JPA `ddl-auto: update`（MVP 自动建表；上线前改 none + 迁移脚本）。
+    - LLM 密钥：`deepseek.api-key: ${DEEPSEEK_API_KEY:}`、`dashscope.api-key: ${DASHSCOPE_API_KEY:}` —— **绝不写死**；空默认，T2 不调 LLM 故启动不报错，T5/T4 调之前必须 set。
+    - `deepseek.model-flash/model-reasoner`（占位 `deepseek-v4-flash`，⚠️ T5 核实真实 model 串）、`timeout-ms`、`max-tokens: 8192`（决策 #2 不卡 800）；`dashscope.embed-model: qwen3.7-text-embedding-flash`。
+  - `docker-compose.yml`（新增，跟 AGENTS.md「redis docker 起」一致，并补 MySQL）：`docker compose up -d` 一键起 MySQL 8 + Redis 7，含 healthcheck。
+  - `web/DepCheckController`：`GET /api/health/deps` 探活 MySQL/Redis（T2 验收辅助，不建 Entity）。
+  - **验收（你本机，本地 H2 零依赖先行）**：
+    1. `.\mvnw.cmd clean spring-boot:run`（默认 H2，无需 Docker）→ `GET /api/health/deps` 返回 `{"database":{"ok":true,...},"redis":{"ok":true/false,...}}`（`database`=H2 内存库恒连；`redis` 取决于本机是否起了 Redis）。
+    2. **真库验收（生产口径，必须做）**：先 `docker compose up -d` 起 MySQL 8 + Redis 7，再 `.\mvnw.cmd clean spring-boot:run -Dspring-boot.run.profiles=mysql` → `/api/health/deps` 的 `database` 与 `redis` 均为 `ok:true`。
+- [x] **T3 domain 持久化层**（实体 + Repository 编译 ✅；2026-09-17 本机 H2 默认启动 + `/api/health/deps` 返 `database.ok:true` → 10 实体表已由 Hibernate `create-drop` 自动建出）
   - 10 实体（domain.md §2）建表/Entity + Repository。
-  - 验收：`/api/jd`、`/api/resume` 等资料管理接口能写库、能查。
+  - 验收（H2）：启动即建表、`/deps` 探活 database 连通 ✅。
+  - 验收（真 MySQL）：待 Docker 起 MySQL + `mysql` profile 复验建表（`ddl-auto:update`）；接口写查属 T7 范畴。
 - [ ] **T4 rag 模块（D2，含 L3 手写余弦 vs 向量库对比，MVP 关键路径，决策 #10）**
   - 第一版：解析（md/文本）→ 分块 → 通义 `qwen3.7-text-embedding-flash` 向量化 → **内存手写余弦**检索 → 排序返回 top-k。
   - **对比实验**：同一查询集，先跑手写余弦、再换向量库（如 Redis vector / pgvector），当场记录 3 组数字：**召回率 / 单查询耗时 / 代码量**；存入本文件或 `docs/` 对比小节，首版 demo 即可讲。
@@ -87,7 +103,9 @@
 - **RabbitMQ**：已砍出 MVP，仅作可选 stretch（决策 #11）。单人工具同步调用足够，MQ 的异步/削峰/重试属过度设计；D3 不再引入异步判分，判分改同步 `deepseek-v4-flash` 思考模式。消息队列相关从已有八股知识答即可。
 - **前端框架**：已定 **Thymeleaf 服务端渲染 + SSE**（决策 #12）。不引入 npm / 任何前端构建链；复用 `SseEmitter` + `EventSource`，专注 AI 后端。
 - **判分模型真实型号名**：决策 #1 锁定 `deepseek-v4-flash` 思考模式起步、不足升 `deepseek-v4-pro`。⚠️ 早前 function calling 实测发 `deepseek-v4-flash` 回执 `model=deepseek-flash`——T5 实现前先确认 DeepSeek 当前真实 model 字符串，避免调错。
-- **AGENTS.md 同步待办**：AGENTS.md Architecture 仍写 `deepseek-flash`，需随决策 #1 改为 `deepseek-v4-flash`（本回合仅指令改 handoff.md，AGENTS.md 同步待你确认）。
+- **AGENTS.md 同步待办**：AGENTS.md Architecture 仍写 `deepseek-flash`（模型名），需随决策 #1 改为 `deepseek-v4-flash`（你 2026-09-17 说"模型名不着急、实现确认也可"，故未擅改；T5 前统一即可）。本次已同步 RabbitMQ 砍出 + OkHttp 注。
+- **数据源形态（2026-09-17 修正）**：本地默认 **H2 内存库**（`application.yml`，零参数 `mvnw clean spring-boot:run` 即起，免 Docker 验 T1–T3 编译 + 建表）；真 MySQL 8 抽到 `application-mysql.yml`，需 `-Dspring-boot.run.profiles=mysql` 或 `SPRING_PROFILES_ACTIVE=mysql` 才生效。原 `application-h2.yml` 已删。Docker 拉镜像源超时问题仍存在、暂未修，但**不再阻塞本地验证**。
+  - ⚠️ **最终生产 / 真库验收必须恢复 Docker 起 MySQL 8 + Redis 7，并走 `mysql` profile**。H2 重启即清空，仅本地验证用；Redis 生产也必须起（H2 路下若本机 Redis 未起，`redis.ok` 为 false，属预期但不代表生产可省）。
 
 ## 5. 下一步立即做
 

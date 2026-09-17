@@ -1,0 +1,36 @@
+# 本地依赖一键起：MySQL 8（持久化）+ Redis（去重/缓存）
+# 用法（仓库根目录）：
+#   docker compose up -d        # 后台起
+#   docker compose ps           # 看状态（healthy 即可）
+#   docker compose down         # 停（数据在卷里保留）
+# 账号/端口与 application.yml 默认一致：MySQL root/root@3306，Redis 无密码@6379
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mock-interview-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mock_interview
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: mock-interview-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mysql_data:

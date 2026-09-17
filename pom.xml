@@ -49,13 +49,42 @@
             <scope>test</scope>
         </dependency>
 
-        <!--
-          后续阶段按需解注释（T2/T3 引入）：
-          spring-boot-starter-data-jpa
-          mysql-connector-j   (runtime)
-          spring-boot-starter-data-redis
-          okhttp / 或沿用 JDK 内置 HttpClient 调 LLM
-        -->
+        <!-- T2：持久化（domain.md §2 全部实体落 MySQL 8；T3 才建 Entity） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- T2 验证兜底：H2 内存库，Docker 罢工时用 h2 profile 免外部依赖启动（生产走 MySQL，默认 profile 不变） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- T2：Redis（指纹去重 / 会话缓存；MVP 不引 RabbitMQ，决策 #11） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- T5 调 LLM 统一用 OkHttp：单例 OkHttpClient + 单 ConnectionPool；不引 JDK HttpClient（决策 2026-09-17） -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+        </dependency>
+
+        <!-- Lombok：实体省 getter/setter 样板（T3 引入；纯构建期代码生成，非运行时依赖，可移除） -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 
     <build>

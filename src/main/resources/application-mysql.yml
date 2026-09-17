@@ -1,0 +1,17 @@
+# MySQL 8 持久化 profile（生产 / Docker 起得来时）：`-Dspring-boot.run.profiles=mysql`
+# 库名 mock_interview；createDatabaseIfNotExist 自动建库，省去手动建库。
+# 账号/端口均可用环境变量覆盖；本机 docker-compose 默认 root/root。
+spring:
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/mock_interview?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true&characterEncoding=UTF-8
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update          # MVP：自动建/更表；上线前改 none + 迁移脚本
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.MySQLDialect

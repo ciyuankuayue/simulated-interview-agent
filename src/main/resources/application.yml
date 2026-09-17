@@ -5,8 +5,41 @@ spring:
   application:
     name: mock-interview-agent
 
-# T2 再补：
-#   datasource (MySQL 8)
-#   jpa (hibernate ddl-auto)
-#   data.redis
-#   deepseek / dashscope key 从环境变量读：${DEEPSEEK_API_KEY} / ${DASHSCOPE_API_KEY}
+  # ===== 本地默认：H2 内存库（免 Docker，验证 T1/T2/T3 编译 + 10 实体建表） =====
+  # 走 MySQL 8（生产 / Docker 起得来时）用 profile `mysql`：
+  #   PowerShell:  $env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd clean spring-boot:run
+  #   Maven 参数: .\mvnw.cmd clean spring-boot:run -Dspring-boot.run.profiles=mysql
+  # ⚠️ 部署到生产必须显式加 mysql profile，否则默认跑 H2 内存库（重启即清空，仅本地验证用）。
+  datasource:
+    url: jdbc:h2:mem:mock_interview;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop   # 内存库：启动建表、关闭即清；仅本地验证用
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.H2Dialect
+
+  # ---- Redis（指纹去重 / 会话缓存；redis 用 docker 起，down 不影响启动，用到才连） ----
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+# ---- LLM 密钥（NEVER 写死；统一从环境变量读，AGENTS.md Restrictions） ----
+# 代码侧用 @ConfigurationProperties 绑定以下前缀（T5 建 LlmConfig）；本文件只放配置。
+deepseek:
+  base-url: https://api.deepseek.com/v1
+  api-key: ${DEEPSEEK_API_KEY:}          # 空默认：T2 不调 LLM，启动不报错；T5 调之前必须 set
+  model-flash: deepseek-v4-flash         # 追问：非思考模式（决策 #1；⚠️ T5 核实真实 model 串）
+  model-reasoner: deepseek-v4-flash      # 判分/Critic：思考模式起步，不足升 deepseek-v4-pro
+  timeout-ms: 60000
+  max-tokens: 8192                       # 不卡 800（决策 #2）；判分/Critic 输出长，放宽；仍校验非空
+dashscope:
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api-key: ${DASHSCOPE_API_KEY:}         # 空默认：T2 不向量化，启动不报错；T4 之前必须 set
+  embed-model: qwen3.7-text-embedding-flash
