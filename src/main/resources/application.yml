@@ -1,0 +1,12 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: mock-interview-agent
+
+# T2 再补：
+#   datasource (MySQL 8)
+#   jpa (hibernate ddl-auto)
+#   data.redis
+#   deepseek / dashscope key 从环境变量读：${DEEPSEEK_API_KEY} / ${DASHSCOPE_API_KEY}

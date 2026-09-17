@@ -1,0 +1,1 @@
+# 占位：LlmService（封装 DeepSeek 调用 + 超时重试 + function calling）。T5 实现。

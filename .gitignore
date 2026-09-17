@@ -1,6 +1,7 @@
 # ===== Java / Maven =====
 target/
-!.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/dists/
+.mvn/wrapper/*.zip
 !**/src/main/**/target/
 !**/src/test/**/target/
 *.class
