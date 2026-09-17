@@ -38,7 +38,7 @@
 7. **间隔重复方案 A 固定阶梯**：`review_stage∈{0,1,2,3}`，间隔 `[1,3,7,15]` 天（domain.md §5）。
 8. **start 同步返回首题 + SSE 推后续**（避免 SSE 先连后等首题的竞态）。
 9. **SSE 事件协议**：`question/score/followup/await_answer/report/done/error`，前端收 `await_answer` 才调 answer，循环到 `done`（api.md §4）。
-10. **L3 对比实验纳入 MVP 关键路径**（不后置，D2 做）：RAG 先手写余弦相似度检索，再换向量库，当场记录对比数字（召回率/耗时/代码量）。这组数字是项目最硬「评估闭环」面试证据，首版 demo 就要能讲。
+10. **L3 对比实验纳入 MVP 关键路径**（不后置，D2 做）：RAG 先手写余弦相似度检索，再换向量库，当场记录对比数字（召回率/耗时/代码量）。这组数字是项目最硬「评估闭环」面试证据，首版 demo 就要能讲。2026-09-18 向量库侧定 **Apache Lucene HNSW**：`org.apache.lucene:lucene-core:9.12.3`（Maven Central，纯 Java、零原生库、零 JitPack；不引 Redis vector / pgvector 以省基建）。与 FAISS 同属 ANN 算法族（HNSW vs IVF/PQ），是 OpenSearch / Elasticsearch 用的同一套向量检索，Java 项目里更地道。⚠️ 失败教训：FAISS 的 Java 绑定在本环境**装不上**——bytedeco **没有** faiss 预设（`org.bytedeco:faiss-platform` 是错的）；`com.github.karellen:faiss-java`、`com.github.jelmerk:faiss4j` 均不在 Maven Central（repo1 实测 404），只能走 JitPack 且实测 **401 Unauthorized**。
 11. **RabbitMQ 砍出 MVP，仅作可选 stretch**：单人面试练习工具同步调用足够，MQ 的异步/削峰/重试属过度设计。D3 不强制引入；消息队列相关从已有八股知识答即可。
 12. **前端用 Thymeleaf 服务端渲染 + SSE**：不引入 npm / 任何前端构建链；复用已有 `SseEmitter` + `EventSource` 经验，专注 AI 后端。
 13. **数据源：H2 本地默认，MySQL 为显式 profile**（2026-09-17 修正，覆盖原「base=MySQL 默认」）：
@@ -72,8 +72,10 @@
   - 验收（真 MySQL）：待 Docker 起 MySQL + `mysql` profile 复验建表（`ddl-auto:update`）；接口写查属 T7 范畴。
 - [ ] **T4 rag 模块（D2，含 L3 手写余弦 vs 向量库对比，MVP 关键路径，决策 #10）**
   - 第一版：解析（md/文本）→ 分块 → 通义 `qwen3.7-text-embedding-flash` 向量化 → **内存手写余弦**检索 → 排序返回 top-k。
-  - **对比实验**：同一查询集，先跑手写余弦、再换向量库（如 Redis vector / pgvector），当场记录 3 组数字：**召回率 / 单查询耗时 / 代码量**；存入本文件或 `docs/` 对比小节，首版 demo 即可讲。
+  - **对比实验**：同一查询集，先跑手写余弦、再换 **Lucene HNSW 向量库**，当场记录 3 组数字：**召回率 / 单查询耗时 / 代码量**；由 `L3ComparisonRealEmbeddingTest` 自动写出 `docs/l3-comparison.md`，首版 demo 即可讲。
   - 验收：给定问题能从 resume/note/project_doc 召回相关块；对比数字已记录。
+  - 2026-09-17 落盘子模块（手写余弦路径）：`rag/` 包 `Embedder` 接口 + `CosineSimilarity`（手写余弦）+ `TextChunker`（按段落切分、长段硬切、重叠 50）+ `InMemoryVectorStore` + `RagService`；`DashscopeEmbedder`（OkHttp 调通义 `/embeddings` compatible-mode 接口，需 `DASHSCOPE_API_KEY`）+ `FakeEmbedder`（离线单测用，词频哈希向量）。`RagServiceTest` 用 FakeEmbedder 验「查询命中最相似块」。`DashscopeVerifyTest` 真实联调 2026-09-18 本机验通：dim=1024、两查询 top-1 命中正确块 A(synchronized)/B(InnoDB回表)、score 0.65/0.67；修复点——compatible-mode 须用 OpenAI 格式 `input` 直为字符串（非原生 `{"texts":[...]}`），否则 HTTP 400。
+  - L3 向量库侧 2026-09-18 已定并落码，两个待确认项都已拍板：(1) 语料＝**用户真实学习资料**——桌面 `Java后端AI面试知识框架.docx` 经 `scripts/convert_docx_to_md.py` 转成 `src/test/resources/corpus/java-backend-knowledge.md`（117 行，按知识点逐行切块），查询集与 ground truth 均据此生成；(2) 向量库＝**Lucene HNSW**——`LuceneHnswRetriever`（`ByteBuffersDirectory` + `KnnVectorField` + `KnnVectorQuery`，入库前 L2 归一化，Lucene 默认 EUCLIDEAN 在归一化向量上排序等价余弦）。15 条查询集 + ground truth 在 `L3ComparisonRealEmbeddingTest`，set `DASHSCOPE_API_KEY` 后 `mvnw test -Dtest=L3ComparisonRealEmbeddingTest` 即跑并写出 `docs/l3-comparison.md`。**预期结论**：小语料下 HNSW 与手写余弦 recall 打平（都接近 100%），差异主要在代码量/依赖重量 → 论证「MVP 先手写余弦、规模上来再换真向量索引」。注意：Lucene 返回的 score 是其内部打分（约 1/(1+dist)），与手写侧余弦值不可直接比较，对比只取排序与 recall@k。
 - [ ] **T5 llm 层**
   - `LlmService`：封装 DeepSeek 调用 + 超时重试 + 失败降级；发 `tools` 字段做 function calling（已验通）。
   - 两个入口：追问（flash、非思考）/ 判分（思考型、结构化 JSON 输出、校验非空）。
