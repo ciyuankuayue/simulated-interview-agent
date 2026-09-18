@@ -1,0 +1,341 @@
+package com.bupt.mockinterview.agent;
+
+import com.bupt.mockinterview.agent.CriticService.Payload;
+import com.bupt.mockinterview.agent.CriticService.TurnBrief;
+import com.bupt.mockinterview.domain.CriticReport;
+import com.bupt.mockinterview.domain.InterviewSession;
+import com.bupt.mockinterview.domain.InterviewTurn;
+import com.bupt.mockinterview.domain.JdProfile;
+import com.bupt.mockinterview.domain.SessionStatus;
+import com.bupt.mockinterview.domain.repository.CriticReportRepository;
+import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
+import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
+import com.bupt.mockinterview.domain.repository.JdProfileRepository;
+import com.bupt.mockinterview.llm.LlmPort;
+import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.rag.RagService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 面试编排（T6 核心）：手写状态机，不引编排框架（MVP 阶段框架是负担）。
+ *
+ * 状态机（对应 api.md §4 事件流示例）：
+ * <pre>
+ * start  → question(layer0) → await_answer
+ * answer → score → [followup(layer+1) | question(下一道, layer0)] → await_answer
+ * end    → report → done
+ * </pre>
+ *
+ * 三条硬约束：
+ * 1. **追问封顶 2 层**（domain.md §4）：8=S 不追问｜6-7=A 1 层｜≤5=B/C/D 2 层。
+ * 2. **实时只追问或一句纠正**，讲解/示范归 Critic（domain.md §4.1）。
+ * 3. **LLM 失败降级**：判分失败→跳过追问直接下一题；追问生成失败→直接下一题；
+ *    Critic 失败→占位报告。任何单点失败都不让整场面试中断。
+ */
+@Service
+public class InterviewOrchestrator {
+
+    /** 主问题上限（不含追问），防止无限面下去。 */
+    public static final int MAX_MAIN_QUESTIONS = 8;
+    private static final int RAG_TOP_K = 5;
+
+    private final LlmPort llm;
+    private final RagService rag;
+    private final CriticService critic;
+    private final ObjectMapper mapper;
+    private final JdProfileRepository jdRepo;
+    private final InterviewSessionRepository sessionRepo;
+    private final InterviewTurnRepository turnRepo;
+    private final CriticReportRepository reportRepo;
+
+    public InterviewOrchestrator(LlmPort llm, RagService rag, CriticService critic, ObjectMapper mapper,
+                                 JdProfileRepository jdRepo, InterviewSessionRepository sessionRepo,
+                                 InterviewTurnRepository turnRepo, CriticReportRepository reportRepo) {
+        this.llm = llm;
+        this.rag = rag;
+        this.critic = critic;
+        this.mapper = mapper;
+        this.jdRepo = jdRepo;
+        this.sessionRepo = sessionRepo;
+        this.turnRepo = turnRepo;
+        this.reportRepo = reportRepo;
+    }
+
+    public record StartResult(Long sessionId, String firstQuestion, List<AgentEvent> events) {}
+
+    // ---------- start ----------
+
+    /** 开启一场模拟：解析 JD + 检索资料 → 出首题（第一个角色先问）。 */
+    @Transactional
+    public StartResult start(Long jdId, List<String> roleNames) {
+        JdProfile jd = jdRepo.findById(jdId)
+                .orElseThrow(() -> new IllegalArgumentException("JD 不存在: " + jdId));
+
+        List<Role> roles = resolveRoles(roleNames);
+
+        InterviewSession session = new InterviewSession();
+        session.setJdProfile(jd);
+        session.setRoles(Role.toJson(roles, mapper));
+        session.setStatus(SessionStatus.QUESTIONING);
+        session = sessionRepo.save(session);
+
+        List<String> refs = new ArrayList<>();
+        String context = retrieveContext(jd.getRawText(), refs);
+
+        String firstQuestion = llm.followUp(roles.get(0).systemPrompt(),
+                "岗位 JD：\n" + nullToEmpty(jd.getRawText())
+                        + "\n\n候选人的资料片段（可能为空）：\n" + context
+                        + "\n\n请出第一道面试题。要求：紧扣 JD 考点，一句话，只输出题目本身。").content();
+
+        InterviewTurn first = newTurn(session, 1, 0, firstQuestion, toJson(refs));
+
+        List<AgentEvent> events = List.of(
+                AgentEvent.of(AgentEvent.QUESTION, "turnSeq", first.getSeq(), "question", firstQuestion,
+                        "role", roles.get(0).displayName(), "layer", 0),
+                AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", first.getSeq()));
+        return new StartResult(session.getId(), firstQuestion, events);
+    }
+
+    // ---------- answer ----------
+
+    /** 提交回答：判分 → 决定追问还是下一题。 */
+    @Transactional
+    public List<AgentEvent> answer(Long sessionId, String answer) {
+        InterviewSession session = sessionRepo.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+        if (session.getStatus() != SessionStatus.QUESTIONING) {
+            throw new IllegalStateException("会话不在答题中，当前状态=" + session.getStatus());
+        }
+        List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(sessionId);
+        if (turns.isEmpty()) {
+            throw new IllegalStateException("会话还没有题目");
+        }
+        InterviewTurn current = turns.get(turns.size() - 1);
+        if (current.getAnswer() != null && !current.getAnswer().isBlank()) {
+            throw new IllegalStateException("本轮已作答，请等待下一题");
+        }
+
+        List<AgentEvent> events = new ArrayList<>();
+        long t0 = System.currentTimeMillis();
+
+        ScoreResult sr = null;
+        try {
+            sr = llm.score(current.getQuestion(), answer);
+            current.setScoreJson(mapper.writeValueAsString(scoreJsonOf(sr)));
+        } catch (Exception e) {
+            // 降级：判分失败不中断，跳过追问直接下一题
+            current.setScoreJson("{\"error\":\"判分失败: " + e.getMessage().replace("\"", "'") + "\"}");
+            events.add(AgentEvent.of(AgentEvent.ERROR, "code", "SCORE_FAILED", "message", e.getMessage()));
+        }
+        current.setAnswer(answer);
+        current.setElapsedMs(System.currentTimeMillis() - t0);
+        turnRepo.save(current);
+
+        events.add(AgentEvent.of(AgentEvent.SCORE, "turnSeq", current.getSeq(),
+                "score", sr == null ? null : sr.score(),
+                "oneLineCorrection", oneLineCorrection(sr)));
+
+        // 追问决策：已追问层数 < 目标层数（followupDepth 已封顶 2），且未满分
+        int askedLayer = current.getLayer() == null ? 0 : current.getLayer();
+        int target = sr == null ? 0 : sr.followupDepth();
+        if (sr != null && sr.score() < 8 && askedLayer < target) {
+            String followup = sr.followup();
+            if (followup == null || followup.isBlank()) {
+                try {
+                    followup = llm.followUp(currentRole(session, turns).systemPrompt(),
+                            "题目：" + current.getQuestion() + "\n候选人的回答：" + answer
+                                    + "\n请就这个回答再追一层 why（一句话，只输出追问本身）").content();
+                } catch (Exception e) {
+                    followup = null;
+                    events.add(AgentEvent.of(AgentEvent.ERROR, "code", "FOLLOWUP_FAILED", "message", e.getMessage()));
+                }
+            }
+            if (followup != null && !followup.isBlank()) {
+                InterviewTurn next = newTurn(session, current.getSeq() + 1, askedLayer + 1, followup, null);
+                events.add(AgentEvent.of(AgentEvent.FOLLOWUP, "turnSeq", next.getSeq(),
+                        "question", followup, "layer", next.getLayer()));
+                events.add(AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", next.getSeq()));
+                return events;
+            }
+        }
+        return nextMainQuestion(session, turns, events);
+    }
+
+    /** 本轮追问/纠正所属的角色（继承最近一道主问题的角色）。 */
+    private Role currentRole(InterviewSession session, List<InterviewTurn> turns) {
+        List<Role> roles = Role.parse(session.getRoles(), mapper);
+        long mainCount = turns.stream().filter(t -> Integer.valueOf(0).equals(t.getLayer())).count();
+        int idx = (int) ((mainCount - 1 + roles.size()) % roles.size());
+        return roles.get(idx);
+    }
+
+    // ---------- 下一道主问题 ----------
+
+    private List<AgentEvent> nextMainQuestion(InterviewSession session, List<InterviewTurn> turns,
+                                              List<AgentEvent> events) {
+        long mainCount = turns.stream().filter(t -> Integer.valueOf(0).equals(t.getLayer())).count();
+        if (mainCount >= MAX_MAIN_QUESTIONS) {
+            events.add(AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId(),
+                    "reason", "MAX_QUESTIONS_REACHED"));
+            return events;
+        }
+        List<Role> roles = Role.parse(session.getRoles(), mapper);
+        Role nextRole = roles.get((int) (mainCount % roles.size()));
+
+        StringBuilder asked = new StringBuilder();
+        for (InterviewTurn t : turns) {
+            asked.append("- ").append(t.getQuestion()).append("\n");
+        }
+        String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
+
+        String question;
+        try {
+            question = llm.followUp(nextRole.systemPrompt(),
+                    "岗位 JD：\n" + jdText + "\n\n已经问过的问题（不要重复）：\n" + asked
+                            + "\n\n请出一道新的面试题，一句话，只输出题目本身。").content();
+        } catch (Exception e) {
+            events.add(AgentEvent.of(AgentEvent.ERROR, "code", "QUESTION_FAILED", "message", e.getMessage()));
+            return events;
+        }
+
+        int lastSeq = turns.get(turns.size() - 1).getSeq();
+        InterviewTurn next = newTurn(session, lastSeq + 1, 0, question, null);
+        events.add(AgentEvent.of(AgentEvent.QUESTION, "turnSeq", next.getSeq(), "question", question,
+                "role", nextRole.displayName(), "layer", 0));
+        events.add(AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", next.getSeq()));
+        return events;
+    }
+
+    // ---------- end ----------
+
+    /** 结束：Critic 出报告 → 落 critic_report → 会话置 DONE。 */
+    @Transactional
+    public List<AgentEvent> end(Long sessionId) {
+        InterviewSession session = sessionRepo.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+        List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(sessionId);
+
+        List<TurnBrief> briefs = new ArrayList<>();
+        for (InterviewTurn t : turns) {
+            briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson())));
+        }
+        String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
+        Payload payload = critic.generate(sessionId, jdText, briefs);
+
+        CriticReport report = new CriticReport();
+        report.setSession(session);
+        report.setPerTurnReview(toJson(payload.perTurnReview()));
+        report.setCollapsedPoints(toJson(payload.collapsedPoints()));
+        report.setExpressionIssues(toJson(payload.expressionIssues()));
+        report.setOverallNotes(payload.overallNotes());
+        report.setReminders(toJson(payload.reminders()));
+        report.setMatchScore(payload.matchScore());
+        CriticReport saved = reportRepo.save(report);
+
+        session.setStatus(SessionStatus.DONE);
+        session.setMatchScore(payload.matchScore());
+        sessionRepo.save(session);
+
+        return List.of(
+                AgentEvent.of(AgentEvent.REPORT, "reportId", saved.getId(),
+                        "matchScore", payload.matchScore(),
+                        "perTurnReview", payload.perTurnReview(),
+                        "collapsedPoints", payload.collapsedPoints(),
+                        "expressionIssues", payload.expressionIssues(),
+                        "overallNotes", payload.overallNotes(),
+                        "reminders", payload.reminders()),
+                AgentEvent.of(AgentEvent.DONE, "sessionId", sessionId));
+    }
+
+    // ---------- 工具 ----------
+
+    private List<Role> resolveRoles(List<String> roleNames) {
+        List<Role> roles = new ArrayList<>();
+        if (roleNames != null) {
+            for (String n : roleNames) {
+                Role r = Role.fromDisplayName(n);
+                if (r != null && r != Role.CRITIC && !roles.contains(r)) {
+                    roles.add(r);
+                }
+            }
+        }
+        if (roles.isEmpty()) {
+            roles.add(Role.TECH_DIGGER);
+        }
+        return roles;
+    }
+
+    /** 检索资料作为出题上下文；RAG 不可用（未 set key）时静默降级为空上下文。 */
+    private String retrieveContext(String query, List<String> refs) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (var hit : rag.retrieve(query, RAG_TOP_K)) {
+                refs.add(hit.chunk().id());
+                sb.append("- ").append(hit.chunk().content()).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private InterviewTurn newTurn(InterviewSession session, int seq, int layer, String question, String refs) {
+        InterviewTurn t = new InterviewTurn();
+        t.setSession(session);
+        t.setSeq(seq);
+        t.setLayer(layer);
+        t.setQuestion(question);
+        t.setRetrieveRefs(refs);
+        return turnRepo.save(t);
+    }
+
+    private static Map<String, Object> scoreJsonOf(ScoreResult sr) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("score", sr.score());
+        m.put("breakdown", sr.breakdown());
+        m.put("missed_points", sr.missedPoints());
+        m.put("followup", sr.followup());
+        return m;
+    }
+
+    /** 一句纠正（domain.md §4.1：实时只给一句，讲解归报告）。 */
+    private static String oneLineCorrection(ScoreResult sr) {
+        if (sr == null || sr.score() >= 8 || sr.missedPoints() == null || sr.missedPoints().isEmpty()) {
+            return "";
+        }
+        String s = sr.missedPoints().get(0);
+        return s == null ? "" : (s.length() > 80 ? s.substring(0, 80) + "…" : s);
+    }
+
+    private Integer extractScore(String scoreJson) {
+        if (scoreJson == null || scoreJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode n = mapper.readTree(scoreJson);
+            return n.hasNonNull("score") ? n.get("score").asInt() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String toJson(Object obj) {
+        try {
+            return mapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
+}

@@ -36,5 +36,12 @@ public class InterviewTurn {
 
     private Integer tokens;
 
-    private Integer seq; // 轮次序号（追问层数 ≤ 2）
+    private Integer seq; // 轮次序号（每条问题/追问各占一个 seq，按答题顺序递增）
+
+    /**
+     * 追问层：0=本轮主问题，1/2=对该主问题的第 1/2 层追问（domain.md §4 封顶 2 层）。
+     * T6 引入——api.md §4 的 {@code followup} 事件要带 layer，且「何时换下一道主问题」
+     * 依赖它，seq 单独表达不了层级。
+     */
+    private Integer layer;
 }

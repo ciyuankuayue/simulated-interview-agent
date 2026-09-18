@@ -32,11 +32,19 @@ spring:
 
 # ---- LLM 密钥（NEVER 写死；统一从环境变量读，AGENTS.md Restrictions） ----
 # 代码侧用 @ConfigurationProperties 绑定以下前缀（T5 建 LlmConfig）；本文件只放配置。
+# 模型名 2026-09-18 已核实（官方 api-docs.deepseek.com 定价页）：
+#   - 推荐 deepseek-flash（= DeepSeek-V4.1-Flash）；旧名 deepseek-v4-flash 已下线，
+#     仍可调用但会被静默映射到 V4.1-Flash，故一律用 deepseek-flash
+#   - deepseek-v4-pro 仍为旗舰推理档（2026-09-14 后继续提供）
+# 思考模式开关（OpenAI 格式，默认开启）：请求体加 {"thinking":{"type":"enabled|disabled"}}，
+#   强度用 reasoning_effort: low|high|max（默认 high）。
+# ⚠️ 坑：请求一旦携带 tools，后续每轮必须完整回传上一轮 reasoning_content，否则 API 返 400。
 deepseek:
   base-url: https://api.deepseek.com/v1
   api-key: ${DEEPSEEK_API_KEY:}          # 空默认：T2 不调 LLM，启动不报错；T5 调之前必须 set
-  model-flash: deepseek-v4-flash         # 追问：非思考模式（决策 #1；⚠️ T5 核实真实 model 串）
-  model-reasoner: deepseek-v4-flash      # 判分/Critic：思考模式起步，不足升 deepseek-v4-pro
+  model-flash: deepseek-flash            # 追问：非思考模式（thinking.type=disabled）
+  model-reasoner: deepseek-flash         # 判分/Critic：思考模式（thinking.type=enabled，默认即开）
+  model-pro: deepseek-v4-pro             # 升级档：Flash 思考模式仍判不准时切换（决策 #1）
   timeout-ms: 60000
   max-tokens: 8192                       # 不卡 800（决策 #2）；判分/Critic 输出长，放宽；仍校验非空
 dashscope:

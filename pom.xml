@@ -20,6 +20,12 @@
     <properties>
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- ⚠️ 必须显式覆盖：Spring Boot 3.3.5 管理的 Lombok 1.18.34 在 JDK 24 下注解处理器
+             静默失效（domain 实体的 getter/setter 全部不生成，编译不报错、极隐蔽，2026-09-18 踩坑）。
+             两道保险：① Lombok 升 1.18.48（支持 JDK 17/21/24，IDE 用高版本 JDK 也不会失效）；
+             ② 命令行构建用 JDK 21 跑 Maven：JAVA_HOME="C:\Users\19284\jdk-21" ./mvnw.cmd ...
+             产物字节码仍是 Java 17（java.version=17 → release 17），已用 javap 验证 major=61。 -->
+        <lombok.version>1.18.48</lombok.version>
     </properties>
 
     <dependencies>
