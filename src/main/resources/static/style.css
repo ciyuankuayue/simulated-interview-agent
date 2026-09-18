@@ -1,0 +1,136 @@
+/*  AI 模拟面试 · 样式（T9）
+ *  无预处理器、无框架：手写 CSS 变量 + flex 布局够用（决策 #12 不引前端构建链）。
+ *  深色主题：长时间盯屏幕的面试练习场景，浅底刺眼。
+ */
+
+:root {
+    --bg: #0f1420;
+    --panel: #171d2b;
+    --panel2: #1e2537;
+    --line: #2a3346;
+    --text: #e6ebf5;
+    --muted: #93a1bb;
+    --accent: #5b8cff;
+    --accent2: #37d6a3;
+    --warn: #ffb454;
+    --bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { font-size: 16px; font-weight: 600; }
+.brand .sub { margin-left: 12px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.conn { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.online { background: var(--accent2); }
+.dot.offline { background: #55607a; }
+
+/* ---------- 布局 ---------- */
+.layout {
+    display: grid; grid-template-columns: 320px minmax(0, 1fr) 380px;
+    gap: 16px; padding: 16px; align-items: start;
+}
+@media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
+
+.panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px;
+}
+.panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+.main { display: flex; flex-direction: column; min-height: 70vh; }
+.side h2:not(:first-child) { margin-top: 18px; }
+
+/* ---------- 表单 ---------- */
+.block { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.block:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.lb { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+
+textarea, input[type="text"], select {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+    font: inherit; resize: vertical;
+}
+textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); }
+input[type="text"] { margin-bottom: 6px; }
+
+.row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.row > button { flex: 0 0 auto; }
+.row > input, .row > select { flex: 1 1 auto; margin-bottom: 0; }
+
+button {
+    border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    border-radius: 6px; padding: 7px 12px; cursor: pointer; font: inherit;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; }
+button.warn { background: transparent; border-color: var(--warn); color: var(--warn); }
+button.ghost { background: transparent; }
+button.big { width: 100%; margin-top: 10px; padding: 10px; }
+
+.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; margin-right: 10px; color: var(--text); }
+.chk input { accent-color: var(--accent); }
+
+.tip { font-size: 12px; color: var(--accent2); min-height: 18px; margin: 8px 0 0; word-break: break-all; }
+.tip.bad { color: var(--bad); }
+
+/* ---------- 对话区 ---------- */
+.chat {
+    flex: 1 1 auto; overflow-y: auto; min-height: 320px; max-height: 60vh;
+    background: var(--panel2); border-radius: 8px; padding: 12px;
+}
+.placeholder { color: var(--muted); font-size: 13px; }
+.placeholder.bad { color: var(--bad); }
+
+.msg { margin-bottom: 10px; padding: 9px 11px; border-radius: 8px; background: #232b3f; border-left: 3px solid var(--accent); }
+.msg.q { border-left-color: var(--accent); }
+.msg.me { background: #1d3a2f; border-left-color: var(--accent2); }
+.msg.score { background: #2a2438; border-left-color: #a78bfa; }
+.msg.err { background: #3a2027; border-left-color: var(--bad); }
+.msgTitle { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.msgBody { white-space: pre-wrap; word-break: break-word; }
+
+.scoreRow { display: flex; align-items: center; gap: 8px; }
+.scoreNum { font-size: 20px; font-weight: 700; }
+.scoreDen { color: var(--muted); font-size: 12px; }
+.bar { flex: 1 1 auto; height: 6px; background: #3a2949; border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: #a78bfa; }
+.correction { margin-top: 6px; font-size: 13px; color: #ffe0a3; }
+
+.answer { margin-top: 12px; }
+.state { font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+/* ---------- 报告 ---------- */
+.report { max-height: 46vh; overflow-y: auto; font-size: 13px; }
+.match { font-size: 15px; margin-bottom: 10px; }
+.match b { color: var(--accent2); font-size: 22px; }
+.report h3 { font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
+.turn { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
+.turn summary { cursor: pointer; font-size: 13px; }
+.kv { margin-top: 6px; }
+.kv .k { color: var(--muted); font-size: 12px; margin-right: 6px; }
+.kv .v { white-space: pre-wrap; }
+.lst { margin: 0; padding-left: 18px; }
+.lst li { margin-bottom: 3px; }
+.issue { background: var(--panel2); border-left: 3px solid var(--warn); padding: 7px 9px; border-radius: 6px; margin-bottom: 6px; }
+.notes { white-space: pre-wrap; color: #d8e0f0; }
+
+/* ---------- 错题本 ---------- */
+.weak { max-height: 34vh; overflow-y: auto; margin-top: 8px; }
+.wp { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+.wpTop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.chip { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.wpMeta { font-size: 12px; color: var(--accent2); margin-top: 4px; }
+.wpStatus { font-size: 12px; color: var(--muted); margin-top: 4px; }

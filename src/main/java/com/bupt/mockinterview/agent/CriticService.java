@@ -29,7 +29,7 @@ public class CriticService {
                知识补充（该展开但没展开的）、示范回答（一段可直接背的回答，精炼不省关键）。
             2. 汇总答崩点（score<=3 的知识点）、表述问题（含精简答案指导）、整体注意事项、必要提醒。
             3. 给 JD 匹配度 matchScore（0-100 整数）。
-            4. 只输出 JSON，不要 markdown 代码块。格式：
+            4. 只输出 JSON，不要 markdown 代码块，不要任何额外文字。格式：
             {"matchScore": 0到100,
              "perTurnReview": [{"turnSeq":1,"question":"","score":0到8,
                                 "explanation":"","correction":"",
@@ -38,6 +38,9 @@ public class CriticService {
              "expressionIssues": [{"issue":"表述问题","guide":"怎么改"}],
              "overallNotes": "整体注意事项",
              "reminders": ["必要提醒"]}
+            长度约束（务必遵守，否则 JSON 会被截断）：每轮 explanation≤100字、correction≤80字、
+            knowledgeSupplement≤80字、exemplarAnswer≤120字；overallNotes≤200字；
+            每轮 question 原样回填，不要改写或扩写。
             """;
 
     private final LlmPort llm;
@@ -74,7 +77,7 @@ public class CriticService {
         try {
             String content = llm.chat(props.getModelReasoner(), true,
                     List.of(msg("system", SYSTEM), msg("user", user)),
-                    null, true).content();
+                    null, true, props.getCriticMaxTokens()).content();
             return parse(content);
         } catch (LlmException e) {
             return new Payload(null, List.of(), List.of(), List.of(),
@@ -98,48 +101,61 @@ public class CriticService {
         return sb.toString();
     }
 
-    private Payload parse(String content) {
+    /** 解析 Critic 报告 JSON；模型输出被截断/不合法时尽力修复一次，仍失败才降级（不把原文塞进报告）。 */
+    Payload parse(String content) {
         String json = stripCodeFence(content);
         try {
-            JsonNode root = mapper.readTree(json);
-            int match = root.path("matchScore").asInt(-1);
-            Integer matchScore = match < 0 ? null : match;
-
-            List<Map<String, Object>> perTurn = new ArrayList<>();
-            JsonNode arr = root.path("perTurnReview");
-            if (arr.isArray()) {
-                for (JsonNode n : arr) {
-                    Map<String, Object> m = new java.util.LinkedHashMap<>();
-                    m.put("turnSeq", n.path("turnSeq").asInt(0));
-                    m.put("question", n.path("question").asText(""));
-                    m.put("score", n.path("score").asInt(0));
-                    m.put("explanation", n.path("explanation").asText(""));
-                    m.put("correction", n.path("correction").asText(""));
-                    m.put("knowledgeSupplement", n.path("knowledgeSupplement").asText(""));
-                    m.put("exemplarAnswer", n.path("exemplarAnswer").asText(""));
-                    perTurn.add(m);
+            return doParse(json);
+        } catch (Exception first) {
+            String repaired = repairTruncatedJson(json);
+            if (repaired != null && !repaired.equals(json)) {
+                try {
+                    return doParse(repaired);
+                } catch (Exception ignored) {
+                    // 落到下方降级
                 }
             }
-
-            List<String> collapsed = textList(root.path("collapsedPoints"));
-
-            List<Map<String, Object>> issues = new ArrayList<>();
-            JsonNode iss = root.path("expressionIssues");
-            if (iss.isArray()) {
-                for (JsonNode n : iss) {
-                    Map<String, Object> m = new java.util.LinkedHashMap<>();
-                    m.put("issue", n.path("issue").asText(""));
-                    m.put("guide", n.path("guide").asText(""));
-                    issues.add(m);
-                }
-            }
-
-            return new Payload(matchScore, perTurn, collapsed, issues,
-                    root.path("overallNotes").asText(""), textList(root.path("reminders")));
-        } catch (Exception e) {
             return new Payload(null, List.of(), List.of(), List.of(),
-                    "Critic 报告 JSON 解析失败：" + json, List.of());
+                    "Critic 报告 JSON 解析失败（模型输出被截断或不合法），请重试本场面试以重新生成报告。", List.of());
         }
+    }
+
+    private Payload doParse(String json) throws com.fasterxml.jackson.core.JsonProcessingException {
+        JsonNode root = mapper.readTree(json);
+        int match = root.path("matchScore").asInt(-1);
+        Integer matchScore = match < 0 ? null : match;
+
+        List<Map<String, Object>> perTurn = new ArrayList<>();
+        JsonNode arr = root.path("perTurnReview");
+        if (arr.isArray()) {
+            for (JsonNode n : arr) {
+                Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("turnSeq", n.path("turnSeq").asInt(0));
+                m.put("question", n.path("question").asText(""));
+                m.put("score", n.path("score").asInt(0));
+                m.put("explanation", n.path("explanation").asText(""));
+                m.put("correction", n.path("correction").asText(""));
+                m.put("knowledgeSupplement", n.path("knowledgeSupplement").asText(""));
+                m.put("exemplarAnswer", n.path("exemplarAnswer").asText(""));
+                perTurn.add(m);
+            }
+        }
+
+        List<String> collapsed = textList(root.path("collapsedPoints"));
+
+        List<Map<String, Object>> issues = new ArrayList<>();
+        JsonNode iss = root.path("expressionIssues");
+        if (iss.isArray()) {
+            for (JsonNode n : iss) {
+                Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("issue", n.path("issue").asText(""));
+                m.put("guide", n.path("guide").asText(""));
+                issues.add(m);
+            }
+        }
+
+        return new Payload(matchScore, perTurn, collapsed, issues,
+                root.path("overallNotes").asText(""), textList(root.path("reminders")));
     }
 
     /** 组装一条 chat 消息（role + content）。 */
@@ -168,5 +184,43 @@ public class CriticService {
             }
         }
         return t;
+    }
+
+    /**
+     * 尽力修复被 max_tokens 截断的 JSON：补未闭合的字符串引号 + 按「后开先闭」补未闭合的 ] / }。
+     * 覆盖「值写到一半被砍」的常见场景；无法修复「键名中间被砍」的极端情况（靠抬高 max_tokens 规避）。
+     */
+    static String repairTruncatedJson(String s) {
+        if (s == null || s.isBlank()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(s.trim());
+        java.util.Deque<Character> opens = new java.util.ArrayDeque<>();
+        boolean inStr = false, escaped = false;
+        for (int i = 0; i < sb.length(); i++) {
+            char c = sb.charAt(i);
+            if (inStr) {
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (c == '"') { inStr = false; }
+                continue;
+            }
+            if (c == '"') { inStr = true; continue; }
+            if (c == '{' || c == '[') {
+                opens.push(c);
+            } else if (c == '}' || c == ']') {
+                if (!opens.isEmpty()) {
+                    opens.pop(); // 成对消除
+                }
+            }
+        }
+        if (inStr) {
+            sb.append('"'); // 末尾字符串未闭合
+        }
+        // 反向闭合：最后打开的括号先关，保证 ] 不越过外层 {
+        while (!opens.isEmpty()) {
+            sb.append(opens.pop() == '{' ? '}' : ']');
+        }
+        return sb.toString();
     }
 }

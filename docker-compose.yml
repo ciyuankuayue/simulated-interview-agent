@@ -3,7 +3,9 @@
 #   docker compose up -d        # 后台起
 #   docker compose ps           # 看状态（healthy 即可）
 #   docker compose down         # 停（数据在卷里保留）
-# 账号/端口与 application.yml 默认一致：MySQL root/root@3306，Redis 无密码@6379
+# 账号/端口与 application-mysql.yml 默认一致：MySQL root/root@宿主 3307（容器内仍 3306），Redis 无密码@6379
+# ⚠️ 宿主 3306 被本机原生 MySQL80 服务（D:\MySQL，开机自启）占用，故容器发布到 3307，两个实例共存。
+#    生产部署无此冲突时用 MYSQL_PORT=3306 覆盖即可。
 services:
   mysql:
     image: mysql:8.0
@@ -12,7 +14,7 @@ services:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: mock_interview
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:

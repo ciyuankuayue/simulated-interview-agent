@@ -6,9 +6,10 @@ spring:
     name: mock-interview-agent
 
   # ===== 本地默认：H2 内存库（免 Docker，验证 T1/T2/T3 编译 + 10 实体建表） =====
-  # 走 MySQL 8（生产 / Docker 起得来时）用 profile `mysql`：
-  #   PowerShell:  $env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd clean spring-boot:run
-  #   Maven 参数: .\mvnw.cmd clean spring-boot:run -Dspring-boot.run.profiles=mysql
+  # 走 MySQL 8（生产 / Docker 起得来时）用 profile `mysql`（先 docker compose up -d）：
+  #   PowerShell（推荐）: $env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd clean spring-boot:run
+  #   双 shell 通用（-D 整体加引号，PowerShell 不加引号会被拆参）:
+  #                      .\mvnw.cmd clean spring-boot:run "-Dspring-boot.run.profiles=mysql"
   # ⚠️ 部署到生产必须显式加 mysql profile，否则默认跑 H2 内存库（重启即清空，仅本地验证用）。
   datasource:
     url: jdbc:h2:mem:mock_interview;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
@@ -47,6 +48,9 @@ deepseek:
   model-pro: deepseek-v4-pro             # 升级档：Flash 思考模式仍判不准时切换（决策 #1）
   timeout-ms: 60000
   max-tokens: 8192                       # 不卡 800（决策 #2）；判分/Critic 输出长，放宽；仍校验非空
+  critic-max-tokens: 32768              # Critic 报告专用预算：思考模式下 max_tokens 限制 reasoning+content 总生成量，
+                                        # 默认 8192 会被 reasoning 挤爆导致 JSON 截断（字段名写到一半被砍）。
+                                        # V4.1 Flash 支持到 384K 输出，给 32768 留足 content 空间。
 dashscope:
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api-key: ${DASHSCOPE_API_KEY:}         # 空默认：T2 不向量化，启动不报错；T4 之前必须 set

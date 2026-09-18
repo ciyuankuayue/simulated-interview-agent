@@ -20,7 +20,15 @@ public interface LlmPort {
     /**
      * 通用 chat，供 Critic 报告等需要自定义 prompt 的场景。
      *
-     * @param jsonMode true 时强制模型输出 JSON（对应 {@code response_format: json_object}）
+     * @param jsonMode  true 时强制模型输出 JSON（对应 {@code response_format: json_object}）
+     * @param maxTokens 生成 token 上限；思考模式下限制 reasoning+content 总预算，
+     *                  设太小会被 reasoning 挤爆导致 JSON 截断（见 CriticService）
+     */
+    LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+                  List<Map<String, Object>> tools, boolean jsonMode, int maxTokens);
+
+    /**
+     * 通用 chat（使用全局 {@code max-tokens}），供不需要自定义预算的场景。
      */
     LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                   List<Map<String, Object>> tools, boolean jsonMode);

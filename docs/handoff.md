@@ -14,7 +14,7 @@
 | S3 | 技术选型 | ✅ | 与规划文档一致，无变更 |
 | S4 | `./docs/api.md` | ✅ 已落盘 | 契约优先，待实现遵守 |
 | S5 | `./docs/handoff.md`（本文件） | 🔵 当前 | 任务拆解 |
-| S6 | 代码实现 | 🔵 进行中 | T1 工程骨架已建且本机编译验通（`/api/health` → UP）；T2–T10 待做 |
+| S6 | 代码实现 | 🔵 收尾中 | T1–T9 ✅；**T10 环境层冒烟 ✅（2026-09-18：mysql profile + Docker MySQL3307/Redis 启动，/api/health/deps 全 ok，10 表落容器，全量 27 用例 BUILD SUCCESS）**；剩用户浏览器首轮闭环 |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -154,12 +154,31 @@
   - ✅ **真实链路验证**（`DEEPSEEK_API_KEY` 注入后跑）：① 判分确实返回 `knowledge_point = "InnoDB 回表与覆盖索引"`（短标签，可作 key）；② `T6RealRoundTripTest` 跑完整场后错题本落两条：`线程池核心参数与队列配置(x1, stage0, next +1天)`、`线程池任务提交执行流程(x1, stage0, next +1天)`。
   - ⚠️ 已知边界（MVP 范围内）：① Critic 的 `collapsedPoints` **不再二次写入错题本**——实时判分已覆盖每个答崩轮次，再写会重复计数；② 知识点粒度取决于模型标签，同一领域可能被拆成相邻的两条（如上面线程池那两条），待真实数据多了再考虑聚类归一；③ 没有「手动标记已复习」接口，出队只由下一场面试的判分自动触发。
   - ⚠️ 测试隔离坑：H2 `mem` 库在**所有 @SpringBootTest 类之间共享**（同一 context/同一 URL），写错题本的测试类必须加 `@Transactional` 回滚，否则会把 `InterviewFlowTest` 的「错题本为空」断言冲掉。已给 `WeakPointMemoryTest`/`WeakPointApiTest` 加，并顺手补上 `T6RealRoundTripTest`（真实链路会真写库，之前漏了）。
-- [ ] **T9 前端（Thymeleaf 服务端渲染 + SSE，决策 #12）**
-  - 不引入 npm / 任何前端构建链；复用已有 `SseEmitter`（后端）+ `EventSource`（前端）经验，专注 AI 后端。
-  - 功能：粘贴 JD、上传简历/project_doc、开始模拟、展示流式问题/评分/纠正（EventSource 收 SSE）、结束拉报告、看错题本。
-  - 验收：浏览器走完首轮闭环。
-- [ ] **T10 全链路验收**
-  - 起服务 → 上传资料 → 跑一次完整模拟（含 1 层追问）→ 出报告 → 错题本有记录。
+- [x] **T9 前端（Thymeleaf 服务端渲染 + SSE，决策 #12）**（2026-09-18 落码）
+  - 不引入 npm / 任何前端构建链。只加了 `spring-boot-starter-thymeleaf`（页面骨架），交互全在原生 JS。
+  - 落码文件：
+    - `web/PageController.java`：`GET /` → `templates/index.html`。**只返回骨架，不含任何业务逻辑**——所有数据走 `/api/**`（与 api.md 完全一致），前端只是契约的一个消费者，后端改协议不用改模板。
+    - `resources/templates/index.html`：三栏单页——左「准备」（JD 粘贴上传 + 已有 JD 下拉、简历、项目文档、笔记、角色勾选、开始）、中「面试」（对话流 + 回答框 + 结束按钮 + 状态）、右「Critic 报告」+「错题本」。
+    - `resources/static/app.js`：原生 `fetch` + `EventSource`，无框架。处理 api.md §4 全部事件：`question/followup/score/await_answer/report/done/error`。
+    - `resources/static/style.css`：深色主题手写 CSS（面试练习要长时间盯屏，浅底刺眼）。
+  - 🎯 **两个时序对齐点**（后端已配合，前端也要对上，否则必出 bug）：
+    - **订阅晚于生产**：`start` 同步返回首题，但前端拿到 sessionId 才连 SSE。后端 `SseBroker` 保留历史并**重放**，所以首题由 SSE 的 `question` 事件渲染，`start` 响应的 `firstQuestion` **不渲染**，避免首题显示两遍。
+    - **answer 只回 `{accepted:true}`**：判分结果走 SSE，所以提交后禁用输入框，等下一个 `await_answer` 再放开；`end` 的响应与 SSE 的 `report` 事件用 flag 去重，只渲染一次。
+    - 另：SSE 的 `error` 事件与 EventSource 自带的 `onerror` 都会进同一个 listener，用有没有 `code` 字段区分「业务异常」与「连接断开」（否则断线会被当成业务错误刷红条）。
+  - ✅ 验收：`PageRenderTest` 2/2 + 全量 `mvnw test` **BUILD SUCCESS**（22 个用例，未设 key 时 4 个真实链路用例自动 skip）（模板能渲染 + 静态资源能取到——**Thymeleaf 模板写错只有真正渲染时才炸，编译期看不出来**；静态资源 404 也不会有任何提示，所以钉死这两件事）。
+  - ✅ **真实容器冒烟**：`mvnw spring-boot:run` 起服务后实测 `GET /` → 200 且页面含「AI 模拟面试 / 开始模拟面试」、`GET /app.js` → 200、`GET /style.css` → 200、`GET /api/weak-point` → `[]`。服务已停，端口 8080 已释放。
+  - ⏳ **浏览器首轮闭环待用户验收**（`http://localhost:8080`）：贴 JD → 上传简历/项目文档 → 勾角色 → 开始 → 收流题目/评分/追问 → 提交回答 → 结束出报告 → 右下角错题本有记录。这步要真 LLM，需本机 `DEEPSEEK_API_KEY`。
+  - 🐞 **T9 收尾修复：Critic 报告 JSON 被截断（2026-09-18，用户真机反馈「报告解析有问题，整体注意事项里是一段残缺 JSON」）**
+    - **根因**：Critic 走思考模式（`thinking.type=enabled`），而 DeepSeek V4.1 Flash 的 `max_tokens` 在思考模式下限制 **reasoning+content 总生成量**。原 `max-tokens: 8192` 被 reasoning 吃完后，留给 JSON 正文的预算见底，模型把字段名写到一半（`"explanatio`）就被硬截断 → Jackson 解析失败 → `overallNotes` 被塞进那段残缺 JSON 原文。
+    - **修复**：
+      1. `LlmProperties` 新增 `criticMaxTokens=32768`，`CriticService` 调 `chat(..., criticMaxTokens)`（V4.1 Flash 支持到 384K 输出，32768 远在安全线内，不会 400）；判分/追问仍用全局 `max-tokens: 8192`。
+      2. `LlmPort` 新增带 `maxTokens` 的 `chat` 重载，`LlmService` 实现；`StubLlmPort` 同步补实现（否则测试编译不过）。
+      3. `CriticService.parse` 加**截断容错**：先补未闭合的字符串引号、再按「后开先闭」补 `]`/`}`（用栈记录打开顺序，修掉初版「先关数组后关对象」导致 `...讲解"]}}` 非法的问题），仍失败才降级为占位报告（不再回显模型原文）。
+      4. `SYSTEM` prompt 加长度约束（每轮 explanation≤100 字等），从源头压低输出总长。
+    - ✅ 验收：`CriticParseTest` 5/5（正常 JSON 完整解析 / 值截断补引号救回 / 缺括号补回 / 极端键名被砍或乱码降级不抛 / 修复器顺序正确），全量 `mvnw test` **BUILD SUCCESS**。真实链路（max_tokens=32768 是否被 API 接受）待用户 MySQL 生产形态验收时一并确认。
+- [~] **T10 全链路验收**（环境层 ✅ 2026-09-18；浏览器闭环待用户）
+  - ✅ 环境层：`docker compose up -d`（MySQL 3307 + Redis 6379 双 healthy）→ `$env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd spring-boot:run`（**无需手设 JAVA_HOME/key**，mvnw 自动回落 JDK21，key 用户级继承）→ `/api/health/deps` database+redis 均 ok、容器库 10 表建齐、`/` 200；全量 `mvnw test` 27 用例（25 跑 2 skip）BUILD SUCCESS。
+  - ⏳ 用户浏览器闭环：http://localhost:8080 → 贴 JD → 上传简历/项目文档 → 勾角色 → 开始 → 收流题目/评分/追问 → 提交回答 → 结束出报告 → 右下角错题本有记录。
   - 验收：端到端无报错，报告含 per_turn_review + reminders。
 
 ## 4. 卡点 / 待确认
@@ -173,6 +192,11 @@
   - 修法（两道保险）：① `pom.xml` 显式覆盖 `<lombok.version>1.18.48</lombok.version>`（支持 JDK 17/21/24，IDE 用高版本 JDK 也不失效）；② 命令行构建用 **JDK 21** 跑 Maven：`JAVA_HOME="C:\Users\19284\jdk-21" ./mvnw.cmd clean test-compile`。
   - 已验证：JDK 21 下 BUILD SUCCESS（44 主源 + 6 测试源），`javap` 确认 `InterviewTurn` 生成 9 个 getter、字节码 major=61。
   - 本机 JDK 清单：`C:\Users\19284\jdk-21`（推荐）、`C:\Program Files\Common Files\jdk-24_windows-x64_bin\jdk-24.0.1`（**勿用于构建**）。本机**没有 JDK 17**，也不需要装——Java 17 是编译目标，不是工具链版本。
+  - ✅ **2026-09-18 终版固化（不再需要每次手动 set JAVA_HOME）**：根因是 **Machine 级 JAVA_HOME 被 JDK24 安装器写成 24**（User 级为空，每个新终端都继承 24）。三处修完开箱即用：
+    1. `mvnw.cmd` 自动选 JDK：解析 `JAVA_HOME` 对应 java 的主版本，在 **17-23** 内则尊重；**未设 / 无效 / 24+ 且 `%USERPROFILE%\jdk-21` 存在则自动回落**并打印 WARNING（版本解析用临时文件法，for/f 内嵌引号+管道在含空格路径下会失效）。三场景实测（继承24/显式21/未设）全部落到 21。
+    2. `pom.xml` 加 **maven-enforcer-plugin 3.5.0** `requireJavaVersion [17,24)`，24+ 构建期硬失败（message 用**英文 ASCII**——中文在 GBK 控制台乱码，同 mvnw 纯 ASCII 教训）。
+    3. `AGENTS.md` Commands 写明双 shell 启动法 + JDK 规则。
+- **⚠️ 本机原生 MySQL80 服务占用 3306（2026-09-18 实测发现，用户已拍板共存方案）**：Windows 服务 `MySQL80`（自启，`D:\MySQL\MySQL Server 8.0`，数据 `D:\MySQLData\...`，root 密码非 root）占宿主 3306/33060，Docker MySQL 抢不到端口——**症状**：`docker compose ps` 显示 `3306/tcp` 无宿主映射（compose 文件却写了 ports），Spring 连 localhost:3306 会误连原生实例。**决策：容器改映射 `3307:3306`**（`docker-compose.yml` + `application-mysql.yml` 默认 `MYSQL_PORT:3307`），两实例共存，已 force-recreate 验通；生产无冲突时 `MYSQL_PORT=3306` 覆盖。教训：compose 端口不生效先 `netstat -ano | findstr :3306` 查宿主占用，再看 `Get-CimInstance Win32_Service | ? PathName -like '*mysqld*'` 定位服务；改 compose 配置必须 `--force-recreate`。
 - **数据源形态（2026-09-17 修正）**：本地默认 **H2 内存库**（`application.yml`，零参数 `mvnw clean spring-boot:run` 即起，免 Docker 验 T1–T3 编译 + 建表）；真 MySQL 8 抽到 `application-mysql.yml`，需 `-Dspring-boot.run.profiles=mysql` 或 `SPRING_PROFILES_ACTIVE=mysql` 才生效。原 `application-h2.yml` 已删。Docker 拉镜像源超时问题仍存在、暂未修，但**不再阻塞本地验证**。
   - ⚠️ **最终生产 / 真库验收必须恢复 Docker 起 MySQL 8 + Redis 7，并走 `mysql` profile**。H2 重启即清空，仅本地验证用；Redis 生产也必须起（H2 路下若本机 Redis 未起，`redis.ok` 为 false，属预期但不代表生产可省）。
 

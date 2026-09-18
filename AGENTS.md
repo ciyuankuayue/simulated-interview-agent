@@ -25,16 +25,21 @@
 
 ## Rules（规则）
 
-### Commands（命令写死，可复制）
+### Commands（命令写死，可复制；默认在 PowerShell 跑）
 - 编译打包（必须用项目自带的 mvnw，**不要用 Git Bash 跑 mvn**——本机 Git Bash 的 mvn 是坏的）：`.\mvnw.cmd -DskipTests package`
-- 启动：`.\mvnw.cmd spring-boot:run`（默认 8080）
-- 端口被占用（报 "Port 8080 was already in use"）：查占用 `netstat -ano | findstr :8080` → 杀 `taskkill /PID <pid> /F`；或临时换端口 `.\mvnw.cmd spring-boot:run -Dserver.port=8081`
+- 启动（默认 H2 内存库，零外部依赖）：`.\mvnw.cmd spring-boot:run`（默认 8080）
+- 启动（**MySQL 8 + Redis 生产形态**，先 `docker compose up -d`），任选一种：
+  - PowerShell 环境变量（推荐）：`$env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd spring-boot:run`
+  - 双 shell 通用（cmd / PowerShell 都行，**-D 参数整体加引号，不加在 PowerShell 下会被拆参报 Unknown lifecycle phase**）：`.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=mysql"`
+- 端口被占用（报 "Port 8080 was already in use"）：查占用 `netstat -ano | findstr :8080` → 杀 `taskkill /PID <pid> /F`；或临时换端口 `.\mvnw.cmd spring-boot:run "-Dserver.port=8081"`
 - 跑测试：`.\mvnw.cmd test`
-- 本地访问：http://localhost:8080
-- redis 用 docker 起
+- 本地访问：http://localhost:8080；依赖探活：http://localhost:8080/api/health/deps（`database`/`redis` 两个 ok 才算环境就绪）
+- MySQL + Redis：`docker compose up -d`（改 compose 端口/环境后必须 `docker compose up -d --force-recreate` 才生效，旧容器不会自动套用新配置）
+- **JDK 不用手动设**：mvnw.cmd 在未设 `JAVA_HOME` 时自动选 `%USERPROFILE%\jdk-21`；显式设了就尊重。pom enforcer 拒绝 JDK 24+（构建直接失败并提示）。
+- **LLM key 不用每窗同步**：`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` 已设为用户级环境变量，**新开**的 PowerShell 自动继承；只有设置前就开着的旧窗口才需要 `$env:DEEPSEEK_API_KEY=[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY','User')` 补一次。
 
 ### Architecture（技术栈精确版本 + 分层）
-- Java 17 / Spring Boot 3.x / Maven（mvnw 封装）
+- **Java 17 是编译目标**（release 17，产物 major=61）；**本机构建 JDK 固定 21**（`C:\Users\19284\jdk-21`，mvnw 自动选择；JDK 24 被 enforcer 拒绝，Lombok 在高版本 JDK 曾静默失效）；Spring Boot 3.3.5 / Maven 3.9.9（mvnw 自带 dist）
 - 存储：MySQL 8（持久化 JD、简历版本、笔记、模拟记录）/ Redis（指纹去重、会话缓存）
 - 消息：RabbitMQ（D3 引入，异步判分/追问；非必须，可后加）
 - LLM：

@@ -24,4 +24,10 @@ public class LlmProperties {
     private String modelPro = "deepseek-v4-pro";
     private long timeoutMs = 60_000;
     private int maxTokens = 8192;
+    /**
+     * Critic 报告专用预算。思考模式下 max_tokens 限制 reasoning+content 总生成量，
+     * 默认 8192 会被 reasoning 挤爆导致 JSON 截断（字段名写到一半就被砍）。
+     * DeepSeek V4.1 Flash 支持到 384K 输出，这里给 32768 留足 content 空间。
+     */
+    private int criticMaxTokens = 32768;
 }

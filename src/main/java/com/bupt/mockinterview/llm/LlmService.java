@@ -81,18 +81,24 @@ public class LlmService implements LlmPort {
         return chat(model, thinking, messages, tools, false);
     }
 
+    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+                         List<Map<String, Object>> tools, boolean jsonMode) {
+        return chat(model, thinking, messages, tools, jsonMode, props.getMaxTokens());
+    }
+
     /**
      * @param thinking 思考开关。官方默认开启，故两侧都显式传：非思考必须写 disabled。
      * @param jsonMode 是否强制 JSON 输出（判分用）。
      * @param tools    function calling 工具定义；非空时后续轮次须回传 reasoning_content，否则 400。
+     * @param maxTokens 生成 token 上限（思考模式下限制 reasoning+content 总预算）。
      */
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
-                         List<Map<String, Object>> tools, boolean jsonMode) {
+                         List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
         requireApiKey();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("messages", messages);
-        body.put("max_tokens", props.getMaxTokens());
+        body.put("max_tokens", maxTokens);
         body.put("thinking", Map.of("type", thinking ? "enabled" : "disabled"));
         if (jsonMode) {
             body.put("response_format", Map.of("type", "json_object"));

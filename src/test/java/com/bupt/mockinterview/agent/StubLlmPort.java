@@ -58,6 +58,12 @@ public class StubLlmPort implements LlmPort {
     @Override
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode) {
+        return chat(model, thinking, messages, tools, jsonMode, 0);
+    }
+
+    @Override
+    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+                         List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
         if (messages != null && !messages.isEmpty()) {
             Object last = messages.get(messages.size() - 1).get("content");
             userPrompts.add(String.valueOf(last));

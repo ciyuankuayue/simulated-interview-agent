@@ -22,6 +22,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -189,7 +190,7 @@ class InterviewFlowTest {
                         List.of("回表本质是聚簇索引查找"),
                         "那覆盖索引是怎么避免回表的？"));
         // chat：JD 解析与 Critic 报告走同一个入口，按 system 提示区分返回
-        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(inv -> {
+        org.mockito.stubbing.Answer<LlmReply> chatAnswer = inv -> {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> messages = inv.getArgument(2);
             String system = String.valueOf(messages.get(0).get("content"));
@@ -206,6 +207,9 @@ class InterviewFlowTest {
                      "overallNotes":"整体还行",
                      "reminders":["多练"]}
                     """, null);
-        });
+        };
+        // CriticService 现在调用带 maxTokens 的 6 参重载，两个重载都要桩上
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(chatAnswer);
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt())).thenAnswer(chatAnswer);
     }
 }

@@ -22,10 +22,13 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- ⚠️ 必须显式覆盖：Spring Boot 3.3.5 管理的 Lombok 1.18.34 在 JDK 24 下注解处理器
              静默失效（domain 实体的 getter/setter 全部不生成，编译不报错、极隐蔽，2026-09-18 踩坑）。
-             两道保险：① Lombok 升 1.18.48（支持 JDK 17/21/24，IDE 用高版本 JDK 也不会失效）；
-             ② 命令行构建用 JDK 21 跑 Maven：JAVA_HOME="C:\Users\19284\jdk-21" ./mvnw.cmd ...
+             三道保险：① Lombok 升 1.18.48（支持 JDK 17/21/24，IDE 用高版本 JDK 也不会失效）；
+             ② 命令行构建用 JDK 21 跑 Maven——mvnw.cmd 在未显式设置 JAVA_HOME 时自动选
+             %USERPROFILE%\jdk-21，无需每次手动 set；③ maven-enforcer-plugin 显式拒绝 JDK 24+，
+             把静默失效变成构建期硬报错。
              产物字节码仍是 Java 17（java.version=17 → release 17），已用 javap 验证 major=61。 -->
         <lombok.version>1.18.48</lombok.version>
+        <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
     </properties>
 
     <dependencies>
@@ -39,6 +42,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- T9 前端：Thymeleaf 服务端渲染（决策 #12：不引入 npm / 任何前端构建链）。
+             只用它做页面骨架，交互逻辑全在 static/app.js（原生 JS + EventSource 收 SSE）。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
         </dependency>
 
         <!-- 配置处理器（yml 提示，可省） -->
@@ -114,6 +124,34 @@
 
     <build>
         <plugins>
+            <!-- 卡构建 JDK：允许 17-23（本机实际用 21），JDK 24+ 直接失败。
+                 不依赖 Lombok 是否兼容——把"选错 JDK 但编译看起来正常"在构建期拦死。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${maven-enforcer-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>enforce-build-jdk</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[17,24)</version>
+                                    <message>
+BUILD JDK NOT ALLOWED: this project requires JDK 17-23 to build Maven (fixed JDK 21 on this machine: C:\Users\19284\jdk-21).
+JDK 24+ is rejected because Lombok annotation processing silently failed there (getters/setters not generated, no compile error).
+Fix: open a NEW PowerShell and run mvnw.cmd directly (it auto-picks %USERPROFILE%\jdk-21 when JAVA_HOME is unset),
+or set $env:JAVA_HOME="C:\Users\19284\jdk-21" explicitly.
+Note: java.version=17 is the bytecode TARGET (major version 61); you do NOT need to install JDK 17.</message>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
