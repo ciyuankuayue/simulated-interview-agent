@@ -100,8 +100,11 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 ## 5. 错题本
 
 ### GET /api/weak-point
-错题本（状态，精简，按 next_review_at 升序）：
+复习队列（未出队），按 next_review_at 升序：
 `[{ "weakPointId", "knowledgePoint", "wrongCount", "reviewStage", "nextReviewAt", "status" }]`
+
+### GET /api/weak-point/due?now={ISO-8601,可选}
+今日待复习：`next_review_at <= now` 且未出队（不传 `now` 取当前时间）。返回字段同上。
 
 ## 6. 契约边界（MVP 不做）
 

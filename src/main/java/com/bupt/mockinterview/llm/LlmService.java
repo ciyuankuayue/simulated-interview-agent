@@ -41,6 +41,7 @@ public class LlmService implements LlmPort {
             {"score": 0到8的整数,
              "breakdown": {"正确性":0到2,"完整性":0到2,"深度":0到2,"实证":0到2},
              "missed_points": ["回答漏掉的关键点"],
+             "knowledge_point": "本题考察的核心知识点，10-20 字短标签，措辞要稳定可复用（如「MySQL 索引失效场景」「synchronized 锁升级」）",
              "followup": "下一句追问（一句话）；若 score>=8 则填空字符串"}
             """;
 
@@ -169,7 +170,8 @@ public class LlmService implements LlmPort {
                 mp.forEach(n -> missed.add(n.asText()));
             }
             String followup = root.path("followup").asText("");
-            return new ScoreResult(score, breakdown, missed, followup);
+            String kp = root.path("knowledge_point").asText("");
+            return new ScoreResult(score, breakdown, missed, followup, kp);
         } catch (LlmException e) {
             throw e;
         } catch (Exception e) {

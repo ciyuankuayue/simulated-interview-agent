@@ -78,6 +78,9 @@
 - review_stage      # 复习阶段 0/1/2/3（固定阶梯，见 §5）
 - next_review_at    # 下次提问时间（间隔重复）
 - status            # 现状（可关联 project_doc 的「现状」）
+- created_at        # 首次记入错题本的时间
+- resolved          # 是否已出队（该知识点本轮 score>=6 即置 true）
+- resolved_at       # 出队时间
 - jd_profile_id (FK, 可空)
 
 ### critic_report
@@ -129,6 +132,11 @@
 - 答错（再次答崩）：review_stage = min(stage+1, 3)，wrong_count+1，重排 next_review_at
 - 答对（该知识点本轮 score≥6）：从 weak_point 移除（或标记 resolved）
 - MVP 不做 Leitner / SM-2，跑通后再评估
+
+实现（T8，2026-09-18）：`memory/SpacedRepetition.java` 排期 + `memory/WeakPointMemoryService.java` 唯一入口
+`onTurnScored(jd, knowledgePoint, score, status, now)`。知识点 key 用**判分模型输出的 `knowledge_point` 短标签**
+（不用 missed_points——措辞每轮都漂，会把同一知识点打散成多条），匹配前做归一化：去标点空白 → 去中文虚词 → 小写，
+再精确相等或包含匹配（较短一方 ≥4 字）。
 
 ## 6. 边界（MVP，按 §6）
 

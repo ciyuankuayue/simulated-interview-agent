@@ -9,4 +9,10 @@ import java.util.List;
 public interface WeakPointRepository extends JpaRepository<WeakPoint, Long> {
     List<WeakPoint> findByJdProfileId(Long jdProfileId);
     List<WeakPoint> findByNextReviewAtLessThanEqual(Instant now);
+
+    /** 复习队列（未出队）。 */
+    List<WeakPoint> findByResolvedFalse();
+
+    /** 已到复习时间且未出队。 */
+    List<WeakPoint> findByResolvedFalseAndNextReviewAtLessThanEqual(Instant now);
 }

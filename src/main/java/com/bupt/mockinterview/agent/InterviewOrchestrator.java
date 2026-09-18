@@ -13,12 +13,14 @@ import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.memory.WeakPointMemoryService;
 import com.bupt.mockinterview.rag.RagService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,18 +52,21 @@ public class InterviewOrchestrator {
     private final LlmPort llm;
     private final RagService rag;
     private final CriticService critic;
+    private final WeakPointMemoryService memory;
     private final ObjectMapper mapper;
     private final JdProfileRepository jdRepo;
     private final InterviewSessionRepository sessionRepo;
     private final InterviewTurnRepository turnRepo;
     private final CriticReportRepository reportRepo;
 
-    public InterviewOrchestrator(LlmPort llm, RagService rag, CriticService critic, ObjectMapper mapper,
-                                 JdProfileRepository jdRepo, InterviewSessionRepository sessionRepo,
+    public InterviewOrchestrator(LlmPort llm, RagService rag, CriticService critic, WeakPointMemoryService memory,
+                                 ObjectMapper mapper, JdProfileRepository jdRepo,
+                                 InterviewSessionRepository sessionRepo,
                                  InterviewTurnRepository turnRepo, CriticReportRepository reportRepo) {
         this.llm = llm;
         this.rag = rag;
         this.critic = critic;
+        this.memory = memory;
         this.mapper = mapper;
         this.jdRepo = jdRepo;
         this.sessionRepo = sessionRepo;
@@ -142,6 +147,16 @@ public class InterviewOrchestrator {
         events.add(AgentEvent.of(AgentEvent.SCORE, "turnSeq", current.getSeq(),
                 "score", sr == null ? null : sr.score(),
                 "oneLineCorrection", oneLineCorrection(sr)));
+
+        // T8 memory：判分结果入错题本（≤3 记/升阶，≥6 出队）。写失败只告警，不让面试中断
+        if (sr != null) {
+            try {
+                memory.onTurnScored(session.getJdProfile(), topicOf(sr, current.getQuestion()), sr.score(),
+                        statusOf(sr), Instant.now());
+            } catch (Exception e) {
+                events.add(AgentEvent.of(AgentEvent.ERROR, "code", "WEAK_POINT_FAILED", "message", e.getMessage()));
+            }
+        }
 
         // 追问决策：已追问层数 < 目标层数（followupDepth 已封顶 2），且未满分
         int askedLayer = current.getLayer() == null ? 0 : current.getLayer();
@@ -304,6 +319,24 @@ public class InterviewOrchestrator {
         m.put("missed_points", sr.missedPoints());
         m.put("followup", sr.followup());
         return m;
+    }
+
+    /** 错题本的知识点标签：优先用判分模型给的，没给就用题目前 30 字兜底（防整条链路静默失效）。 */
+    private static String topicOf(ScoreResult sr, String question) {
+        String kp = sr.knowledgePointOrEmpty();
+        if (!kp.isEmpty()) {
+            return kp;
+        }
+        String q = question == null ? "" : question.trim().replaceAll("\\s+", "");
+        return q.length() <= 30 ? q : q.substring(0, 30);
+    }
+
+    /** 「现状」：把漏掉的关键点拼成一句话存进错题本，供复习时回看。 */
+    private static String statusOf(ScoreResult sr) {
+        if (sr.missedPoints() == null || sr.missedPoints().isEmpty()) {
+            return null;
+        }
+        return String.join("；", sr.missedPoints());
     }
 
     /** 一句纠正（domain.md §4.1：实时只给一句，讲解归报告）。 */

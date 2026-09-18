@@ -139,11 +139,21 @@
     - `web/ApiExceptionHandler.java`：统一 `{code, message}`，按语义异常映射状态码——`IllegalArgumentException`→404、`IllegalStateException`→409、参数类→400、`LlmException`→504、其余→500（对齐 api.md §1）。
     - `web/WeakPointController.java`：api.md §5 错题本查询（按 `next_review_at` 升序；**写入归 T8**）。
   - ✅ 验收（`InterviewFlowTest` 3/3；全量 `mvnw test` **12/12 BUILD SUCCESS**）：断言的是契约而非「没报错」——start 同步返回首题、SSE 重放到订阅前的 question+await_answer、answer 只回 `accepted` 且低分触发追问（turnCount=2）、end 出报告且 status 转 DONE、report 可重拉、end 后新订阅者仍重放到 report+done、**已 DONE 再作答返回 409**；另有资料 CRUD 用例与 404 用例。
-  - ⚠️ **两个已知边界**（MVP 范围内，非 bug）：① `answer` 同步跑完判分才返回（api.md §3 允许，结果走 SSE；异步化待规模上来再做，MQ 已按决策砍掉）；② `start` 的 `resumeId` 参数当前未使用——RAG 检索的是全局语料，未按简历版本隔离。
+  - ⚠️ **两个已知边界**（MVP 范围内，非 bug）：① `answer` 同步跑完判分才返回（api.md §3 允许，结果走 SSE；异步化待规模上来再做，MQ 已按决策砍掉）；② `start` 的 `resumeId` 参数当前未使用——RAG 检索的是全局语料，未按简历版本隔离。**【用户已拍板 2026-09-18】简历版本隔离暂不做，等全链路（T8-T10）跑通后再作为迭代项考虑，不进 MVP。**
   - ⚠️ 测试坑：`MockHttpServletResponse.getContentAsString()` 默认按 **ISO-8859-1** 解码，中文会乱码；必须 `getContentAsString(StandardCharsets.UTF_8)`（真实容器无此问题）。
-- [ ] **T8 memory 层（错题本 + 间隔重复）**
-  - 答崩点（score<4）入 `weak_point`；方案 A 阶梯排 `next_review_at`。
-  - 验收：`GET /api/weak-point` 按 `next_review_at` 升序返回。
+- [x] **T8 memory 层（错题本 + 间隔重复）**（2026-09-18 落码 + 验收通过）
+  - 落码文件：
+    - `memory/SpacedRepetition.java`：方案 A **固定阶梯 [1,3,7,15] 天**，stage 封顶 3。不把天数写散在各处，排期逻辑只有这一个入口（domain.md §5 明确 MVP 不做 SM-2：SM-2 要用户自评难度、冷启动参数敏感，固定阶梯的好处是用户能自己算出「什么时候复习什么」）。
+    - `memory/WeakPointMemoryService.java`：唯一入口 `onTurnScored(jd, knowledgePoint, score, status, now)`，三分支——**≤3 分记/升阶**、**4-5 分不动**、**≥6 分出队（resolved）**。
+    - `domain/WeakPoint.java` + `WeakPointRepository`：新增 `resolved / resolvedAt / createdAt`，新增 `findByResolvedFalse`、`findByResolvedFalseAndNextReviewAtLessThanEqual`。
+    - `web/WeakPointController.java`：改为走 memory service（不再直连 repo）；新增 `GET /api/weak-point/due?now=`（今日待复习，不传 `now` 取当前时间，便于测试「假装今天是后天」）。
+    - `llm/ScoreResult.java` + `LlmService`：判分 JSON 新增 **`knowledge_point`** 字段（10-20 字稳定短标签），`ScoreResult` 加第 5 个参数并保留 4 参兼容构造器（旧调用点不用改）。
+    - `agent/InterviewOrchestrator.java`：判分后调 `memory.onTurnScored(...)`；**写失败只追加 `WEAK_POINT_FAILED` error 事件，不中断面试**（沿用 T6 的降级硬约束）。模型没给 `knowledge_point` 时用「题目前 30 字」兜底，防整条链路静默失效。
+  - 🎯 **关键设计：知识点标签不用 missed_points 凑**。missed_points 措辞每轮都漂（"没提覆盖索引"/"覆盖索引的定义…"），拿它当 key 会把同一知识点记成好几条，间隔重复直接失去意义。改成让判分模型顺带输出稳定的短标签，并做归一化匹配（去标点/空白 → 去中文虚词「的/了/和…」→ 小写，再精确相等或一方包含另一方且较短一方 ≥4 字）。实测「MySQL 索引失效场景」与「索引失效的场景」能认成同一条。
+  - ✅ 验收（`WeakPointMemoryTest` 7/7 + `WeakPointApiTest` 1/1 + 全量 `mvnw test` **20/20 BUILD SUCCESS**；本机设了 key 时两个真实链路测试也跑，没 key 则自动 skip）：断言的是规则不是「没报错」——新建 stage0/+1 天、连崩升阶 0→1→2→3 且 **间隔 1→3→7→15 天并封顶**（wrong_count 累加、不重复建条）、≥6 分出队且队列清空、出队后再崩重新入队、**4-5 分两边都不碰**、措辞漂移仍匹配、不同知识点各占一条且队列按 `next_review_at` 升序、due 只返回已到期。
+  - ✅ **真实链路验证**（`DEEPSEEK_API_KEY` 注入后跑）：① 判分确实返回 `knowledge_point = "InnoDB 回表与覆盖索引"`（短标签，可作 key）；② `T6RealRoundTripTest` 跑完整场后错题本落两条：`线程池核心参数与队列配置(x1, stage0, next +1天)`、`线程池任务提交执行流程(x1, stage0, next +1天)`。
+  - ⚠️ 已知边界（MVP 范围内）：① Critic 的 `collapsedPoints` **不再二次写入错题本**——实时判分已覆盖每个答崩轮次，再写会重复计数；② 知识点粒度取决于模型标签，同一领域可能被拆成相邻的两条（如上面线程池那两条），待真实数据多了再考虑聚类归一；③ 没有「手动标记已复习」接口，出队只由下一场面试的判分自动触发。
+  - ⚠️ 测试隔离坑：H2 `mem` 库在**所有 @SpringBootTest 类之间共享**（同一 context/同一 URL），写错题本的测试类必须加 `@Transactional` 回滚，否则会把 `InterviewFlowTest` 的「错题本为空」断言冲掉。已给 `WeakPointMemoryTest`/`WeakPointApiTest` 加，并顺手补上 `T6RealRoundTripTest`（真实链路会真写库，之前漏了）。
 - [ ] **T9 前端（Thymeleaf 服务端渲染 + SSE，决策 #12）**
   - 不引入 npm / 任何前端构建链；复用已有 `SseEmitter`（后端）+ `EventSource`（前端）经验，专注 AI 后端。
   - 功能：粘贴 JD、上传简历/project_doc、开始模拟、展示流式问题/评分/纠正（EventSource 收 SSE）、结束拉报告、看错题本。

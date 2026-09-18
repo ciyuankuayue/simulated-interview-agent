@@ -30,6 +30,13 @@ public class WeakPoint {
     @Column(columnDefinition = "TEXT")
     private String status; // 现状（可关联 project_doc 的「现状」）
 
+    private Instant createdAt; // 首次记入错题本的时间
+
+    /** 是否已出队（domain.md §5：该知识点本轮 score>=6 即标记 resolved，不再进入复习队列）。 */
+    private Boolean resolved = false;
+
+    private Instant resolvedAt;
+
     @ManyToOne(fetch = FetchType.LAZY, optional = true)
     @JoinColumn(name = "jd_profile_id", nullable = true)
     private JdProfile jdProfile;

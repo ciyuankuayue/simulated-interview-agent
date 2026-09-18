@@ -49,10 +49,13 @@ public class DeepSeekVerifyTest {
         System.out.println("[verify] breakdown   = " + r.breakdown());
         System.out.println("[verify] missed      = " + r.missedPoints());
         System.out.println("[verify] followup    = " + r.followup());
+        System.out.println("[verify] knowledge_point = " + r.knowledgePointOrEmpty());
         System.out.println("[verify] 追问层数=" + r.followupDepth() + "，记错题本=" + r.needWeakPoint());
 
         assertTrue(r.score() >= 0 && r.score() <= 8, "score 应在 0-8，实际 " + r.score());
         assertFalse(r.breakdown().isEmpty(), "breakdown 四维不应为空");
         assertFalse(r.missedPoints().isEmpty(), "该回答较简略，missed_points 不应为空");
+        assertFalse(r.knowledgePointOrEmpty().isBlank(),
+                "判分应给出 knowledge_point（T8 错题本按它聚合，缺了会退化成用题目前 30 字兜底）");
     }
 }
