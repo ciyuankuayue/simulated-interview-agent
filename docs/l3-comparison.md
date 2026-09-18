@@ -2,5 +2,5 @@
 
 | 方案 | 召回率@3 | 单查询耗时(ms) | 代码量(行) |
 |---|---|---|---|
-| HandcraftedRetriever | 100.0% | 159.069 | 30 |
-| LuceneHnswRetriever | 100.0% | 143.638 | 100 |
+| HandcraftedRetriever | 100.0% | 114.248 | 30 |
+| LuceneHnswRetriever | 100.0% | 166.888 | 100 |

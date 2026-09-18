@@ -130,10 +130,17 @@
     ```
     实测确认三件事：① **追问决策生效**——0 分/1 分连续触发追问且 layer 递增到 2 后封顶；② **Critic 报告 JSON 可被真实解析**（perTurnReview 含 explanation/correction/knowledgeSupplement/exemplarAnswer 四段，质量很高）；③ **降级未被触发**（无需降级即跑通）。
   - ⚠️ 环境变量说明：会话级 `set` 的 key 跨进程继承不到，沙盒读不到。已设到**用户级**：`[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY","sk-xxx","User")`（注意 `[Environment]` 前缀不能漏）。沙盒代跑时用 python 读 `HKCU\Environment` 再注入。
-- [ ] **T7 web 层 + SSE**
-  - controller 对齐 `api.md`：资料管理 CRUD、start/answer/end/report/status。
-  - `GET /events` SSE 推送 `question/score/followup/await_answer/report/done/error`。
-  - 验收：按 api.md §4 事件流示例跑通（question→await_answer→…→report→done）。
+- [x] **T7 web 层 + SSE**（2026-09-18 落码 + 验收通过）
+  - 分层原则：**controller 只做协议适配，不含编排逻辑**——事件全部由 T6 的 `InterviewOrchestrator` 生产，web 层负责「受理请求 → 推事件 → 组装响应」。
+  - 落码文件：
+    - `web/MaterialController.java`：api.md §2 资料管理全量 CRUD（JD 单条/批量、简历 + activate、笔记、项目文档 + PUT 补现状、真实面试记录）。写入时**同步切块向量化入 RAG**（resume/note/project_doc/real_interview 为语料源；JD 是查询源不入语料）；RAG 入库失败只记日志不阻断写入。JD 上传时用 LLM（flash 非思考 + JSON 模式）抽 `keywords`/`jobType`，失败降级为空。
+    - `web/InterviewController.java`：api.md §3 主流程 `start / answer / events / end / report / status`。`end` 幂等（已出报告则直接返回既有报告）；`reportView` 把 TEXT 列里的 JSON 还原成结构化对象。
+    - `web/SseBroker.java`：`GET /events` 的推流中枢，解决三个现实问题——① **订阅晚于生产**：每会话保留 200 条有界历史，新订阅者先重放（否则前端永远收不到 start 的首题）；② 多端/重连：同会话多 emitter，断开自动摘除；③ 收到 `done` 主动 complete 收流。注册与发布**按会话加锁**互斥，避免重放与实时推送交错产生重复/丢事件。
+    - `web/ApiExceptionHandler.java`：统一 `{code, message}`，按语义异常映射状态码——`IllegalArgumentException`→404、`IllegalStateException`→409、参数类→400、`LlmException`→504、其余→500（对齐 api.md §1）。
+    - `web/WeakPointController.java`：api.md §5 错题本查询（按 `next_review_at` 升序；**写入归 T8**）。
+  - ✅ 验收（`InterviewFlowTest` 3/3；全量 `mvnw test` **12/12 BUILD SUCCESS**）：断言的是契约而非「没报错」——start 同步返回首题、SSE 重放到订阅前的 question+await_answer、answer 只回 `accepted` 且低分触发追问（turnCount=2）、end 出报告且 status 转 DONE、report 可重拉、end 后新订阅者仍重放到 report+done、**已 DONE 再作答返回 409**；另有资料 CRUD 用例与 404 用例。
+  - ⚠️ **两个已知边界**（MVP 范围内，非 bug）：① `answer` 同步跑完判分才返回（api.md §3 允许，结果走 SSE；异步化待规模上来再做，MQ 已按决策砍掉）；② `start` 的 `resumeId` 参数当前未使用——RAG 检索的是全局语料，未按简历版本隔离。
+  - ⚠️ 测试坑：`MockHttpServletResponse.getContentAsString()` 默认按 **ISO-8859-1** 解码，中文会乱码；必须 `getContentAsString(StandardCharsets.UTF_8)`（真实容器无此问题）。
 - [ ] **T8 memory 层（错题本 + 间隔重复）**
   - 答崩点（score<4）入 `weak_point`；方案 A 阶梯排 `next_review_at`。
   - 验收：`GET /api/weak-point` 按 `next_review_at` 升序返回。
