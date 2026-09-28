@@ -1,6 +1,7 @@
 package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.llm.LlmException;
+import com.bupt.mockinterview.security.KeyVaultException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -43,6 +44,12 @@ public class ApiExceptionHandler {
     })
     public ResponseEntity<Map<String, Object>> badRequest(Exception e) {
         return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", e.getMessage());
+    }
+
+    /** 保险箱密码错误/未解锁 → 401（KeyVaultException 自带的 @ResponseStatus 会被本兜底 Advice 覆盖，必须显式声明）。 */
+    @ExceptionHandler(KeyVaultException.class)
+    public ResponseEntity<Map<String, Object>> unauthorized(KeyVaultException e) {
+        return body(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", e.getMessage());
     }
 
     /** LLM 不可用/超时：api.md §1 约定 504（正常链路已有降级，走到这里说明降级也没兜住）。 */

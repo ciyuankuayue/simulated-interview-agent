@@ -130,7 +130,58 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 /* ---------- 错题本 ---------- */
 .weak { max-height: 34vh; overflow-y: auto; margin-top: 8px; }
 .wp { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+.wp > summary { cursor: pointer; list-style: none; }
+.wp > summary::-webkit-details-marker { display: none; }
+.wp[open] > summary { border-bottom: 1px dashed var(--line); padding-bottom: 6px; margin-bottom: 6px; }
 .wpTop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 .chip { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .wpMeta { font-size: 12px; color: var(--accent2); margin-top: 4px; }
 .wpStatus { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.wpBody { font-size: 13px; }
+.sceneHead { font-size: 12px; color: var(--accent2); margin-bottom: 6px; }
+.sceneEmpty { font-size: 12px; color: var(--muted); font-style: italic; margin-top: 6px; }
+
+/* ---------- 历史面试 ---------- */
+.history { max-height: 20vh; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.histItem { text-align: left; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 9px; color: #d8e0f0; cursor: pointer; font-size: 13px;
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.histItem:hover { border-color: var(--accent); }
+.histItem span { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.histItem.noReport { opacity: .55; cursor: not-allowed; }
+
+/* ---------- 模型密钥卡片 ---------- */
+.keyblock { border-color: #35415c; }
+.keybadge {
+    font-size: 11px; padding: 2px 9px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+    user-select: none; transition: border-color .15s;
+}
+.keybadge:hover { border-color: var(--accent); }
+.keybadge.ok { background: rgba(55, 214, 163, .12); color: var(--accent2); border-color: rgba(55, 214, 163, .35); }
+.keybadge.bad { background: rgba(255, 107, 107, .12); color: var(--bad); border-color: rgba(255, 107, 107, .35); }
+
+.keyStatus { margin: 8px 0; display: flex; flex-direction: column; gap: 3px; }
+.keyLine { font-size: 12px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.kd { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.kd.ok { background: var(--accent2); }
+.kd.lock { background: var(--warn); }
+.kd.none { background: #55607a; }
+
+.keybox { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+.keybox[hidden] { display: none; }
+.keybox .row { gap: 6px; flex-wrap: wrap; }
+.keybox input[type="password"], .keybox input[type="text"] { width: 100%; }
+.keybox input:disabled { opacity: .5; }
+.keyhint { display: block; color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 2px; }
+
+/* 密码框 + 显示/隐藏切换 */
+.pwdWrap { position: relative; display: flex; align-items: center; }
+.pwdWrap input { flex: 1 1 auto; min-width: 0; padding-right: 54px; }
+.pwdToggle {
+    position: absolute; right: 6px; padding: 2px 8px;
+    font-size: 11px; line-height: 1.4; cursor: pointer;
+    color: var(--muted); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px;
+}
+.pwdToggle:hover { color: var(--text); border-color: var(--accent); }

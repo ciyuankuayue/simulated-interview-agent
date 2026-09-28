@@ -31,6 +31,16 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
+  # ---- 静态资源缓存策略（2026-09-19 T12） ----
+  # no-cache 不是「不缓存」，而是「每次使用前必须回源验证」：浏览器带 If-Modified-Since，
+  # 文件没变返 304（零传输），文件变了（如发布新版 app.js）立即拿到新内容。
+  # 不配时浏览器走启发式强缓存，前端更新后用户不 Ctrl+F5 就一直跑旧 JS（门禁/报告修复都会被缓存吞掉）。
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
+
 # ---- LLM 密钥（NEVER 写死；统一从环境变量读，AGENTS.md Restrictions） ----
 # 代码侧用 @ConfigurationProperties 绑定以下前缀（T5 建 LlmConfig）；本文件只放配置。
 # 模型名 2026-09-18 已核实（官方 api-docs.deepseek.com 定价页）：

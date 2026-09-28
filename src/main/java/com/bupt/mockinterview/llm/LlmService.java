@@ -1,5 +1,6 @@
 package com.bupt.mockinterview.llm;
 
+import com.bupt.mockinterview.security.KeyVault;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.MediaType;
@@ -48,10 +49,12 @@ public class LlmService implements LlmPort {
     private final OkHttpClient client;
     private final ObjectMapper mapper;
     private final LlmProperties props;
+    private final KeyVault keyVault;
 
-    public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props) {
+    public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props, KeyVault keyVault) {
         this.mapper = mapper;
         this.props = props;
+        this.keyVault = keyVault;
         // 由全局单例派生：共享连接池与线程池，仅覆盖超时
         this.client = okHttpClient.newBuilder()
                 .callTimeout(props.getTimeoutMs(), TimeUnit.MILLISECONDS)
@@ -143,7 +146,7 @@ public class LlmService implements LlmPort {
         String json = mapper.writeValueAsString(body);
         Request req = new Request.Builder()
                 .url(props.getBaseUrl() + "/chat/completions")
-                .addHeader("Authorization", "Bearer " + props.getApiKey())
+                .addHeader("Authorization", "Bearer " + keyVault.deepseekKey())
                 .post(RequestBody.create(json, JSON))
                 .build();
         try (Response resp = client.newCall(req).execute()) {
@@ -220,8 +223,8 @@ public class LlmService implements LlmPort {
     }
 
     private void requireApiKey() {
-        if (props.getApiKey() == null || props.getApiKey().isBlank()) {
-            throw new LlmException("DEEPSEEK_API_KEY 未设置，无法调用 DeepSeek");
+        if (keyVault.deepseekKey() == null || keyVault.deepseekKey().isBlank()) {
+            throw new LlmException("DeepSeek 密钥未配置：请在页面「模型密钥」中填写，或设置 DEEPSEEK_API_KEY");
         }
     }
 

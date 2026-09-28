@@ -1,5 +1,8 @@
 package com.bupt.mockinterview.web;
 
+import com.bupt.mockinterview.rag.Embedder;
+import com.bupt.mockinterview.rag.InMemoryVectorStore;
+import com.bupt.mockinterview.security.KeyVault;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -9,26 +12,39 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * T2 验收辅助：探测 MySQL / Redis 连通性。
- * 不建 Entity、不写业务，仅供 `.\mvnw.cmd spring-boot:run` 后一键确认依赖就绪。
+ * 验收辅助：探测 MySQL / Redis 连通性 + RAG 嵌入模型是否真实生效。
+ * 不写业务，仅供启动后一键确认环境就绪。
  * 路径：GET /api/health/deps
  */
 @RestController
 public class DepCheckController {
 
+    /** embedding ping 结果缓存时长（毫秒）：避免频繁刷新探活页反复消耗 embedding 额度。 */
+    private static final long PING_CACHE_MS = 30_000L;
+
     private final JdbcTemplate jdbcTemplate;
     private final RedisConnectionFactory redisConnectionFactory;
+    private final Embedder embedder;
+    private final InMemoryVectorStore vectorStore;
+    private final KeyVault keyVault;
 
-    public DepCheckController(JdbcTemplate jdbcTemplate, RedisConnectionFactory redisConnectionFactory) {
+    private volatile long pingAt;
+    private volatile Map<String, Object> pingCache;
+
+    public DepCheckController(JdbcTemplate jdbcTemplate, RedisConnectionFactory redisConnectionFactory,
+                              Embedder embedder, InMemoryVectorStore vectorStore, KeyVault keyVault) {
         this.jdbcTemplate = jdbcTemplate;
         this.redisConnectionFactory = redisConnectionFactory;
+        this.embedder = embedder;
+        this.vectorStore = vectorStore;
+        this.keyVault = keyVault;
     }
 
     @GetMapping("/api/health/deps")
     public Map<String, Object> deps() {
         Map<String, Object> result = new LinkedHashMap<>();
 
-        // 数据源探活（h2 profile 下是 H2，默认 profile 下是 MySQL）
+        // 数据源探活（默认 profile 是 H2，mysql profile 是 MySQL 8）
         try {
             Integer v = jdbcTemplate.queryForObject("select 1", Integer.class);
             result.put("database", Map.of("ok", v != null && v == 1, "detail", "connected"));
@@ -44,6 +60,56 @@ public class DepCheckController {
             result.put("redis", Map.of("ok", false, "detail", e.getMessage()));
         }
 
+        result.put("deepseek", deepseekBlock());
+        result.put("embedder", embedderBlock());
         return result;
+    }
+
+    /**
+     * DeepSeek 对话模型密钥状态（不做真实 chat 探活——会烧 token；调用时失败自有重试/降级）。
+     * source ∈ ENV/VAULT/NONE，configured=当前进程是否已能取到可用 key。
+     */
+    private Map<String, Object> deepseekBlock() {
+        KeyVault.KeyStatus s = keyVault.status();
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("source", s.deepseek());
+        block.put("configured", !"NONE".equals(s.deepseek())
+                && (!"VAULT".equals(s.deepseek()) || s.unlocked()));
+        block.put("unlocked", s.unlocked());
+        return block;
+    }
+
+    /**
+     * 嵌入模型状态：provider 标识（dashscope:&lt;model&gt; 为真实通义；FakeEmbedder 为降级）+
+     * 当前内存向量条数（重启清零，属 MVP 内存余弦形态）+ 一次真实 embed ping 的维度结果。
+     */
+    private Map<String, Object> embedderBlock() {
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("provider", embedder.name());
+        block.put("vectorChunks", vectorStore.size());
+        block.put("ping", embeddingPing());
+        return block;
+    }
+
+    private synchronized Map<String, Object> embeddingPing() {
+        long now = System.currentTimeMillis();
+        if (pingCache != null && now - pingAt < PING_CACHE_MS) {
+            return pingCache;
+        }
+        try {
+            float[] v = embedder.embed("连通性测试");
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("ok", true);
+            ok.put("dim", v.length);
+            ok.put("detail", "embedding call succeeded");
+            pingCache = Map.copyOf(ok);
+        } catch (Exception e) {
+            Map<String, Object> bad = new LinkedHashMap<>();
+            bad.put("ok", false);
+            bad.put("detail", String.valueOf(e.getMessage()));
+            pingCache = Map.copyOf(bad);
+        }
+        pingAt = now;
+        return pingCache;
     }
 }

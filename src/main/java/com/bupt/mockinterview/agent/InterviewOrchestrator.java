@@ -78,9 +78,26 @@ public class InterviewOrchestrator {
 
     // ---------- start ----------
 
-    /** 开启一场模拟：解析 JD + 检索资料 → 出首题（第一个角色先问）。 */
+    /** 开启一场模拟（默认主问题上限 {@link #MAX_MAIN_QUESTIONS}）。 */
     @Transactional
     public StartResult start(Long jdId, List<String> roleNames) {
+        return start(jdId, roleNames, null, null);
+    }
+
+    @Transactional
+    public StartResult start(Long jdId, List<String> roleNames, Integer maxQuestions) {
+        return start(jdId, roleNames, maxQuestions, null);
+    }
+
+    /**
+     * 开启一场模拟：解析 JD + 检索资料 → 出首题（第一个角色先问）。
+     *
+     * @param maxQuestions 主问题上限（不含追问），null 或越界时取默认 {@link #MAX_MAIN_QUESTIONS}，
+     *                     合法区间 [1, {@link #MAX_MAIN_QUESTIONS}]
+     * @param resumeId     用户下拉选择的简历版本 id（仅留痕，null=未指定；不做语料隔离）
+     */
+    @Transactional
+    public StartResult start(Long jdId, List<String> roleNames, Integer maxQuestions, Long resumeId) {
         JdProfile jd = jdRepo.findById(jdId)
                 .orElseThrow(() -> new IllegalArgumentException("JD 不存在: " + jdId));
 
@@ -90,6 +107,8 @@ public class InterviewOrchestrator {
         session.setJdProfile(jd);
         session.setRoles(Role.toJson(roles, mapper));
         session.setStatus(SessionStatus.QUESTIONING);
+        session.setMaxQuestions(normalizeMaxQuestions(maxQuestions));
+        session.setResumeId(resumeId);
         session = sessionRepo.save(session);
 
         List<String> refs = new ArrayList<>();
@@ -152,7 +171,7 @@ public class InterviewOrchestrator {
         if (sr != null) {
             try {
                 memory.onTurnScored(session.getJdProfile(), topicOf(sr, current.getQuestion()), sr.score(),
-                        statusOf(sr), Instant.now());
+                        statusOf(sr), Instant.now(), session.getId(), current.getSeq());
             } catch (Exception e) {
                 events.add(AgentEvent.of(AgentEvent.ERROR, "code", "WEAK_POINT_FAILED", "message", e.getMessage()));
             }
@@ -197,9 +216,11 @@ public class InterviewOrchestrator {
     private List<AgentEvent> nextMainQuestion(InterviewSession session, List<InterviewTurn> turns,
                                               List<AgentEvent> events) {
         long mainCount = turns.stream().filter(t -> Integer.valueOf(0).equals(t.getLayer())).count();
-        if (mainCount >= MAX_MAIN_QUESTIONS) {
-            events.add(AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId(),
-                    "reason", "MAX_QUESTIONS_REACHED"));
+        int limit = normalizeMaxQuestions(session.getMaxQuestions());
+        if (mainCount >= limit) {
+            // 自然结束（答完最后一道主问题）：自动出 Critic 报告再 done，用户无需再点「结束」。
+            // events 里已含本轮 score；finish 产出 report + done（带达上限原因）。
+            events.addAll(finish(session, "MAX_QUESTIONS_REACHED"));
             return events;
         }
         List<Role> roles = Role.parse(session.getRoles(), mapper);
@@ -231,46 +252,96 @@ public class InterviewOrchestrator {
 
     // ---------- end ----------
 
-    /** 结束：Critic 出报告 → 落 critic_report → 会话置 DONE。 */
+    /**
+     * 手动结束（中途打断）：Critic 出报告 → 落 critic_report → 会话置 DONE。幂等：已有报告直接重放。
+     * 自然结束（答满最后一道主问题）走同一条 {@link #finish} 路径，只是 done 带 MAX_QUESTIONS_REACHED。
+     */
     @Transactional
     public List<AgentEvent> end(Long sessionId) {
         InterviewSession session = sessionRepo.findById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
-        List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(sessionId);
+        return finish(session, null);
+    }
 
-        List<TurnBrief> briefs = new ArrayList<>();
-        for (InterviewTurn t : turns) {
-            briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson())));
+    /**
+     * 出报告 + 置 DONE 的唯一实现（手动结束与自然结束共用）。
+     *
+     * @param doneReason null=手动结束；{@code "MAX_QUESTIONS_REACHED"}=答满题量自然结束。
+     *                   report 事件始终先于 done，前端据此只渲染一次报告。
+     */
+    private List<AgentEvent> finish(InterviewSession session, String doneReason) {
+        Long reportId;
+        Integer matchScore;
+        String overallNotes;
+        Object perTurnReview;
+        Object collapsedPoints;
+        Object expressionIssues;
+        Object reminders;
+
+        CriticReport existing = reportRepo.findBySessionId(session.getId());
+        if (existing != null) {
+            // 幂等防御：answer 自动结束与手动 end 并发时，已有报告就重放，不再调一次 Critic
+            reportId = existing.getId();
+            matchScore = existing.getMatchScore();
+            overallNotes = existing.getOverallNotes();
+            perTurnReview = readJsonArray(existing.getPerTurnReview());
+            collapsedPoints = readJsonArray(existing.getCollapsedPoints());
+            expressionIssues = readJsonArray(existing.getExpressionIssues());
+            reminders = readJsonArray(existing.getReminders());
+        } else {
+            List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(session.getId());
+            List<TurnBrief> briefs = new ArrayList<>();
+            for (InterviewTurn t : turns) {
+                briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson())));
+            }
+            String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
+            Payload payload = critic.generate(session.getId(), jdText, briefs);
+
+            CriticReport report = new CriticReport();
+            report.setSession(session);
+            report.setPerTurnReview(toJson(payload.perTurnReview()));
+            report.setCollapsedPoints(toJson(payload.collapsedPoints()));
+            report.setExpressionIssues(toJson(payload.expressionIssues()));
+            report.setOverallNotes(payload.overallNotes());
+            report.setReminders(toJson(payload.reminders()));
+            report.setMatchScore(payload.matchScore());
+            CriticReport saved = reportRepo.save(report);
+
+            session.setStatus(SessionStatus.DONE);
+            session.setMatchScore(payload.matchScore());
+            sessionRepo.save(session);
+
+            reportId = saved.getId();
+            matchScore = payload.matchScore();
+            overallNotes = payload.overallNotes();
+            perTurnReview = payload.perTurnReview();
+            collapsedPoints = payload.collapsedPoints();
+            expressionIssues = payload.expressionIssues();
+            reminders = payload.reminders();
         }
-        String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
-        Payload payload = critic.generate(sessionId, jdText, briefs);
 
-        CriticReport report = new CriticReport();
-        report.setSession(session);
-        report.setPerTurnReview(toJson(payload.perTurnReview()));
-        report.setCollapsedPoints(toJson(payload.collapsedPoints()));
-        report.setExpressionIssues(toJson(payload.expressionIssues()));
-        report.setOverallNotes(payload.overallNotes());
-        report.setReminders(toJson(payload.reminders()));
-        report.setMatchScore(payload.matchScore());
-        CriticReport saved = reportRepo.save(report);
-
-        session.setStatus(SessionStatus.DONE);
-        session.setMatchScore(payload.matchScore());
-        sessionRepo.save(session);
-
-        return List.of(
-                AgentEvent.of(AgentEvent.REPORT, "reportId", saved.getId(),
-                        "matchScore", payload.matchScore(),
-                        "perTurnReview", payload.perTurnReview(),
-                        "collapsedPoints", payload.collapsedPoints(),
-                        "expressionIssues", payload.expressionIssues(),
-                        "overallNotes", payload.overallNotes(),
-                        "reminders", payload.reminders()),
-                AgentEvent.of(AgentEvent.DONE, "sessionId", sessionId));
+        AgentEvent reportEvent = AgentEvent.of(AgentEvent.REPORT, "reportId", reportId,
+                "matchScore", matchScore,
+                "perTurnReview", perTurnReview,
+                "collapsedPoints", collapsedPoints,
+                "expressionIssues", expressionIssues,
+                "overallNotes", overallNotes,
+                "reminders", reminders);
+        AgentEvent doneEvent = doneReason == null
+                ? AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId())
+                : AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId(), "reason", doneReason);
+        return List.of(reportEvent, doneEvent);
     }
 
     // ---------- 工具 ----------
+
+    /** 轮数归一化：null/越界 → 默认 8；合法区间 [1, 8]。controller 层做 400 校验，这里做防御兜底。 */
+    public static int normalizeMaxQuestions(Integer maxQuestions) {
+        if (maxQuestions == null || maxQuestions < 1 || maxQuestions > MAX_MAIN_QUESTIONS) {
+            return MAX_MAIN_QUESTIONS;
+        }
+        return maxQuestions;
+    }
 
     private List<Role> resolveRoles(List<String> roleNames) {
         List<Role> roles = new ArrayList<>();
@@ -365,6 +436,18 @@ public class InterviewOrchestrator {
             return mapper.writeValueAsString(obj);
         } catch (Exception e) {
             return "[]";
+        }
+    }
+
+    /** 重放既有报告时把 TEXT 列还原成结构化数组（解析失败给空数组，不阻断重放）。 */
+    private Object readJsonArray(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return mapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            return List.of();
         }
     }
 

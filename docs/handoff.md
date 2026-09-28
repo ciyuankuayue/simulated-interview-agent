@@ -3,7 +3,7 @@
 > 每轮续对话先读本文件。记录：当前进度 / 已锁决策 / 任务拆解 / 卡点 / 下一步。
 > 配套：`./domain.md`（领域模型）、`./api.md`（契约）、`../AGENTS.md`（规则）。
 
-## 1. 当前进度（截至 2026-09-17）
+## 1. 当前进度（截至 2026-09-19）
 
 | 阶段 | 产物 | 状态 | 备注 |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 | S3 | 技术选型 | ✅ | 与规划文档一致，无变更 |
 | S4 | `./docs/api.md` | ✅ 已落盘 | 契约优先，待实现遵守 |
 | S5 | `./docs/handoff.md`（本文件） | 🔵 当前 | 任务拆解 |
-| S6 | 代码实现 | 🔵 收尾中 | T1–T9 ✅；**T10 环境层冒烟 ✅（2026-09-18：mysql profile + Docker MySQL3307/Redis 启动，/api/health/deps 全 ok，10 表落容器，全量 27 用例 BUILD SUCCESS）**；剩用户浏览器首轮闭环 |
+| S6 | 代码实现 | 🔵 收尾中 | T1–T9 ✅；T10 ✅（三项改进 + 39 用例全绿 + mysql 真机实证，浏览器 E1–E10 仍待用户）；**T11 ✅（2026-09-19）**：模型密钥页面保险箱（机器绑定/密码两模式、热生效）+ 简历版本下拉复用，单测 7 + 真机全链路 + 浏览器 7 项全过；**T12 ✅（2026-09-19）**：密码模式访问门禁（令牌刷新即失效，多设备/服务器场景）+ 自然结束自动出报告 + 密码框明文切换 + 静态资源 no-cache，**48 用例全绿 + 浏览器真实验证（3 题场自动出 76 分报告）**，未 commit |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -176,10 +176,41 @@
       3. `CriticService.parse` 加**截断容错**：先补未闭合的字符串引号、再按「后开先闭」补 `]`/`}`（用栈记录打开顺序，修掉初版「先关数组后关对象」导致 `...讲解"]}}` 非法的问题），仍失败才降级为占位报告（不再回显模型原文）。
       4. `SYSTEM` prompt 加长度约束（每轮 explanation≤100 字等），从源头压低输出总长。
     - ✅ 验收：`CriticParseTest` 5/5（正常 JSON 完整解析 / 值截断补引号救回 / 缺括号补回 / 极端键名被砍或乱码降级不抛 / 修复器顺序正确），全量 `mvnw test` **BUILD SUCCESS**。真实链路（max_tokens=32768 是否被 API 接受）待用户 MySQL 生产形态验收时一并确认。
-- [~] **T10 全链路验收**（环境层 ✅ 2026-09-18；浏览器闭环待用户）
-  - ✅ 环境层：`docker compose up -d`（MySQL 3307 + Redis 6379 双 healthy）→ `$env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd spring-boot:run`（**无需手设 JAVA_HOME/key**，mvnw 自动回落 JDK21，key 用户级继承）→ `/api/health/deps` database+redis 均 ok、容器库 10 表建齐、`/` 200；全量 `mvnw test` 27 用例（25 跑 2 skip）BUILD SUCCESS。
-  - ⏳ 用户浏览器闭环：http://localhost:8080 → 贴 JD → 上传简历/项目文档 → 勾角色 → 开始 → 收流题目/评分/追问 → 提交回答 → 结束出报告 → 右下角错题本有记录。
-  - 验收：端到端无报错，报告含 per_turn_review + reminders。
+- [~] **T10 全链路验收**（环境层 ✅ 2026-09-18；三项改进 + 自动测试 + 真机实证 ✅ 2026-09-19；浏览器 E1–E10 待用户）
+  - ✅ 环境层：`docker compose up -d`（MySQL 3307 + Redis 6379 双 healthy）→ `$env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd spring-boot:run`（**无需手设 JAVA_HOME/key**，mvnw 自动回落 JDK21，key 用户级继承）→ `/api/health/deps` database+redis 均 ok、容器库表建齐（新列靠 `ddl-auto:update` 自动加）、`/` 200。
+  - ✅ **用户三项改进（2026-09-19，用户验收前批准实施，api.md 已同步授权改契约）**：
+    1. **历史 Critic 报告可追溯回看**：`GET /api/interview/sessions`（最近 20 场，含 status/matchScore/maxQuestions/hasReport，报告 id 批量查避免 N+1）；前端右栏「3.历史面试」，有报告的场次可点开回看（回看复用 report 渲染，重置 reportRendered 强制重渲）。边界：只做最近 20 场列表+回看，不做历史表/全文检索（api.md §6 已改）。
+    2. **错题本条目可点开看现场**：`weak_point` 加 `last_session_id/last_turn_seq`（纯 id 无外键，崩/升阶时写；旧 5 参 `onTurnScored` 重载委托 null，旧测试零改动）；`GET /api/weak-point/{id}`（不存在 → `IllegalArgumentException` → 404）聚合最近一次答崩现场（question/answer/layer/score + 从该场 `critic_report.per_turn_review` 按 turnSeq 匹配 explanation/correction/knowledgeSupplement/exemplarAnswer 四段；未 end 时 review=null 合法，任一环缺失降级 null）。前端 `<details>` 懒加载（`state.weakDetailLoaded` Set，`toggle` 事件 capture=true 委托在 #weak）。
+    3. **问答轮数可设置**：`interview_session.max_questions`（null=默认 8）；start 请求 `maxQuestions` 1–8，**用 Bean Validation `@Min/@Max` + `@Valid` 校验 → 400**（⚠️ 本项目 `IllegalArgumentException` 被映射成 404，参数非法不能用它抛；控制器加了 `@Validated`，record 组件直接注解）；前端下拉 3 快速/5 标准/8 完整（默认）。追问层数仍只由分数驱动（8→0｜6-7→1｜≤5→2），不开放配置。达上限 done.reason=`MAX_QUESTIONS_REACHED`。
+    4. **附：嵌入模型可观测**（用户追加验证真/假降级）：`/api/health/deps` 加 `embedder:{provider, vectorChunks, ping:{ok,dim,detail}}`，ping 真实调 `embedder.embed("连通性测试")`，结果缓存 30s（volatile+synchronized）；`Embedder` 接口加 `default name()`，Dashscope 返 `dashscope:qwen3.7-text-embedding-flash`。
+  - ✅ 自动测试：新增 `T10FeaturesTest`（@Transactional 回滚，4 用例）——sessions 列表 end 前后 hasReport 翻转+报告可达；错题详情现场定位→end 后四段讲解补出+404；maxQuestions 0/9→400、=1 时答完首题（含一层追问）即 done 且 SSE 重放含 MAX_QUESTIONS_REACHED；deps 暴露 embedder 块且 ping.ok。全量 **31 用例（29 跑 2 skip）BUILD SUCCESS**。
+  - ✅ **mysql profile 真机实证（2026-09-19）**：`/api/health/deps` → `embedder.provider=dashscope:qwen3.7-text-embedding-flash`、`ping.ok=true dim=1024`；传一条 Redisson 看门狗笔记前 vectorChunks=0、后 **=1**（同进程内真 embedding 调用入库，非 Fake 降级；内存向量重启清零属预期）；`POST /start maxQuestions=9` → **400** 中文消息；`GET /weak-point/999999` → **404**；`GET /sessions` 含昨日浏览器实测场（DONE/20 分/hasReport=true）；首页含「历史面试/主问题数/快速 3 题/完整 8 题」，app.js 含 loadHistory/懒加载。服务已停 8080 已释放。
+  - ⏳ **用户浏览器 E1–E10 手工验收（下一步）**：起 mysql profile → http://localhost:8080：E1 资料入库（deps vectorChunks 增长）/ E2 首题不重复 / E3 追问 2 层封顶 / E4 高分不追问 / E5 角色轮转 / E6 报告四段齐全 / E7 Critic 截断回归（整体注意事项不得是半截 JSON）/ E8 错题本联动（条目可点开看现场+讲解）/ E9 DONE 后作答 409 / E10 降级（可临时改错 key 观察）。另人工验：历史面试列表点开旧报告、轮数选 3 实际 3 道主问题后 done。
+- [x] **T11 两项用户迭代（2026-09-19，用户批准直接实施，api.md §6 + §1 已授权）**：① 模型 key 页面录入持久化，不再每次启动填终端 env；② 简历像 JD 一样下拉复用历史版本。
+  - **① 密钥保险箱（security/KeyVault）**：
+    - 落盘 `~/.mock-interview/vault.json`（可 `--app.vault.dir=` 覆盖），**AES-256-GCM**（12B IV/128b tag），原子写（tmp + ATOMIC_MOVE 回退 REPLACE_EXISTING）。两模式：**机器绑定**（不设密码；随机 32B DEK 存同目录 machine.key，重启自动解锁）/ **密码保护**（PBKDF2WithHmacSHA256 310000 轮 + 16B 盐派生 KEK，重启锁定等 `/unlock`）。
+    - **来源优先级硬规则**：env `DEEPSEEK_API_KEY`/`DASHSCOPE_API_KEY` 优先；env 已提供时页面保存该厂商 → `IllegalStateException` → **409**。`save(deep,dash,password)` 语义：key 的 null=不动 / ""=清除 / 非空=覆盖；password 非空=转/改密码保护，null 或 ""=沿用现状（首次保存且不给密码 = 机器绑定）。
+    - 热生效（无需重启）：`DynamicEmbedder` 每次调用按 keySupplier 在真实 DashscopeEmbedder / FakeEmbedder 间切换；`LlmService` 每次取 key 走 vault；`/api/health/deps` 加 `deepseek:{source,configured,unlocked}`。接口：`GET /api/setup/status`、`POST /api/setup/keys`、`POST /unlock`、`POST /lock`，**任何接口不回传明文**。
+    - 新增文件：`security/KeyVault.java`、`security/KeyVaultException.java`、`web/KeySetupController.java`、`rag/DynamicEmbedder.java`、`security/KeyVaultTest.java`（7 用例纯单元）；改动 LlmService / DashscopeEmbedder（apiKey 改 Supplier，旧构造保留给测试）/ RagConfig / DepCheckController / 前端 index.html+app.js+style.css（左栏顶部密钥卡片三态：未配置展表单 / 锁定只显解锁框 / 可用显徽标点按展开）。
+    - 🐞 **真机踩坑 1：错密码一度返 500 而非 401**。`KeyVaultException` 上的 `@ResponseStatus(401)` 被全局 `@RestControllerAdvice ApiExceptionHandler` 的兜底 `@ExceptionHandler(Exception.class)` 覆盖 → 必须在 Advice 里显式加 `KeyVaultException → 401 UNAUTHORIZED`。教训：**项目一旦有全局兜底 Advice，异常类上的 @ResponseStatus 全部失效**。
+    - 🐞 **真机踩坑 2：沙盒写 `~/.mock-interview` 被宿主层拦截**（即使 Shell 传 `dangerouslyDisableSandbox`，Java 子进程写用户家目录仍被拒，vault save 抛 IOException→409「机器密钥不可读写」）。真机验证改用 `--app.vault.dir=<工作区>/.vault-e2e` 跑完全链路，验完目录已删；**用户在自己的终端无此限制**，默认路径直接可用。
+  - **② 简历版本下拉**：`interview_session.resume_id`（纯列无外键，仅留痕；RAG 仍检索全局语料不按版本隔离，沿用 T7 已拍板边界）；`start` 加 `resumeId`，不存在 → 404（在调 LLM 前校验）。后端接口本已齐全（`GET /api/resume` 列表 / 首份自动 active / `POST /api/resume/{id}/activate`）；前端加 `#resumeSelect`（id 倒序，默认 active 或最新）+ 刷新按钮，上传后选中新版本，下拉 onchange 调 activate。`T10FeaturesTest` 加第 5 用例（合法 200 / 不存在 404 / 列表 isActive）。
+  - ✅ **验收（2026-09-19）**：全量 `.\mvnw.cmd test` **39 用例（37 跑 2 skip 真实 LLM）BUILD SUCCESS**。mysql profile 真机（清空 env key 启动）：初始 NONE/NONE + fake embedder → 页面保存两 key → VAULT/unlocked、vault.json+machine.key 落盘且**密文不含明文片段**、deps 热切换 `dashscope:qwen3.7-text-embedding-flash` ping dim=1024、真实入库 vectorChunks 0→1 → lock 回退 fake / 机器模式 unlock 自动恢复 → 转密码模式、重启后**自动锁定**、错密码 401、对密码解锁恢复 → 清除单厂商 key status 转 NONE。简历：列表/上传两版（非首份不自动 active）/activate 唯一 active 切换/未知 404/start 未知 resumeId 404。浏览器人工 7 项全过（徽标三态、锁定、错密码 401 提示、对密码恢复、下拉 active 刷新持久化、status 无明文）。真机测试数据已清（resume 7/8、note 2/3 删除；active 仍为 id=1；`.vault-e2e` 已删；用户家目录无 `.mock-interview` 残留）。
+    - 遗留：`note` 表 id=1（"T10验证知识点：Redisson…"）是上轮真机测试条目，非本轮产物，未删，用户可自行处理。
+- [x] **T12 用户实测两问题修复（2026-09-19，用户批准直接实施，api.md §1/§3/§4/§6 已同步）**：
+  - **问题 1：密码保护形同虚设 → 密码模式访问门禁（服务器/多设备诉求，单用户不做多账号）**
+    - 根因：T11 密码只加密磁盘，解锁后 key 常驻进程内存，**没有任何请求级鉴权**——刷新页面/其他设备不输入密码照样调业务接口（花用户的 API 额度）。
+    - 方案：`KeyVault` 内存维护令牌集合（`ConcurrentHashMap.newKeySet()`）：unlock / 带密码 save 成功后签发 **256b 随机 Base64URL 令牌**（不落盘，进程重启/lock/改密码全失效；多设备各自独立令牌，改密码 clear 旧签新）；新增 `security/VaultAccessFilter`（OncePerRequestFilter）：密码模式（保险箱落盘且 passwordProtected）下，除白名单（非 `/api/` 静态资源与页面、OPTIONS、`GET /api/setup/status`、`POST /api/setup/unlock`）外所有 `/api/**` 必须带令牌——header `X-Vault-Token` 或 SSE query `?vaultToken=`（EventSource 不能设头），失效返 **401 `{code:"UNAUTHORIZED",message}`**。机器绑定/纯 env/未配置不启用门禁。
+    - KeyVault API 变化：`save`/`unlock` 返回类型改 **`UnlockResult(KeyStatus status, String token)`**；`lock()` 清令牌；新增 `accessRequired()`/`validToken(t)`。KeySetupController 两接口返回 UnlockResult（序列化为 `{status:{...},token}`），lock 仍返回 KeyStatus。
+    - 前端：`state.vaultToken` **只存 JS 内存（严禁 localStorage）**；`api()` 注入 X-Vault-Token，业务 401 → 清 token + loadKeyStatus 回门禁态（/unlock 的 401 例外，直接抛「密码错误…」人话）；SSE URL 拼 `?vaultToken=`；门禁判定 `gated = s.passwordProtected && !state.vaultToken`（**以本地令牌为准，不信服务端 unlocked**——这是刷新保护的关键）；gated 时首屏只查 status，业务数据延后到解锁后 loadBusinessData，避免整屏 401。两个密码框（`#kuPassword`/`#ksPass`）加「显示/隐藏」按钮（`.pwdWrap`+`.pwdToggle`，切 input.type）。
+  - **问题 2：答完最后一题自然结束不出报告**
+    - 根因：`InterviewOrchestrator.nextMainQuestion()` 达 `maxQuestions` 时只发 `done(MAX_QUESTIONS_REACHED)`，报告只在手动 `end()` 里生成；前端 done 处理器也不补 end。手动点「结束」走 end() 所以一直能成功。
+    - 修复：抽出私有 `finish(session, doneReason)` 作为出报告+置 DONE 的唯一实现（含「已有报告则重放」幂等分支，reportRepo/turnRepo 参数是 Long sessionId 不是实体——编译踩过）；`end()` 委托 reason=null，`nextMainQuestion()` 达上限分支在 answer 同事务内调 finish(reason=MAX_QUESTIONS_REACHED)，SSE 同批发 `report`+`done`（report 先于 done）。前端 done 处理器加幂等兜底：未渲染过报告时补 POST /end。
+  - **工程：测试 vault 隔离**。pom surefire 加 `<systemPropertyVariables><app.vault.dir>${project.build.directory}/test-vault</app.vault.dir>`——否则用户本机若存过密码模式保险箱，@SpringBootTest 的 MockMvc 业务请求会被新过滤器全拦成 401。
+  - **工程：静态资源缓存（真机踩出）**。Spring Boot 静态资源默认无 Cache-Control，浏览器启发式强缓存 app.js，后端发布新版后用户不 Ctrl+F5 一直跑旧 JS（T12 新 JS 被缓存吞掉，表现为 UI 显示「模型可用」但业务全 401）。application.yml 加 `spring.web.resources.cache.cachecontrol.no-cache=true`（每次回源验证，未变 304），实测响应头 `Cache-Control: no-cache` + If-Modified-Since 返 304。
+  - 新增/改动文件：`security/VaultAccessFilter.java`（新）、`security/KeyVault.java`、`web/KeySetupController.java`、`agent/InterviewOrchestrator.java`、`static/app.js`、`templates/index.html`、`static/style.css`、`application.yml`、`pom.xml`；测试 `security/VaultAccessFilterTest.java`（新，6 用例 mock 过滤器）、`security/KeyVaultTest.java`（+3 令牌用例）、`web/T10FeaturesTest.java`（maxQuestions 用例改为断言 report 先于 done、status DONE、matchScore=55、end 幂等）。
+  - ✅ **验收（2026-09-19）**：全量 `.\mvnw.cmd test` **48 用例（46 跑 2 skip）BUILD SUCCESS**。mysql 真机 API：密码模式无 token 业务接口 401（含服务端 unlocked=true 时——刷新场景核心）、status/unlock 白名单 200、错密码 401、对密码拿 token 两设备两令牌不同、header/query(SSE) 双通道 200/404、伪造/空 token 401、匿名 lock 401、lock 后两令牌全失效、静态资源/首页 200、机器模式无门禁。浏览器真机（真实 LLM）：gated 首屏（解锁框+「需要密码」+业务区零请求）、眼睛明文切换、错密码红字、对密码解锁业务数据加载、**F5 刷新后立即回门禁态**、3 题场答完 6 轮（3 主问+3 追问，评分 7/7/7/7/7/8）后**无任何点击自动出报告（匹配度 76/100，六轮四段讲解齐全）**，历史 #6 立即显示「76 分」可回看。e2e 会话 #6 数据已清理；服务已停、`.vault-e2e` 已删。
+    - 浏览器工具教训：① 截图通道（browser_take_screenshot）在本环境 IDE Command timeout，证据改用 DOM evaluate；② evaluate script 里别写含 `\n` 的正则字面量（JSON 转义后变 "Invalid regular expression flags"），用字符串方法；③ 浏览器缓存排查先看 `performance.getEntriesByType('resource')` 的 transferSize（0=磁盘缓存）。
 
 ## 4. 卡点 / 待确认
 
@@ -200,11 +231,36 @@
 - **数据源形态（2026-09-17 修正）**：本地默认 **H2 内存库**（`application.yml`，零参数 `mvnw clean spring-boot:run` 即起，免 Docker 验 T1–T3 编译 + 建表）；真 MySQL 8 抽到 `application-mysql.yml`，需 `-Dspring-boot.run.profiles=mysql` 或 `SPRING_PROFILES_ACTIVE=mysql` 才生效。原 `application-h2.yml` 已删。Docker 拉镜像源超时问题仍存在、暂未修，但**不再阻塞本地验证**。
   - ⚠️ **最终生产 / 真库验收必须恢复 Docker 起 MySQL 8 + Redis 7，并走 `mysql` profile**。H2 重启即清空，仅本地验证用；Redis 生产也必须起（H2 路下若本机 Redis 未起，`redis.ok` 为 false，属预期但不代表生产可省）。
 
-## 5. 下一步立即做
+## 5. 下一步立即做（MVP 已完成，进入迭代期）
 
-**从 T1 开始：初始化 Spring Boot 工程。**
-- 用项目自带 `mvnw`（`NEVER` 用 Git Bash 跑 mvn）。
-- 先建 `pom.xml` + 分层包空壳 + 一个最小 `/api/health` 端点，跑通 `.\mvnw.cmd spring-boot:run` 再逐步加 T2–T10。
-- 每步「读→想→改→跑→报」，跑通再进下一项。
+**MVP 全链路已打通（T1–T12 全部 ✅，48 用例全绿）**，下一阶段是「单用户本地」→「多用户可部署」。迭代总原则见 `docs/tasks.md` 与 vibe-coding 实战手册第 17 章。
+- 每个新需求按轻量六阶段（规划 → feature 分支 → 单任务闭环 → 验证 Gate → 小步提交人审 → merge 回写 handoff）。
+- **第一优先 R1（多用户 + 部署）+ R2（账号 + 额度）**：没有它，多用户与额度无从谈起；且现有 `InMemoryVectorStore` 内存向量库必须先换持久化，否则一部署即崩。
+- 同步 R5（测试加固）。详细任务拆解与验收见 `docs/tasks.md`。
 
 > 开工前提示：本机需 `DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY` 环境变量；Redis 需 docker 起。缺则 T2 会卡，先确认环境就绪。
+
+## 6. MVP 后迭代规划（2026-09-28 拍板）
+
+> 用户提出七大迭代点，已评估难度 / 难点 / 周期，并拆成原子 Task 落 `docs/tasks.md`。下方为结论摘要，执行细节见 tasks.md。
+
+**七大迭代点（按推荐顺序）**：
+
+| 需求 | 难度 | 周期 | 核心难点 / 我的建议 |
+|---|---|---|---|
+| R1 多用户 + 部署 | 高 | 3–5 周 | 无 User/认证/隔离；内存向量库必换；本地 KeyVault 密码模式不适用多用户；需反代/HTTPS/守护/CI。**第一优先** |
+| R2 账号 + 大模型额度 | 中 | 1–1.5 周 | 额度按 token 计；并发扣减需原子（行锁/Redis INCR）；超限优雅降级；平台统一持 key |
+| R3 多模型（DeepSeek 外） | 中 | 1–2 周 | 抽 ModelProvider + 路由；embedding 维度不同需隔离/重算；第一个加通义千问（已通 DashScope 通路） |
+| R4 向量库 + 是否 LangChain | 中 | 1–1.5 周 | 内存无法持久化/共享；选 Redis vector 或落盘 Lucene。**结论：暂不引 LangChain**——手写 retriever 可控已跑通，框架反增不确定性 |
+| R5 稳健 + 测试 | 中 | 持续 + 专项 1–2 周 | 补集成/弹性/E2E 测试；掌握 mock/stub/fake、Testcontainers、契约测试、超时重试降级测试 |
+| R6 语音 / 视频 | 高 | 语音 2–4 周；视频 +3–5 周 | ASR/TTS/WebSocket 流式/VAD；视频加摄像头+带宽+隐私；与额度打通；先语音后视频 |
+| R7 软性面试官 | 低 | 3–5 天 | 纯 prompt/角色（新增综合行为面试官）；难点在 STAR/压力面 rubric；评分维度扩展 |
+
+**已核实的现状（迭代前地基，源码确认）**：
+- 单用户本地：无 User 实体、无认证、数据全局共享。
+- RAG：`InMemoryVectorStore` + `CosineSimilarity` 手写余弦 + 纯内存；pom 中 Lucene HNSW 仅 test 范围；**主链路无任何向量库、无 LangChain 依赖**。
+- 模型：`LlmProperties` 仅绑 `deepseek.*`，单一模型；`LlmPort` 接口已有抽象雏形。
+- 角色：`TECH_DIGGER` / `PROJECT_CHALLENGER` / `CRITIC`，无软性面试官。
+- 测试：48 用例（46 run 2 skip），缺集成 / E2E / 弹性测试。
+
+**我对需求的改进建议（排序逻辑）**：先 R1+R2 地基（含 R4 向量库迁移依附部署），同步 R5 织测试网；R7 低成本高回报可穿插；R3 非阻塞后做；R6 最高难度最后做。R4 明确不建议引 LangChain，保留手写检索、只换存储后端。

@@ -32,6 +32,20 @@ public class InterviewSession {
 
     private Integer matchScore; // 本 JD 当前匹配度（Critic 填）
 
+    /**
+     * 本场主问题上限（不含追问），开始时由用户选择；null 视为默认
+     * {@link com.bupt.mockinterview.agent.InterviewOrchestrator#MAX_MAIN_QUESTIONS}。
+     * T10 引入：支持「快速练 3 题 / 完整 8 题」。旧数据为 null，按默认 8 处理。
+     */
+    private Integer maxQuestions;
+
+    /**
+     * 本场关联的简历版本 id（纯 id，无外键约束；开始面试时由用户在下拉中选择）。
+     * null=未指定。当前 RAG 检索全局语料，不按简历版本隔离（隔离为后续迭代项），
+     * 该列仅留痕，供历史回看/未来按版本过滤使用。
+     */
+    private Long resumeId;
+
     @CreationTimestamp
     @Column(updatable = false)
     private Instant createdAt;

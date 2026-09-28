@@ -7,9 +7,14 @@ import com.bupt.mockinterview.domain.InterviewSession;
 import com.bupt.mockinterview.domain.repository.CriticReportRepository;
 import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
+import com.bupt.mockinterview.domain.repository.ResumeVersionRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.http.MediaType;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,6 +39,7 @@ import java.util.Map;
  * 决策已砍掉 MQ，异步化留到规模上来再做。
  */
 @RestController
+@Validated
 @RequestMapping("/api/interview")
 public class InterviewController {
 
@@ -42,29 +48,40 @@ public class InterviewController {
     private final InterviewSessionRepository sessionRepo;
     private final InterviewTurnRepository turnRepo;
     private final CriticReportRepository reportRepo;
+    private final ResumeVersionRepository resumeRepo;
     private final ObjectMapper mapper;
 
     public InterviewController(InterviewOrchestrator orchestrator, SseBroker broker,
                                InterviewSessionRepository sessionRepo, InterviewTurnRepository turnRepo,
-                               CriticReportRepository reportRepo, ObjectMapper mapper) {
+                               CriticReportRepository reportRepo, ResumeVersionRepository resumeRepo,
+                               ObjectMapper mapper) {
         this.orchestrator = orchestrator;
         this.broker = broker;
         this.sessionRepo = sessionRepo;
         this.turnRepo = turnRepo;
         this.reportRepo = reportRepo;
+        this.resumeRepo = resumeRepo;
         this.mapper = mapper;
     }
 
     // ---------- start ----------
 
-    public record StartRequest(Long jdId, List<String> roles, Long resumeId) {}
+    public record StartRequest(Long jdId, List<String> roles, Long resumeId,
+                               @Min(value = 1, message = "maxQuestions 最小为 1")
+                               @Max(value = InterviewOrchestrator.MAX_MAIN_QUESTIONS,
+                                       message = "主问题数不能超过 " + InterviewOrchestrator.MAX_MAIN_QUESTIONS)
+                               Integer maxQuestions) {}
 
     @PostMapping("/start")
-    public Map<String, Object> start(@RequestBody StartRequest req) {
+    public Map<String, Object> start(@Valid @RequestBody StartRequest req) {
         if (req == null || req.jdId() == null) {
             throw new IllegalArgumentException("jdId 不能为空");
         }
-        InterviewOrchestrator.StartResult r = orchestrator.start(req.jdId(), req.roles());
+        if (req.resumeId() != null && !resumeRepo.existsById(req.resumeId())) {
+            throw new IllegalArgumentException("简历版本不存在: " + req.resumeId());
+        }
+        InterviewOrchestrator.StartResult r =
+                orchestrator.start(req.jdId(), req.roles(), req.maxQuestions(), req.resumeId());
         // 首题事件先入 buffer：前端拿到 sessionId 后才来连 SSE，靠重放补齐
         broker.publish(r.sessionId(), r.events());
 
@@ -73,6 +90,40 @@ public class InterviewController {
         body.put("firstQuestion", r.firstQuestion());
         body.put("status", statusOf(r.sessionId()));
         return body;
+    }
+
+    // ---------- 历史会话列表（T10） ----------
+
+    /**
+     * 最近 20 场会话（精简卡片），供历史报告回看入口。
+     * hasReport=false 的场次（进行中/未 end）不可点开报告。
+     */
+    @GetMapping("/sessions")
+    public List<Map<String, Object>> sessions() {
+        List<InterviewSession> sessions =
+                sessionRepo.findAllByOrderByIdDesc(org.springframework.data.domain.PageRequest.of(0, 20));
+        List<Long> ids = sessions.stream().map(InterviewSession::getId).toList();
+        java.util.Set<Long> reportedIds = reportRepo.findBySessionIdIn(ids).stream()
+                .map(r -> r.getSession() == null ? null : r.getSession().getId())
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+
+        List<Map<String, Object>> resp = new ArrayList<>();
+        for (InterviewSession s : sessions) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("sessionId", s.getId());
+            m.put("jdId", s.getJdProfile() == null ? null : s.getJdProfile().getId());
+            m.put("jobType", s.getJdProfile() == null ? null : s.getJdProfile().getJobType());
+            m.put("sameTypeTag", s.getJdProfile() == null ? null : s.getJdProfile().getSameTypeTag());
+            m.put("roles", parseRoles(s.getRoles()));
+            m.put("status", s.getStatus() == null ? null : s.getStatus().name());
+            m.put("matchScore", s.getMatchScore());
+            m.put("maxQuestions", s.getMaxQuestions());
+            m.put("hasReport", reportedIds.contains(s.getId()));
+            m.put("createdAt", s.getCreatedAt() == null ? null : s.getCreatedAt().toString());
+            resp.add(m);
+        }
+        return resp;
     }
 
     // ---------- answer ----------

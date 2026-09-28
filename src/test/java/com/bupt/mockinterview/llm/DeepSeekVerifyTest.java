@@ -1,9 +1,13 @@
 package com.bupt.mockinterview.llm;
 
+import com.bupt.mockinterview.rag.DashscopeProperties;
+import com.bupt.mockinterview.security.KeyVault;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -19,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class DeepSeekVerifyTest {
 
     @Test
-    void verifyFollowUpAndScore() {
+    void verifyFollowUpAndScore() throws Exception {
         String key = System.getenv("DEEPSEEK_API_KEY");
         Assumptions.assumeTrue(key != null && !key.isBlank(),
                 "未设置 DEEPSEEK_API_KEY，跳过真实 LLM 联调（本地 set 后跑）");
@@ -27,7 +31,10 @@ public class DeepSeekVerifyTest {
         LlmProperties props = new LlmProperties();
         props.setApiKey(key); // baseUrl / model 用默认值（deepseek-flash）
 
-        LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props);
+        // KeyVault 的 env 分支直接返回 props 里的 key；保险箱目录给临时路径，不落用户目录
+        KeyVault vault = new KeyVault(props, new DashscopeProperties(),
+                Files.createTempDirectory("vault-verify").toString());
+        LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props, vault);
 
         // ---------- 链路 1：追问生成（非思考模式） ----------
         String system = "你是 Java 后端技术深挖官。用户答得浅时只追问一句 why，不展开讲解。";

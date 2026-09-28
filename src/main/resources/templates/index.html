@@ -22,6 +22,43 @@
     <aside class="panel">
         <h2>1. 准备</h2>
 
+        <div class="block keyblock">
+            <div class="row">
+                <span class="lb">模型密钥（填一次即可）</span>
+                <span id="keyBadge" class="keybadge">检测中…</span>
+            </div>
+            <div id="keyStatus" class="keyStatus"></div>
+
+            <!-- 密码模式重启/刷新/新设备：只显示解锁框 -->
+            <div id="keyUnlockBox" class="keybox" hidden>
+                <div class="pwdWrap">
+                    <input id="kuPassword" type="password" placeholder="输入保险箱密码" autocomplete="off">
+                    <button type="button" class="pwdToggle" data-target="kuPassword" tabindex="-1">显示</button>
+                </div>
+                <div class="row">
+                    <button id="btnKeyUnlock" class="primary">解锁</button>
+                    <button id="btnKeyFromUnlock" class="ghost">忘记密码 / 重新填写</button>
+                </div>
+                <small class="keyhint">设过密码后，每次刷新页面、换设备或重启服务都需要重新输入密码，防止同网络下他人直接使用你的模型额度。</small>
+            </div>
+
+            <!-- 保存 / 修改表单 -->
+            <div id="keyFormBox" class="keybox" hidden>
+                <input id="ksDeep" type="password" placeholder="DeepSeek API Key（sk-…）" autocomplete="off">
+                <input id="ksDash" type="password" placeholder="DashScope Key（通义向量化，可选）" autocomplete="off">
+                <div class="pwdWrap">
+                    <input id="ksPass" type="password" placeholder="设密码保护（可选；不填=本机免密自动解锁）" autocomplete="new-password">
+                    <button type="button" class="pwdToggle" data-target="ksPass" tabindex="-1">显示</button>
+                </div>
+                <div class="row">
+                    <button id="btnKeySave" class="primary">保存密钥</button>
+                    <button id="btnKeyLock" class="ghost" hidden>锁定</button>
+                    <button id="btnKeyCancel" class="ghost" hidden>收起</button>
+                </div>
+                <small class="keyhint">加密保存在本机 ~/.mock-interview/（AES-GCM），不上传任何服务器；环境变量若已设置则优先使用。留空表示不修改该项。<b>填了密码</b>：刷新/换设备/重启后都要重新输密码（适合放到服务器多设备访问）；<b>不填密码</b>：仅本机免密自动解锁。</small>
+            </div>
+        </div>
+
         <div class="block">
             <label class="lb" for="jdText">岗位 JD（粘贴后点上传）</label>
             <textarea id="jdText" rows="6" placeholder="粘贴招聘 JD 原文…"></textarea>
@@ -40,7 +77,13 @@
         <div class="block">
             <label class="lb" for="resumeText">简历（md）</label>
             <textarea id="resumeText" rows="4" placeholder="# 张三&#10;Java 后端…"></textarea>
-            <button id="btnResume" class="ghost">上传简历</button>
+            <button id="btnResume" class="ghost">上传新简历版本</button>
+            <div class="row">
+                <select id="resumeSelect" aria-label="已上传的简历版本">
+                    <option value="">— 选择历史简历 —</option>
+                </select>
+                <button id="btnRefreshResume" class="ghost">刷新</button>
+            </div>
         </div>
 
         <div class="block">
@@ -60,6 +103,14 @@
             <span class="lb">面试官角色</span>
             <label class="chk"><input type="checkbox" class="roleChk" value="技术深挖官" checked> 技术深挖官</label>
             <label class="chk"><input type="checkbox" class="roleChk" value="项目质疑官"> 项目质疑官</label>
+            <div class="row">
+                <label class="chk" for="maxQuestions">主问题数</label>
+                <select id="maxQuestions" aria-label="主问题数（不含追问）">
+                    <option value="3">快速 3 题</option>
+                    <option value="5">标准 5 题</option>
+                    <option value="8" selected>完整 8 题</option>
+                </select>
+            </div>
             <button id="btnStart" class="primary big">开始模拟面试</button>
         </div>
 
@@ -83,14 +134,23 @@
         </div>
     </section>
 
-    <!-- ======================= 右：报告 + 错题本 ======================= -->
+    <!-- ======================= 右：历史 + 报告 + 错题本 ======================= -->
     <aside class="panel side">
-        <h2>3. Critic 报告</h2>
+        <h2>3. 历史面试</h2>
+        <div class="row">
+            <button id="btnHistory" class="ghost">刷新历史</button>
+            <span class="state">最近 20 场，点有报告的回看</span>
+        </div>
+        <div id="history" class="history">
+            <p class="placeholder">已结束的面试会列在这里，随时回看报告。</p>
+        </div>
+
+        <h2>4. Critic 报告</h2>
         <div id="report" class="report">
             <p class="placeholder">结束后这里出报告：匹配度、逐轮讲解、答崩点、表述问题、提醒。</p>
         </div>
 
-        <h2>4. 错题本（间隔重复）</h2>
+        <h2>5. 错题本（间隔重复）</h2>
         <div class="row">
             <button id="btnWeak" class="ghost">刷新</button>
             <label class="chk"><input id="dueOnly" type="checkbox"> 只看今日到期</label>

@@ -15,6 +15,11 @@ public class FakeEmbedder implements Embedder {
     }
 
     @Override
+    public String name() {
+        return "fake:local-hash";
+    }
+
+    @Override
     public float[] embed(String text) {
         float[] v = new float[dim];
         for (String w : text.toLowerCase().split("\\s+")) {

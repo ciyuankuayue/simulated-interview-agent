@@ -61,15 +61,27 @@ public class WeakPointMemoryService {
     }
 
     /**
+     * 每轮判分后的统一入口（兼容旧签名：不记录答崩现场）。
+     */
+    @Transactional
+    public Outcome onTurnScored(JdProfile jd, String knowledgePoint, int score, String status, Instant now) {
+        return onTurnScored(jd, knowledgePoint, score, status, now, null, null);
+    }
+
+    /**
      * 每轮判分后的统一入口：记崩 / 升阶 / 出队，三选一。
      *
      * @param jd             所属 JD（可空，错题本按 JD 维度排）
      * @param knowledgePoint 判分模型给的核心知识点标签，空则本轮不处理
-     * @param score           本轮得分（0-8）
-     * @param status          「现状」摘要（通常取漏掉的关键点），超长自动截断
+     * @param score          本轮得分（0-8）
+     * @param status         「现状」摘要（通常取漏掉的关键点），超长自动截断
+     * @param now            本轮时刻（排期基准）
+     * @param sessionId      本场会话 id（记录最近一次答崩现场，供错题本详情回看；可空）
+     * @param turnSeq        本轮 turn 序号（同上；可空）
      */
     @Transactional
-    public Outcome onTurnScored(JdProfile jd, String knowledgePoint, int score, String status, Instant now) {
+    public Outcome onTurnScored(JdProfile jd, String knowledgePoint, int score, String status, Instant now,
+                                Long sessionId, Integer turnSeq) {
         String kp = knowledgePoint == null ? "" : knowledgePoint.trim();
         if (kp.isEmpty()) {
             return new Outcome(0, 0, 0, List.of());
@@ -98,6 +110,10 @@ public class WeakPointMemoryService {
                 if (st != null) {
                     w.setStatus(st);
                 }
+                if (sessionId != null) {
+                    w.setLastSessionId(sessionId);
+                    w.setLastTurnSeq(turnSeq);
+                }
                 WeakPoint saved = repo.save(w);
                 ids.add(saved.getId());
                 return new Outcome(0, 1, 0, ids);
@@ -111,6 +127,10 @@ public class WeakPointMemoryService {
             fresh.setJdProfile(jd);
             fresh.setResolved(false);
             fresh.setCreatedAt(now);
+            if (sessionId != null) {
+                fresh.setLastSessionId(sessionId);
+                fresh.setLastTurnSeq(turnSeq);
+            }
             ids.add(repo.save(fresh).getId());
             return new Outcome(1, 0, 0, ids);
         }
@@ -128,6 +148,13 @@ public class WeakPointMemoryService {
     @Transactional(readOnly = true)
     public List<WeakPoint> due(Instant now) {
         return sorted(repo.findByResolvedFalseAndNextReviewAtLessThanEqual(now));
+    }
+
+    /** 详情查询（错题本点开回看）；不存在抛 IllegalArgumentException → 404。 */
+    @Transactional(readOnly = true)
+    public WeakPoint require(Long id) {
+        return repo.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("错题本条目不存在: " + id));
     }
 
     // ---------- 匹配 ----------

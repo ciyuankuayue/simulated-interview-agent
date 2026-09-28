@@ -40,4 +40,13 @@ public class WeakPoint {
     @ManyToOne(fetch = FetchType.LAZY, optional = true)
     @JoinColumn(name = "jd_profile_id", nullable = true)
     private JdProfile jdProfile;
+
+    /**
+     * 最近一次答崩现场（T10 引入，纯 id 不建外键约束——只做「点开回看」的定位）。
+     * 详情接口据此聚合 interview_turn 的原题/原答/判分 + 该场报告的逐轮讲解。
+     * 旧数据 / 无法定位时为 null，前端详情降级为只显示状。
+     */
+    private Long lastSessionId;
+
+    private Integer lastTurnSeq;
 }

@@ -10,6 +10,7 @@ import okhttp3.Response;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * 通义千问 embedding（dashscope compatible-mode/v1 的 OpenAI 兼容 /embeddings 接口）。
@@ -25,21 +26,35 @@ public class DashscopeEmbedder implements Embedder {
 
     private final OkHttpClient client;
     private final String baseUrl;
-    private final String apiKey;
+    private final Supplier<String> apiKeySupplier;
     private final String model;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** 固定 key 构造（测试 / 离线联调用）。 */
     public DashscopeEmbedder(OkHttpClient client, String baseUrl, String apiKey, String model) {
+        this(client, baseUrl, () -> apiKey, model);
+    }
+
+    /**
+     * 动态 key 构造（生产路径）：每次 embed 现取，页面保存/解锁密钥后无需重启即热生效。
+     */
+    public DashscopeEmbedder(OkHttpClient client, String baseUrl, Supplier<String> apiKeySupplier, String model) {
         this.client = client;
         this.baseUrl = baseUrl;
-        this.apiKey = apiKey;
+        this.apiKeySupplier = apiKeySupplier;
         this.model = model;
     }
 
     @Override
+    public String name() {
+        return "dashscope:" + model;
+    }
+
+    @Override
     public float[] embed(String text) throws Exception {
+        String apiKey = apiKeySupplier.get();
         if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("DASHSCOPE_API_KEY 未设置，无法调用通义 embedding");
+            throw new IllegalStateException("DashScope 密钥未配置：请在页面「模型密钥」中填写，或设置 DASHSCOPE_API_KEY");
         }
         // OpenAI 兼容接口：input 直接是字符串（或字符串数组），不是原生 {"texts":[...]}
         String body = mapper.writeValueAsString(Map.of(

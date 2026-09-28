@@ -46,6 +46,9 @@
   - 生成/追问：DeepSeek `deepseek-flash`（非思考型用于追问，思考型用于判分）
   - `max_tokens`：追问 / 判分 / Critic **不卡 800**；判分与 Critic 输出长，放宽到 ≥ 4096（或按需更大、彻底不传该参数）。仍**必须校验输出非空**（思考型 reasoning 与正文共用额度，超了正文可能变空串）
   - Embedding：阿里通义 `qwen3.7-text-embedding-flash`（OpenAI 兼容，baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1），key 从环境变量 `DASHSCOPE_API_KEY` 读
+  - **密钥三来源（2026-09-19 起）**：环境变量优先；缺失时读页面保险箱（`security/KeyVault`，`~/.mock-interview/vault.json`，AES-GCM；机器绑定 DEK 或用户密码 PBKDF2 派生 KEK），解锁/保存后热生效无需重启。运行时取 key 一律走 `KeyVault`，不准直接读 `LlmProperties.apiKey`
+  - **密码模式 = 访问门禁（T12，服务器/多设备场景）**：密码箱落盘后 `security/VaultAccessFilter` 对所有业务 `/api/**` 强制令牌（header `X-Vault-Token`，SSE 走 query `?vaultToken=`；白名单仅静态资源 + `GET /api/setup/status` + `POST /api/setup/unlock`）。令牌 256b 随机、只存 KeyVault 内存（不落盘；重启/lock/改密码全失效），unlock/带密码 save 签发；前端令牌只存 JS 内存变量（刷新必失效，**严禁 localStorage**）。机器绑定/纯 env 模式不启用门禁
+  - **静态资源 `Cache-Control: no-cache`**（application.yml `spring.web.resources`，T12）：前端更新后不靠用户手动 Ctrl+F5；配 Last-Modified 协商，未变走 304
 - 包结构（分层；**领域逻辑不准直接调 LLM**，统一走 llm 层）：
   - `web/`       controller，SSE 流式推送
   - `agent/`     角色编排（技术深挖官 / 项目质疑官 / Critic）
