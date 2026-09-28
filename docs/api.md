@@ -7,13 +7,41 @@
 
 - Base URL：`/api`
 - 内容类型：请求/响应 `application/json; charset=utf-8`
-- 鉴权：MVP 无多用户登录。**密码模式访问门禁**（2026-09-19 T12，服务器/多设备场景）：当保险箱以密码保护落盘后，除白名单（页面静态资源、`GET /api/setup/status`、`POST /api/setup/unlock`）外的所有 `/api/**` 必须携带有效访问令牌——请求头 `X-Vault-Token: <token>`；SSE 的 EventSource 不能自定义头，允许 query 参数 `?vaultToken=<token>`。缺失/失效 → **401** `{code:"UNAUTHORIZED",message}`。令牌由 `/api/setup/keys`（设密码时）和 `/api/setup/unlock` 签发（256b 随机，仅存服务进程内存，不落盘；重启/lock/改密码全失效）。机器绑定模式与纯环境变量模式不启用门禁。预留 `X-User` 头（后续接用户系统）。
+- 鉴权（R1-1 多用户，2026-09-28 起）：
+  - **JWT 令牌**：`POST /api/auth/login` 返回 `{ token }`；所有业务接口（除 §2 的 auth 白名单）必须带 `Authorization: Bearer <token>`（HTTP 头）。SSE 的 EventSource 无法设头，允许 query 参数 `?jwt=<token>`（优先级：header > query）。
+  - 缺失/失效/过期 → **401** `{code:"UNAUTHORIZED",message:"请先登录"}`。
+  - 令牌结构：`{ sub: userId, username, exp: 24h }`，密钥配 `jwt.secret`（`application.yml`）。
+  - **与 KeyVault 门禁的关系**（R1-1→R1-3 过渡）：两者并行——JWT 管"谁"（多用户隔离），KeyVault 门禁管"能不能花钱调 LLM"（密码/机器绑定）。R1-3 平台统一持 key 后 KeyVault 门禁将弱化。
+  - **auth 白名单**：`POST /api/auth/register`、`POST /api/auth/login` 不放令牌。
 - 时间：ISO-8601 字符串
 - 错误码：HTTP 状态码 + `{code, message}`
-  - 400 参数错误 / 401 保险箱密码错误或未带有效访问令牌（见 §6 门禁）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、环境变量密钥页面不可覆盖）/ 500 内部错误 / 504 LLM 超时（走降级）
-- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source,configured,unlocked}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。`deepseek.source`/`embedder.provider` 反映密钥来源与真实/降级状态：`ENV` 环境变量 / `VAULT` 页面保险箱 / `NONE` 未配置；`provider` 为 `dashscope:<model>` 表示真实嵌入生效，`fake:local-hash` 表示未配 key 的降级；`vectorChunks` 为内存向量条数（MVP 向量在内存，重启清零）。
+  - 400 参数错误 / 401 未登录或 JWT 失效（R1-1）或保险箱密码错误/未带访问令牌（R1-1 前，现由 JWT 接管多用户鉴权）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册）/ 500 内部错误 / 504 LLM 超时（走降级）
+- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source,configured,unlocked}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。
 
-## 2. 资料管理（RAG 索引源）
+## 2. 认证（R1-1 新增，2026-09-28）
+
+### POST /api/auth/register
+注册新用户。
+- body: `{ "username": "abc", "password": "xxx" }`
+- `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
+- `password`：≥6 字符，BCrypt 加密存储
+- resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
+- HTTP 201 Created
+
+### POST /api/auth/login
+登录，换取 JWT。
+- body: `{ "username": "abc", "password": "xxx" }`
+- resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`
+- 用户名不存在或密码错 → **401** `{code:"INVALID_CREDENTIALS",message:"用户名或密码错误"}`
+
+### POST /api/auth/logout
+登出（客户端扔掉 token 即可；服务端无状态）。保留接口供前端调用，未来可扩展黑名单。
+- body: 无
+- resp: `{ "loggedOut": true }`
+
+> JWT 有效 24 小时，密钥 `jwt.secret` 配在 `application.yml`（生产必须显式设，不可用默认）。刷新机制待 R1-1 后续迭代补充（当前过期需重新 login）。
+
+## 3. 资料管理（RAG 索引源）
 
 ### POST /api/jd
 上传/粘贴 JD（可批量，同类一起练）。
@@ -45,7 +73,7 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### POST /api/real-interview
 上传真实面试记录。body: `{ "content" }` → resp: `{ "recordId" }`
 
-## 3. 模拟面试（核心流程）
+## 4. 模拟面试（核心流程）
 
 ### POST /api/interview/start
 开始一次模拟。
@@ -62,13 +90,13 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### POST /api/interview/{sessionId}/answer
 提交本轮回答，触发判分 + 可能追问。
 - body: `{ "answer": "..." }`
-- 结果经 SSE 推送（见 §4）；本接口仅返回受理 `{ "accepted": true }`
+- 结果经 SSE 推送（见 §5）；本接口仅返回受理 `{ "accepted": true }`
 - 冲突：session 非 QUESTIONING → 409
 - **自然结束（2026-09-19 T12）**：当本轮回答后主问题计数达到 `maxQuestions`（含本轮追问链走完），同批 SSE 直接推送 `report` + `done(reason=MAX_QUESTIONS_REACHED)`，会话置 DONE 且 Critic 报告落库——前端无需再调 `/end`。
 
 ### GET /api/interview/{sessionId}/events  （SSE）
-订阅流式事件。事件类型见 §4。前端连上后等待 question/score/followup/report/done。
-- 前端在收到 `await_answer` 事件时，调用 §3 answer 接口提交；循环直到 `done`。
+订阅流式事件。事件类型见 §5。前端连上后等待 question/score/followup/report/done。
+- 前端在收到 `await_answer` 事件时，调用 §4 answer 接口提交；循环直到 `done`。
 
 ### POST /api/interview/{sessionId}/end
 主动结束（中途打断/放弃；自然结束已不需要调它）。与自然结束共用同一出报告逻辑。
@@ -82,7 +110,7 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### GET /api/interview/{sessionId}/status
 会话状态：`{ "sessionId", "status", "roles", "turnCount", "matchScore" }`
 
-## 4. SSE 事件协议（GET /api/interview/{sessionId}/events）
+## 5. SSE 事件协议（GET /api/interview/{sessionId}/events）
 
 每个事件 `event: <type>\ndata: <json>\n\n`：
 
@@ -106,7 +134,7 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
   → 全部题答完 → report → done
 ```
 
-## 5. 错题本
+## 6. 错题本
 
 ### GET /api/weak-point
 复习队列（未出队），按 next_review_at 升序：
@@ -120,19 +148,27 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 `{ ...列表字段, "resolved", "createdAt", "lastSessionId", "lastTurnSeq", "latest": { "sessionId", "turnSeq", "layer", "question", "answer", "score", "review": { "explanation", "correction", "knowledgeSupplement", "exemplarAnswer" } } | null }`
 - `latest=null`：旧数据/无法定位（前端降级为只显示状）；`review=null`：该场还没出 Critic 报告。
 
-## 6. 模型密钥保险箱（页面录入，免终端环境变量）
+## 7. 模型密钥保险箱（页面录入，免终端环境变量）
 
 > 密钥只存本机（默认 `~/.mock-interview/vault.json`，可用 `app.vault.dir` 改目录），AES-256-GCM 加密；任何接口都不回传密钥明文。
 > **来源优先级：环境变量 `DEEPSEEK_API_KEY`/`DASHSCOPE_API_KEY` 优先**；已由环境变量提供的厂商，页面保存该厂商密钥 → 409。
+>
+> **R1-1 与 JWT 的关系**（2026-09-28 起）：JWT 过滤器先于 VaultAccessFilter 执行。JWT 校验"你是谁"（多用户隔离 + 数据访问），VaultAccessFilter 校验"你能不能花 LLM 钱"（KeyVault 密码门禁）。两者并行不互斥：
+> - 纯 env 模式：VaultAccessFilter 不启用 → 只有 JWT 生效
+> - 机器绑定模式：VaultAccessFilter 不启用 → 只有 JWT 生效
+> - 密码保护模式：VaultAccessFilter 启用 → JWT 必须 **且** KeyVault 令牌必须（双令牌）
+>
+> R1-3 平台统一持 key 后，VaultAccessFilter 将被弱化或移除。
 
 ### GET /api/setup/status
 `{ "deepseek": "ENV|VAULT|NONE", "dashscope": "ENV|VAULT|NONE", "passwordProtected": bool, "unlocked": bool }`
 - `VAULT` + `passwordProtected=true` + `unlocked=false` = 等待解锁（重启后常态）。
+- **JWT 白名单**（健康检查接口，免登录）。
 
-**密码模式 = 访问门禁**（T12）：`passwordProtected=true` 的保险箱一旦落盘，服务端即对所有业务 `/api/**` 强制令牌校验（§1），与内存是否已 unlocked 无关——刷新页面、新开标签页、换设备后浏览器手里没令牌，必须重新走 unlock。前端令牌只存 JS 内存变量（严禁 localStorage）。
+**密码模式 = 双令牌门禁**（T12 → R1-1 更新）：`passwordProtected=true` 的保险箱一旦落盘，服务端即启用 VaultAccessFilter——所有业务接口需要 **JWT（身份）+ Vault 令牌（花钱门禁）** 两个令牌。JWT 走 `Authorization` 头，Vault 令牌走 `X-Vault-Token` 头（或各自的 SSE query 参数）。
 
 ### POST /api/setup/keys
-保存/增量更新（解锁后或首次配置）。
+保存/增量更新（需 JWT + 保险箱已解锁）。
 - body: `{ "deepseekKey": "sk-…"(null=不动, ""=清除, 非空=覆盖), "dashscopeKey": "…"(同上), "password": "…"(可选) }`
 - `password` 非空 = 设为/改为密码保护（PBKDF2-HMAC-SHA256 310000 轮派生 KEK，重启需 unlock），同时**作废旧令牌并签发新令牌**；不传 = 沿用现状（首次保存进入机器绑定模式：随机 DEK 存同目录 `machine.key`，重启自动解锁）。密码模式下仅增量改密钥（不带 password）不触动已有令牌。
 - 两个密钥最终都空 → 409；密码箱锁定且未带密码就改 → 409。
@@ -147,9 +183,9 @@ body: `{ "password": "…" }`；密码错误 → **401**（消息为人话「密
 
 > 密码无找回接口（否则保护形同虚设）：忘记密码需停止服务后删除 `vault.json` 重新填写。
 
-## 7. 契约边界（MVP 不做）
+## 8. 契约边界
 
-- 不做用户系统（无注册/登录接口）
+- **已实现**：用户注册/登录 + JWT 鉴权（R1-1，2026-09-28）
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）
 - 报告与明细分离：响应均为「表达精炼、抓核心」的版本（关键内容不省）；检索引用/判分过程细节/token 等内部明细只在 DB（interview_turn），不进响应

@@ -1,0 +1,4 @@
+# 测试 profile：禁用 JWT（48 个旧测试全部无 JWT 断言）
+app:
+  auth:
+    jwt-enabled: false

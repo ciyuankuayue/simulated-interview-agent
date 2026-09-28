@@ -3,25 +3,35 @@
 > 唯一事实源：本文件定义实体、字段、关系、可见性边界。改结构先确认，再动代码。
 > 原则：明细全在 DB 给 AI 推理用；用户看到的是「状态视图」和「Critic 报告」——**精简 = 表达精炼、抓核心、不啰嗦；关键内容（每答评价/纠正/知识补充/示范回答/整体注意事项/提醒）不省**。
 
-## 1. 实体清单（10 个）
+## 1. 实体清单（11 个，2026-09-28 R1-1 新增 User）
 
 | # | 实体 | 用途 | 可见性 |
 |---|------|------|--------|
-| 1 | jd_profile | JD 原文 + 考点关键词 + 岗位类型 + 同类标签 | 列表（精简） |
-| 2 | resume_version | 多版本简历原文 + 上传时间 | 可切换 |
-| 3 | note | 笔记存档点（可加可看） | 可看 |
-| 4 | project_doc | 项目文档详解（质疑官弹药库，外部上传） | 内部 |
-| 5 | interview_session | 一次模拟（关联 JD + 角色 + 状态） | 状态 |
-| 6 | interview_turn | 每轮：问题/回答/检索引用/判分/耗时/token | 内部 |
-| 7 | real_interview_record | 上传的真实面试记录 | 内部 |
-| 8 | weak_point | 错题本：知识点 + 错几次 + 复习阶段 + 下次复习时间 | 状态（精简） |
-| 9 | critic_report | 报告：逐轮讲解 + 纠正 + 知识补充 + 示范回答 + 整体注意事项 + 提醒 + 匹配度 | 给用户看（精炼不省关键） |
-| 10 | knowledge_chunk | 分块文本 + 来源（向量存 Redis/内存） | 内部 |
+| 0 | **app_user**（R1-1） | 用户账号：注册/登录 + JWT 鉴权，所有实体的 owner | 不对外暴露 |
+| 1 | jd_profile | JD 原文 + 考点关键词 + 岗位类型 + 同类标签 | 列表（精简），按 user_id 隔离 |
+| 2 | resume_version | 多版本简历原文 + 上传时间 | 可切换，按 user_id 隔离 |
+| 3 | note | 笔记存档点（可加可看） | 可看，按 user_id 隔离 |
+| 4 | project_doc | 项目文档详解（质疑官弹药库，外部上传） | 内部，按 user_id 隔离 |
+| 5 | interview_session | 一次模拟（关联 JD + 角色 + 状态） | 状态，按 user_id 隔离 |
+| 6 | interview_turn | 每轮：问题/回答/检索引用/判分/耗时/token | 内部，按 user_id 隔离 |
+| 7 | real_interview_record | 上传的真实面试记录 | 内部，按 user_id 隔离 |
+| 8 | weak_point | 错题本：知识点 + 错几次 + 复习阶段 + 下次复习时间 | 状态（精简），按 user_id 隔离 |
+| 9 | critic_report | 报告：逐轮讲解 + 纠正 + 知识补充 + 示范回答 + 整体注意事项 + 提醒 + 匹配度 | 给用户看（精炼不省关键），按 user_id 隔离 |
+| 10 | knowledge_chunk | 分块文本 + 来源（向量存 Redis/内存） | 内部，按 user_id 隔离 |
 
 ## 2. 字段定义
 
+### app_user（R1-1 新增）
+- id (PK)
+- username         # 唯一用户名，4-32 字符
+- password_hash    # BCrypt 加密（10 轮）
+- created_at
+
+> 表名用 `app_user` 避开 H2/MySQL `user` 保留字。密码 BCrypt，不存明文也不存加盐哈希——Spring Security 的 `BCryptPasswordEncoder` 自带盐值。
+
 ### jd_profile
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1：归属用户
 - raw_text         # JD 原文
 - keywords         # 考点关键词（JSON 数组）
 - job_type         # 后端 / AI 应用 / 全栈
@@ -30,17 +40,20 @@
 
 ### resume_version
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - content          # 简历原文（md）
 - created_at        # 上传时间
 - is_active         # 当前启用版本
 
 ### note
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - content          # 笔记正文（md）
 - created_at
 
 ### project_doc
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - title
 - content          # 项目详解（md，外部上传）：背景/目标 → 技术栈与选型理由 → 关键设计/架构 → 踩过的坑与解决 → 假设未来某问题的处理
 - updated_at        # 记录/补充「现状」（质疑官可据此追问演进）
@@ -49,6 +62,7 @@
 
 ### interview_session
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - jd_profile_id (FK)
 - roles            # 启用的角色数组，如 ["技术深挖官"] 或 ["技术深挖官","项目质疑官"]（支持部分启用；Critic 始终在）
 - status           # INIT / QUESTIONING / SCORING / DONE
@@ -57,6 +71,7 @@
 
 ### interview_turn
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1（冗余自 session，方便直接查询）
 - session_id (FK)
 - question          # 本轮问题
 - answer            # 用户回答
@@ -68,11 +83,13 @@
 
 ### real_interview_record
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - content          # 真实面试记录原文
 - created_at
 
 ### weak_point
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - knowledge_point   # 知识点
 - wrong_count       # 错几次
 - review_stage      # 复习阶段 0/1/2/3（固定阶梯，见 §5）
@@ -85,6 +102,7 @@
 
 ### critic_report
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1（冗余自 session，方便直接查询）
 - session_id (FK)
 - per_turn_review    # JSON 数组，每轮：{ question, score, explanation(逐轮讲解), correction(纠正), knowledge_supplement(知识补充), exemplar_answer(示范回答) }
 - collapsed_points   # 答崩点汇总
@@ -96,6 +114,7 @@
 
 ### knowledge_chunk
 - id (PK)
+- **user_id (FK, NOT NULL)**  # R1-1
 - source_type       # resume / note / project_doc / real_record
 - source_id         # 来源实体 id
 - chunk_text        # 分块文本

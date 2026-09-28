@@ -65,3 +65,10 @@ dashscope:
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api-key: ${DASHSCOPE_API_KEY:}         # 空默认：T2 不向量化，启动不报错；T4 之前必须 set
   embed-model: qwen3.7-text-embedding-flash
+
+# ---- R1-1 JWT 配置 ----
+# 生产必须显式设 jwt.secret（至少 32 字节）。空值时应用首次启动自动生成并打印到控制台，
+# 但重启后失效（令牌签名变了，旧 token 全部无法验证，需要重新 login）。
+jwt:
+  secret: ${JWT_SECRET:}                  # 空=启动时自动生成（仅开发便利；生产必须显式设）
+  expiry-ms: 86400000                     # 24 小时（24 * 60 * 60 * 1000）
