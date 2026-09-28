@@ -81,7 +81,7 @@ public class InterviewController {
         if (req == null || req.jdId() == null) {
             throw new IllegalArgumentException("jdId 不能为空");
         }
-        if (req.resumeId() != null && !resumeRepo.existsById(req.resumeId())) {
+        if (req.resumeId() != null && !resumeRepo.existsByIdAndUserId(req.resumeId(), currentUser.currentUserId())) {
             throw new IllegalArgumentException("简历版本不存在: " + req.resumeId());
         }
         InterviewOrchestrator.StartResult r =

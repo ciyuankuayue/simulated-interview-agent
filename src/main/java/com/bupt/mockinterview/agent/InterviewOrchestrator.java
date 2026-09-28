@@ -103,7 +103,7 @@ public class InterviewOrchestrator {
      */
     @Transactional
     public StartResult start(Long jdId, List<String> roleNames, Integer maxQuestions, Long resumeId) {
-        JdProfile jd = jdRepo.findById(jdId)
+        JdProfile jd = jdRepo.findByIdAndUserId(jdId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("JD 不存在: " + jdId));
 
         List<Role> roles = resolveRoles(roleNames);

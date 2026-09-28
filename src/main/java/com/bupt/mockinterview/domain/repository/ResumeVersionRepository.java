@@ -16,4 +16,5 @@ public interface ResumeVersionRepository extends JpaRepository<ResumeVersion, Lo
     List<ResumeVersion> findByUserAndIsActiveTrue(User user);
     long countByUserId(Long userId);
     Optional<ResumeVersion> findByIdAndUserId(Long id, Long userId);
+    boolean existsByIdAndUserId(Long id, Long userId);
 }
