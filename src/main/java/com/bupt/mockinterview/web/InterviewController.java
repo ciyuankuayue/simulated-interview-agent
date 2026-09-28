@@ -4,10 +4,12 @@ import com.bupt.mockinterview.agent.AgentEvent;
 import com.bupt.mockinterview.agent.InterviewOrchestrator;
 import com.bupt.mockinterview.domain.CriticReport;
 import com.bupt.mockinterview.domain.InterviewSession;
+import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.CriticReportRepository;
 import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.domain.repository.ResumeVersionRepository;
+import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
@@ -50,11 +52,12 @@ public class InterviewController {
     private final CriticReportRepository reportRepo;
     private final ResumeVersionRepository resumeRepo;
     private final ObjectMapper mapper;
+    private final CurrentUserService currentUser;
 
     public InterviewController(InterviewOrchestrator orchestrator, SseBroker broker,
                                InterviewSessionRepository sessionRepo, InterviewTurnRepository turnRepo,
                                CriticReportRepository reportRepo, ResumeVersionRepository resumeRepo,
-                               ObjectMapper mapper) {
+                               ObjectMapper mapper, CurrentUserService currentUser) {
         this.orchestrator = orchestrator;
         this.broker = broker;
         this.sessionRepo = sessionRepo;
@@ -62,6 +65,7 @@ public class InterviewController {
         this.reportRepo = reportRepo;
         this.resumeRepo = resumeRepo;
         this.mapper = mapper;
+        this.currentUser = currentUser;
     }
 
     // ---------- start ----------
@@ -100,10 +104,11 @@ public class InterviewController {
      */
     @GetMapping("/sessions")
     public List<Map<String, Object>> sessions() {
+        User user = currentUser.currentUser();
         List<InterviewSession> sessions =
-                sessionRepo.findAllByOrderByIdDesc(org.springframework.data.domain.PageRequest.of(0, 20));
+                sessionRepo.findByUserOrderByIdDesc(user);
         List<Long> ids = sessions.stream().map(InterviewSession::getId).toList();
-        java.util.Set<Long> reportedIds = reportRepo.findBySessionIdIn(ids).stream()
+        java.util.Set<Long> reportedIds = reportRepo.findByUser(user).stream()
                 .map(r -> r.getSession() == null ? null : r.getSession().getId())
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toSet());
@@ -136,6 +141,9 @@ public class InterviewController {
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("answer 不能为空");
         }
+        if (!sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId()).isPresent()) {
+            throw new IllegalArgumentException("会话不存在: " + sessionId);
+        }
         List<AgentEvent> events = orchestrator.answer(sessionId, text);
         broker.publish(sessionId, events);
         return Map.of("accepted", true);
@@ -145,7 +153,7 @@ public class InterviewController {
 
     @GetMapping(path = "/{sessionId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events(@PathVariable Long sessionId) {
-        if (!sessionRepo.existsById(sessionId)) {
+        if (!sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId()).isPresent()) {
             throw new IllegalArgumentException("会话不存在: " + sessionId);
         }
         return broker.subscribe(sessionId);
@@ -156,15 +164,16 @@ public class InterviewController {
     /** 主动结束：触发 Critic 出报告。已结束时幂等返回既有报告。 */
     @PostMapping("/{sessionId}/end")
     public Map<String, Object> end(@PathVariable Long sessionId) {
-        InterviewSession session = sessionRepo.findById(sessionId)
+        User user = currentUser.currentUser();
+        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
-        CriticReport existing = reportRepo.findBySessionId(sessionId);
+        CriticReport existing = reportRepo.findBySessionIdAndUser(sessionId, user).orElse(null);
         if (existing != null) {
             return reportView(existing);
         }
         List<AgentEvent> events = orchestrator.end(sessionId);
         broker.publish(sessionId, events);
-        CriticReport report = reportRepo.findBySessionId(sessionId);
+        CriticReport report = reportRepo.findBySessionIdAndUser(sessionId, user).orElse(null);
         if (report == null) {
             throw new IllegalStateException("报告生成失败，会话=" + sessionId);
         }
@@ -175,7 +184,7 @@ public class InterviewController {
 
     @GetMapping("/{sessionId}/report")
     public Map<String, Object> report(@PathVariable Long sessionId) {
-        CriticReport report = reportRepo.findBySessionId(sessionId);
+        CriticReport report = reportRepo.findBySessionIdAndUser(sessionId, currentUser.currentUser()).orElse(null);
         if (report == null) {
             throw new IllegalArgumentException("该会话还没有报告，请先调用 end");
         }
@@ -184,7 +193,7 @@ public class InterviewController {
 
     @GetMapping("/{sessionId}/status")
     public Map<String, Object> status(@PathVariable Long sessionId) {
-        InterviewSession session = sessionRepo.findById(sessionId)
+        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("sessionId", session.getId());
@@ -198,7 +207,7 @@ public class InterviewController {
     // ---------- 内部 ----------
 
     private String statusOf(Long sessionId) {
-        return sessionRepo.findById(sessionId)
+        return sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .map(s -> s.getStatus() == null ? null : s.getStatus().name())
                 .orElse(null);
     }

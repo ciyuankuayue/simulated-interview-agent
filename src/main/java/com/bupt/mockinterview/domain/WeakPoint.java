@@ -18,6 +18,10 @@ public class WeakPoint {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
     @Column(columnDefinition = "TEXT", nullable = false)
     private String knowledgePoint;
 

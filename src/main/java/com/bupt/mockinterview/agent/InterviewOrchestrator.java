@@ -7,6 +7,7 @@ import com.bupt.mockinterview.domain.InterviewSession;
 import com.bupt.mockinterview.domain.InterviewTurn;
 import com.bupt.mockinterview.domain.JdProfile;
 import com.bupt.mockinterview.domain.SessionStatus;
+import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.CriticReportRepository;
 import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
@@ -15,6 +16,7 @@ import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.ScoreResult;
 import com.bupt.mockinterview.memory.WeakPointMemoryService;
 import com.bupt.mockinterview.rag.RagService;
+import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -58,11 +60,13 @@ public class InterviewOrchestrator {
     private final InterviewSessionRepository sessionRepo;
     private final InterviewTurnRepository turnRepo;
     private final CriticReportRepository reportRepo;
+    private final CurrentUserService currentUser;
 
     public InterviewOrchestrator(LlmPort llm, RagService rag, CriticService critic, WeakPointMemoryService memory,
                                  ObjectMapper mapper, JdProfileRepository jdRepo,
                                  InterviewSessionRepository sessionRepo,
-                                 InterviewTurnRepository turnRepo, CriticReportRepository reportRepo) {
+                                 InterviewTurnRepository turnRepo, CriticReportRepository reportRepo,
+                                 CurrentUserService currentUser) {
         this.llm = llm;
         this.rag = rag;
         this.critic = critic;
@@ -72,6 +76,7 @@ public class InterviewOrchestrator {
         this.sessionRepo = sessionRepo;
         this.turnRepo = turnRepo;
         this.reportRepo = reportRepo;
+        this.currentUser = currentUser;
     }
 
     public record StartResult(Long sessionId, String firstQuestion, List<AgentEvent> events) {}
@@ -104,6 +109,7 @@ public class InterviewOrchestrator {
         List<Role> roles = resolveRoles(roleNames);
 
         InterviewSession session = new InterviewSession();
+        session.setUser(currentUser.currentUser());
         session.setJdProfile(jd);
         session.setRoles(Role.toJson(roles, mapper));
         session.setStatus(SessionStatus.QUESTIONING);
@@ -133,7 +139,7 @@ public class InterviewOrchestrator {
     /** 提交回答：判分 → 决定追问还是下一题。 */
     @Transactional
     public List<AgentEvent> answer(Long sessionId, String answer) {
-        InterviewSession session = sessionRepo.findById(sessionId)
+        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
         if (session.getStatus() != SessionStatus.QUESTIONING) {
             throw new IllegalStateException("会话不在答题中，当前状态=" + session.getStatus());
@@ -258,7 +264,7 @@ public class InterviewOrchestrator {
      */
     @Transactional
     public List<AgentEvent> end(Long sessionId) {
-        InterviewSession session = sessionRepo.findById(sessionId)
+        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
         return finish(session, null);
     }
@@ -278,7 +284,7 @@ public class InterviewOrchestrator {
         Object expressionIssues;
         Object reminders;
 
-        CriticReport existing = reportRepo.findBySessionId(session.getId());
+        CriticReport existing = reportRepo.findBySessionIdAndUser(session.getId(), currentUser.currentUser()).orElse(null);
         if (existing != null) {
             // 幂等防御：answer 自动结束与手动 end 并发时，已有报告就重放，不再调一次 Critic
             reportId = existing.getId();
@@ -298,6 +304,7 @@ public class InterviewOrchestrator {
             Payload payload = critic.generate(session.getId(), jdText, briefs);
 
             CriticReport report = new CriticReport();
+            report.setUser(currentUser.currentUser());
             report.setSession(session);
             report.setPerTurnReview(toJson(payload.perTurnReview()));
             report.setCollapsedPoints(toJson(payload.collapsedPoints()));
@@ -375,6 +382,7 @@ public class InterviewOrchestrator {
 
     private InterviewTurn newTurn(InterviewSession session, int seq, int layer, String question, String refs) {
         InterviewTurn t = new InterviewTurn();
+        t.setUser(currentUser.currentUser());
         t.setSession(session);
         t.setSeq(seq);
         t.setLayer(layer);

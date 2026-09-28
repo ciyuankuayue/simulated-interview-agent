@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class CriticParseTest {
 
-    private final CriticService service = new CriticService(null, new LlmProperties(), new ObjectMapper());
+    private final CriticService service = new CriticService(null, new LlmProperties(), new ObjectMapper(), null);
 
     @Test
     void 正常JSON完整解析() {

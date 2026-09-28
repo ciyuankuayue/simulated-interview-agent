@@ -20,6 +20,10 @@ public class InterviewSession {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "jd_profile_id", nullable = false)
     private JdProfile jdProfile;
 

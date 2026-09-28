@@ -1,5 +1,7 @@
 package com.bupt.mockinterview.rag;
 
+import com.bupt.mockinterview.security.CurrentUserService;
+
 import java.util.List;
 
 /**
@@ -12,16 +14,22 @@ public class RagService {
     private final InMemoryVectorStore store;
     private final int maxChars;
     private final int overlap;
+    private final CurrentUserService currentUser;
 
     public RagService(Embedder embedder, InMemoryVectorStore store) {
-        this(embedder, store, 500, 50);
+        this(embedder, store, 500, 50, null);
     }
 
-    public RagService(Embedder embedder, InMemoryVectorStore store, int maxChars, int overlap) {
+    public RagService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser) {
+        this(embedder, store, 500, 50, currentUser);
+    }
+
+    public RagService(Embedder embedder, InMemoryVectorStore store, int maxChars, int overlap, CurrentUserService currentUser) {
         this.embedder = embedder;
         this.store = store;
         this.maxChars = maxChars;
         this.overlap = overlap;
+        this.currentUser = currentUser;
     }
 
     /** 把一份资料（note/resume/project_doc 文本）切块向量化后入库。 */

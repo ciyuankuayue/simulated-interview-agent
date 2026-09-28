@@ -3,6 +3,7 @@ package com.bupt.mockinterview.memory;
 import com.bupt.mockinterview.domain.JdProfile;
 import com.bupt.mockinterview.domain.WeakPoint;
 import com.bupt.mockinterview.domain.repository.WeakPointRepository;
+import com.bupt.mockinterview.security.CurrentUserService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,9 +48,11 @@ public class WeakPointMemoryService {
     private static final Pattern STOP_WORDS = Pattern.compile("[的了和与及是在有]");
 
     private final WeakPointRepository repo;
+    private final CurrentUserService currentUser;
 
-    public WeakPointMemoryService(WeakPointRepository repo) {
+    public WeakPointMemoryService(WeakPointRepository repo, CurrentUserService currentUser) {
         this.repo = repo;
+        this.currentUser = currentUser;
     }
 
     /** 一次判分后的结果，便于调用方（T6 编排）记录与断言。 */
@@ -119,6 +122,7 @@ public class WeakPointMemoryService {
                 return new Outcome(0, 1, 0, ids);
             }
             WeakPoint fresh = new WeakPoint();
+            fresh.setUser(currentUser.currentUser());
             fresh.setKnowledgePoint(kp);
             fresh.setWrongCount(1);
             fresh.setReviewStage(0);
@@ -141,19 +145,19 @@ public class WeakPointMemoryService {
     /** 复习队列：未出队的，按 next_review_at 升序（api.md §5）。 */
     @Transactional(readOnly = true)
     public List<WeakPoint> queue() {
-        return sorted(repo.findByResolvedFalse());
+        return sorted(repo.findByUserAndResolvedFalse(currentUser.currentUser()));
     }
 
     /** 今日待复习：已到期（next_review_at &lt;= now）且未出队。 */
     @Transactional(readOnly = true)
     public List<WeakPoint> due(Instant now) {
-        return sorted(repo.findByResolvedFalseAndNextReviewAtLessThanEqual(now));
+        return sorted(repo.findByUserAndResolvedFalseAndNextReviewAtLessThanEqual(currentUser.currentUser(), now));
     }
 
     /** 详情查询（错题本点开回看）；不存在抛 IllegalArgumentException → 404。 */
     @Transactional(readOnly = true)
     public WeakPoint require(Long id) {
-        return repo.findById(id)
+        return repo.findByIdAndUserId(id, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("错题本条目不存在: " + id));
     }
 
@@ -167,7 +171,7 @@ public class WeakPointMemoryService {
         String target = normalize(knowledgePoint);
         Long jdId = jd == null ? null : jd.getId();
         List<WeakPoint> hits = new ArrayList<>();
-        for (WeakPoint w : repo.findByResolvedFalse()) {
+        for (WeakPoint w : repo.findByUserAndResolvedFalse(currentUser.currentUser())) {
             if (w.getKnowledgePoint() == null) {
                 continue;
             }

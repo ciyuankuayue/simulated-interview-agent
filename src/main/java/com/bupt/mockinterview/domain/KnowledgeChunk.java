@@ -19,6 +19,10 @@ public class KnowledgeChunk {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
     @Column(length = 32) // resume / note / project_doc / real_record
     private String sourceType;
 

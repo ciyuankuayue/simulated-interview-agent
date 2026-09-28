@@ -7,6 +7,7 @@ import com.bupt.mockinterview.rag.Embedder;
 import com.bupt.mockinterview.rag.FakeEmbedder;
 import com.bupt.mockinterview.rag.InMemoryVectorStore;
 import com.bupt.mockinterview.rag.RagService;
+import com.bupt.mockinterview.security.CurrentUserService;
 import com.bupt.mockinterview.security.KeyVault;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
@@ -38,7 +39,7 @@ public class RagConfig {
     }
 
     @Bean
-    public RagService ragService(Embedder embedder, InMemoryVectorStore store) {
-        return new RagService(embedder, store);
+    public RagService ragService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser) {
+        return new RagService(embedder, store, currentUser);
     }
 }

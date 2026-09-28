@@ -1,30 +1,17 @@
 package com.bupt.mockinterview.web;
 
-import com.bupt.mockinterview.domain.JdProfile;
-import com.bupt.mockinterview.domain.Note;
-import com.bupt.mockinterview.domain.ProjectDoc;
-import com.bupt.mockinterview.domain.RealInterviewRecord;
-import com.bupt.mockinterview.domain.ResumeVersion;
-import com.bupt.mockinterview.domain.repository.JdProfileRepository;
-import com.bupt.mockinterview.domain.repository.NoteRepository;
-import com.bupt.mockinterview.domain.repository.ProjectDocRepository;
-import com.bupt.mockinterview.domain.repository.RealInterviewRecordRepository;
-import com.bupt.mockinterview.domain.repository.ResumeVersionRepository;
+import com.bupt.mockinterview.domain.*;
+import com.bupt.mockinterview.domain.repository.*;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmProperties;
 import com.bupt.mockinterview.llm.LlmReply;
 import com.bupt.mockinterview.rag.RagService;
+import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,6 +24,8 @@ import java.util.Map;
  * 这四类文本同时是 RAG 的语料源（domain.md §2：project_doc 与 resume 双源），
  * 所以写入时同步切块向量化入库——检索侧才问得出「只属于你」的题。
  * RAG 入库失败（如 embedding key 未配）只记日志，不阻断写入。
+ *
+ * R1-1：所有数据按 user_id 隔离——create 时 setUser，list/get 时过滤 user。
  */
 @RestController
 @RequestMapping("/api")
@@ -53,11 +42,13 @@ public class MaterialController {
     private final LlmPort llm;
     private final LlmProperties props;
     private final ObjectMapper mapper;
+    private final CurrentUserService currentUser;
 
     public MaterialController(JdProfileRepository jdRepo, ResumeVersionRepository resumeRepo,
                               NoteRepository noteRepo, ProjectDocRepository docRepo,
                               RealInterviewRecordRepository recordRepo, RagService rag,
-                              LlmPort llm, LlmProperties props, ObjectMapper mapper) {
+                              LlmPort llm, LlmProperties props, ObjectMapper mapper,
+                              CurrentUserService currentUser) {
         this.jdRepo = jdRepo;
         this.resumeRepo = resumeRepo;
         this.noteRepo = noteRepo;
@@ -67,6 +58,7 @@ public class MaterialController {
         this.llm = llm;
         this.props = props;
         this.mapper = mapper;
+        this.currentUser = currentUser;
     }
 
     // ---------- JD ----------
@@ -76,6 +68,7 @@ public class MaterialController {
     /** 上传 JD（单条或批量；同类多 JD 可勾选一起练）。 */
     @PostMapping("/jd")
     public List<Map<String, Object>> createJd(@RequestBody JdRequest req) {
+        User user = currentUser.currentUser();
         List<String> texts = new ArrayList<>();
         if (req.rawText() != null && !req.rawText().isBlank()) {
             texts.add(req.rawText());
@@ -94,6 +87,7 @@ public class MaterialController {
         List<Map<String, Object>> resp = new ArrayList<>();
         for (String text : texts) {
             JdProfile jd = new JdProfile();
+            jd.setUser(user);
             jd.setRawText(text);
             jd.setSameTypeTag(req.sameTypeTag());
 
@@ -112,8 +106,9 @@ public class MaterialController {
 
     @GetMapping("/jd")
     public List<Map<String, Object>> listJd() {
+        User user = currentUser.currentUser();
         List<Map<String, Object>> resp = new ArrayList<>();
-        for (JdProfile jd : jdRepo.findAll()) {
+        for (JdProfile jd : jdRepo.findByUser(user)) {
             resp.add(mapOf("jdId", jd.getId(), "jobType", jd.getJobType(),
                     "sameTypeTag", jd.getSameTypeTag(), "createdAt", str(jd.getCreatedAt())));
         }
@@ -126,11 +121,13 @@ public class MaterialController {
 
     @PostMapping("/resume")
     public Map<String, Object> createResume(@RequestBody ResumeRequest req) {
+        User user = currentUser.currentUser();
         requireText(req.content(), "content");
         ResumeVersion v = new ResumeVersion();
+        v.setUser(user);
         v.setContent(req.content());
-        // 第一份简历自动启用，避免首次使用时还要手动 activate
-        v.setActive(resumeRepo.count() == 0);
+        // 第一份简历自动启用——per-user（之前是全局 count，修复 advisor 指出的 bug）
+        v.setActive(resumeRepo.countByUserId(user.getId()) == 0);
         ResumeVersion saved = resumeRepo.save(v);
         index("resume", saved.getId(), saved.getContent());
         return mapOf("resumeId", saved.getId(), "createdAt", str(saved.getCreatedAt()), "isActive", saved.isActive());
@@ -138,8 +135,9 @@ public class MaterialController {
 
     @GetMapping("/resume")
     public List<Map<String, Object>> listResume() {
+        User user = currentUser.currentUser();
         List<Map<String, Object>> resp = new ArrayList<>();
-        for (ResumeVersion v : resumeRepo.findAll()) {
+        for (ResumeVersion v : resumeRepo.findByUser(user)) {
             resp.add(mapOf("resumeId", v.getId(), "createdAt", str(v.getCreatedAt()), "isActive", v.isActive()));
         }
         return resp;
@@ -147,9 +145,11 @@ public class MaterialController {
 
     @PostMapping("/resume/{resumeId}/activate")
     public Map<String, Object> activateResume(@PathVariable Long resumeId) {
-        ResumeVersion target = resumeRepo.findById(resumeId)
+        User user = currentUser.currentUser();
+        ResumeVersion target = resumeRepo.findByIdAndUserId(resumeId, user.getId())
                 .orElseThrow(() -> new IllegalArgumentException("简历版本不存在: " + resumeId));
-        for (ResumeVersion v : resumeRepo.findByIsActiveTrue()) {
+        // per-user：只把当前用户的其他简历都置非激活
+        for (ResumeVersion v : resumeRepo.findByUserAndIsActiveTrue(user)) {
             if (!v.getId().equals(resumeId)) {
                 v.setActive(false);
                 resumeRepo.save(v);
@@ -166,8 +166,10 @@ public class MaterialController {
 
     @PostMapping("/note")
     public Map<String, Object> createNote(@RequestBody NoteRequest req) {
+        User user = currentUser.currentUser();
         requireText(req.content(), "content");
         Note n = new Note();
+        n.setUser(user);
         n.setContent(req.content());
         Note saved = noteRepo.save(n);
         index("note", saved.getId(), saved.getContent());
@@ -176,8 +178,9 @@ public class MaterialController {
 
     @GetMapping("/note")
     public List<Map<String, Object>> listNote() {
+        User user = currentUser.currentUser();
         List<Map<String, Object>> resp = new ArrayList<>();
-        for (Note n : noteRepo.findAll()) {
+        for (Note n : noteRepo.findByUser(user)) {
             resp.add(mapOf("noteId", n.getId(), "content", n.getContent(), "createdAt", str(n.getCreatedAt())));
         }
         return resp;
@@ -189,9 +192,11 @@ public class MaterialController {
 
     @PostMapping("/project-doc")
     public Map<String, Object> createProjectDoc(@RequestBody ProjectDocRequest req) {
+        User user = currentUser.currentUser();
         requireText(req.title(), "title");
         requireText(req.content(), "content");
         ProjectDoc d = new ProjectDoc();
+        d.setUser(user);
         d.setTitle(req.title());
         d.setContent(req.content());
         ProjectDoc saved = docRepo.save(d);
@@ -201,8 +206,9 @@ public class MaterialController {
 
     @GetMapping("/project-doc")
     public List<Map<String, Object>> listProjectDoc() {
+        User user = currentUser.currentUser();
         List<Map<String, Object>> resp = new ArrayList<>();
-        for (ProjectDoc d : docRepo.findAll()) {
+        for (ProjectDoc d : docRepo.findByUser(user)) {
             resp.add(mapOf("docId", d.getId(), "title", d.getTitle(), "updatedAt", str(d.getUpdatedAt())));
         }
         return resp;
@@ -211,8 +217,9 @@ public class MaterialController {
     /** 补充/覆盖「现状」（MVP 为覆盖）。 */
     @PutMapping("/project-doc/{docId}")
     public Map<String, Object> updateProjectDoc(@PathVariable Long docId, @RequestBody ProjectDocRequest req) {
+        User user = currentUser.currentUser();
         requireText(req.content(), "content");
-        ProjectDoc d = docRepo.findById(docId)
+        ProjectDoc d = docRepo.findByIdAndUserId(docId, user.getId())
                 .orElseThrow(() -> new IllegalArgumentException("项目文档不存在: " + docId));
         d.setContent(req.content());
         if (req.title() != null && !req.title().isBlank()) {
@@ -229,8 +236,10 @@ public class MaterialController {
 
     @PostMapping("/real-interview")
     public Map<String, Object> createRealInterview(@RequestBody RealInterviewRequest req) {
+        User user = currentUser.currentUser();
         requireText(req.content(), "content");
         RealInterviewRecord r = new RealInterviewRecord();
+        r.setUser(user);
         r.setContent(req.content());
         RealInterviewRecord saved = recordRepo.save(r);
         index("real_interview", saved.getId(), saved.getContent());

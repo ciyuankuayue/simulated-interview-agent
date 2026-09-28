@@ -3,6 +3,7 @@ package com.bupt.mockinterview.agent;
 import com.bupt.mockinterview.domain.InterviewTurn;
 import com.bupt.mockinterview.domain.JdProfile;
 import com.bupt.mockinterview.domain.SessionStatus;
+import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
@@ -68,9 +69,12 @@ class InterviewOrchestratorTest {
     private InterviewSessionRepository sessionRepo;
     @Autowired
     private InterviewTurnRepository turnRepo;
+    @Autowired
+    private User testUser;
 
     private Long newJd() {
         JdProfile jd = new JdProfile();
+        jd.setUser(testUser);
         jd.setRawText("招聘 Java 后端：要求精通并发编程、MySQL 索引与优化、Redis、Spring Boot。");
         jd.setJobType("Java 后端");
         return jdRepo.save(jd).getId();

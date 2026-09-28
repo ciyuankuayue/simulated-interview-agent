@@ -1,6 +1,7 @@
 package com.bupt.mockinterview.agent;
 
 import com.bupt.mockinterview.domain.JdProfile;
+import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.WeakPoint;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
 import com.bupt.mockinterview.llm.LlmProperties;
@@ -43,6 +44,8 @@ class T6RealRoundTripTest {
     private LlmProperties props;
     @Autowired
     private WeakPointMemoryService memory;
+    @Autowired
+    private User testUser;
 
     @Test
     void realRoundTrip() {
@@ -50,6 +53,7 @@ class T6RealRoundTripTest {
                 "DEEPSEEK_API_KEY 未设置，跳过真实链路验收");
 
         JdProfile jd = new JdProfile();
+        jd.setUser(testUser);
         jd.setRawText("招聘 Java 后端（3-5 年）：要求熟悉并发编程、JVM、MySQL 索引与 SQL 优化、Redis、Spring Boot；有高并发项目经验优先。");
         jd.setJobType("Java 后端");
         Long jdId = jdRepo.save(jd).getId();

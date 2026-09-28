@@ -1,6 +1,7 @@
 package com.bupt.mockinterview.memory;
 
 import com.bupt.mockinterview.domain.JdProfile;
+import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.WeakPoint;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
 import com.bupt.mockinterview.memory.WeakPointMemoryService.Outcome;
@@ -39,9 +40,12 @@ class WeakPointMemoryTest {
     private WeakPointMemoryService memory;
     @Autowired
     private JdProfileRepository jdRepo;
+    @Autowired
+    private User testUser;
 
     private JdProfile newJd() {
         JdProfile jd = new JdProfile();
+        jd.setUser(testUser);
         jd.setRawText("招聘 Java 后端：MySQL 索引与优化、Redis、并发编程。");
         return jdRepo.save(jd);
     }

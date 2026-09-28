@@ -3,6 +3,7 @@ package com.bupt.mockinterview.agent;
 import com.bupt.mockinterview.llm.LlmException;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmProperties;
+import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -46,11 +47,13 @@ public class CriticService {
     private final LlmPort llm;
     private final LlmProperties props;
     private final ObjectMapper mapper;
+    private final CurrentUserService currentUser;
 
-    public CriticService(LlmPort llm, LlmProperties props, ObjectMapper mapper) {
+    public CriticService(LlmPort llm, LlmProperties props, ObjectMapper mapper, CurrentUserService currentUser) {
         this.llm = llm;
         this.props = props;
         this.mapper = mapper;
+        this.currentUser = currentUser;
     }
 
     // ---------- 对外 ----------
