@@ -16,7 +16,7 @@ import java.time.Instant;
  * 不存明文也不存加盐哈希——BCrypt 自带盐值。
  */
 @Entity
-@Table(name = "app_user")
+@Table(name = "app_user", indexes = @Index(name = "uk_username", columnList = "username", unique = true))
 @Getter
 @Setter
 @NoArgsConstructor

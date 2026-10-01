@@ -15,7 +15,7 @@
 | S4 | `./docs/api.md` | ✅ 已落盘 | 契约优先，待实现遵守 |
 | S5 | `./docs/handoff.md`（本文件） | 🔵 当前 | 任务拆解 |
 | S6 | 代码实现 | 🔵 收尾中 | T1–T9 ✅；T10 ✅（三项改进 + 39 用例全绿 + mysql 真机实证，浏览器 E1–E10 仍待用户）；**T11 ✅（2026-09-19）**：模型密钥页面保险箱（机器绑定/密码两模式、热生效）+ 简历版本下拉复用，单测 7 + 真机全链路 + 浏览器 7 项全过；**T12 ✅（2026-09-19）**：密码模式访问门禁（令牌刷新即失效，多设备/服务器场景）+ 自然结束自动出报告 + 密码框明文切换 + 静态资源 no-cache，**48 用例全绿 + 浏览器真实验证（3 题场自动出 76 分报告）**，未 commit |
-| **R1-1** | **多用户隔离** | **✅（2026-09-28）** | **2 个 commits：e1b537f（骨架）+ ea9bfa0（生产隔离接通）+ 1f0aea4（UserIsolationTest 全绿）**。59 测试全绿（48 旧 + 11 新）。详见下节 |
+| **R1-1** | **多用户隔离** | **✅ 后端（Trea 完成）🔵 待人终审 ｜ ⚠️ 前端未接线** | **后端 3 个 commits：e1b537f + ea9bfa0 + 1f0aea4（UserIsolationTest 全绿）。2026-09-29 复核 `mvnw test` 59 tests 全绿。⚠️ 发现缺口：前端 `app.js` 未接 JWT（无登录 UI / 不存 token / `api()` 不带 `Authorization` / SSE 只拼 `vaultToken`），浏览器当前全线 401、不可用。后端鉴权+隔离机制本身正确，但**前端 JWT 接线缺失**，R1-1.5 已立项（见 §4 卡点 + tasks.md）补前端接线。** |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -231,11 +231,13 @@
 - **⚠️ 本机原生 MySQL80 服务占用 3306（2026-09-18 实测发现，用户已拍板共存方案）**：Windows 服务 `MySQL80`（自启，`D:\MySQL\MySQL Server 8.0`，数据 `D:\MySQLData\...`，root 密码非 root）占宿主 3306/33060，Docker MySQL 抢不到端口——**症状**：`docker compose ps` 显示 `3306/tcp` 无宿主映射（compose 文件却写了 ports），Spring 连 localhost:3306 会误连原生实例。**决策：容器改映射 `3307:3306`**（`docker-compose.yml` + `application-mysql.yml` 默认 `MYSQL_PORT:3307`），两实例共存，已 force-recreate 验通；生产无冲突时 `MYSQL_PORT=3306` 覆盖。教训：compose 端口不生效先 `netstat -ano | findstr :3306` 查宿主占用，再看 `Get-CimInstance Win32_Service | ? PathName -like '*mysqld*'` 定位服务；改 compose 配置必须 `--force-recreate`。
 - **数据源形态（2026-09-17 修正）**：本地默认 **H2 内存库**（`application.yml`，零参数 `mvnw clean spring-boot:run` 即起，免 Docker 验 T1–T3 编译 + 建表）；真 MySQL 8 抽到 `application-mysql.yml`，需 `-Dspring-boot.run.profiles=mysql` 或 `SPRING_PROFILES_ACTIVE=mysql` 才生效。原 `application-h2.yml` 已删。Docker 拉镜像源超时问题仍存在、暂未修，但**不再阻塞本地验证**。
   - ⚠️ **最终生产 / 真库验收必须恢复 Docker 起 MySQL 8 + Redis 7，并走 `mysql` profile**。H2 重启即清空，仅本地验证用；Redis 生产也必须起（H2 路下若本机 Redis 未起，`redis.ok` 为 false，属预期但不代表生产可省）。
+- **⚠️ R1-1 前端 JWT 未接线（2026-09-29 人审发现，阻塞浏览器可用性）**：后端 `JwtAuthFilter` 默认启用，所有 `/api/**` 除白名单（register/login/health）都要 JWT；但前端 `app.js` 既无用户登录/注册 UI，也无任何地方存/发用户 JWT（`api()` 不带 `Authorization`，SSE URL 只拼 `vaultToken`），`index.html` 只有保险箱密码框、无用户登录框。后果：R1-1 后浏览器打开 app，`start/answer/sessions/end/report` 全线 401，SSE 也连不上——后端 59 测试全绿是因为 `UserIsolationTest` 用代码直接带 token 测的，**浏览器不可用**。这不是后端 bug，是「后端鉴权完成但前端没接」的半完成态。修法（**R1-1.5 已立项 2026-09-29，见 tasks.md**）：① 加登录/注册面板；② 登录后把 JWT 存 `state.token`（内存变量、不落 localStorage）；③ `api()` 统一加 `Authorization: Bearer <jwt>`；④ SSE URL 拼 `?jwt=<jwt>`（密码模式下保留 `&vaultToken=<vt>`）。未补前，第 3 项「前端 SSE 仍能连」在浏览器层必定 FAIL，只能验后端 `?jwt=` 机制。
 
 ## 5. 下一步立即做（MVP 已完成，进入迭代期）
 
 **MVP 全链路已打通（T1–T12 全部 ✅，48 用例全绿）**，下一阶段是「单用户本地」→「多用户可部署」。迭代总原则见 `docs/tasks.md` 与 vibe-coding 实战手册第 17 章。
 - 每个新需求按轻量六阶段（规划 → feature 分支 → 单任务闭环 → 验证 Gate → 小步提交人审 → merge 回写 handoff）。
+- **当前卡点：R1-1 已交付但尚未人审终审通过，先不要应允 Trea 推进 R1-2**。审完、merge、回写 handoff/tasks 后再开 R1-2，否则错误会越堆越多。
 - **第一优先 R1（多用户 + 部署）+ R2（账号 + 额度）**：没有它，多用户与额度无从谈起；且现有 `InMemoryVectorStore` 内存向量库必须先换持久化，否则一部署即崩。
 - 同步 R5（测试加固）。详细任务拆解与验收见 `docs/tasks.md`。
 

@@ -8,7 +8,7 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "weak_point")
+@Table(name = "weak_point", indexes = { @Index(name = "idx_wp_user", columnList = "user_id"), @Index(name = "idx_wp_user_resolved", columnList = "user_id, resolved"), @Index(name = "idx_wp_user_review", columnList = "user_id, resolved, next_review_at") })
 @Getter
 @Setter
 @NoArgsConstructor

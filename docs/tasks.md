@@ -21,10 +21,21 @@
 
 目标：从"单机本地、数据全局共享"变成"多账号、数据隔离、可公网访问"。
 
-- [ ] **R1-1 引入 User 实体与认证**
+- [~] **R1-1 引入 User 实体与认证**（Trea 已完成，待人终审）
   - 目标：新增 `User` 实体（id / username / passwordHash / createdAt），注册 / 登录 / 登出接口，JWT 或 session 鉴权；所有资料 / 会话 / 报告按 `user_id` 隔离。
   - 验收：`POST /api/auth/register|login` 返回令牌；未带令牌访问业务接口 → 401；A 用户看不到 B 用户的数据（集成测试断言）。
+  - 实测：2026-09-29 全量 `mvnw test` **59 tests, 0 failures, 0 errors, 0 skipped**，`UserIsolationTest` 覆盖 401/409/隔离/跨用户 404/同用户全链路。
   - 估时：1–1.5 周　依赖：无　难度：高
+- [ ] **R1-1.5 前端接入 JWT 鉴权（补 R1-1 缺口，已立项 2026-09-29）**
+  - 目标：R1-1 后端鉴权 + 隔离已完成，但前端 `app.js` 完全未接 JWT（无登录 UI、不存 token、`api()` 不带 `Authorization`、SSE 只拼 `vaultToken`），浏览器当前全线 401、不可用。本任务补齐前端接线，使浏览器端到端可用。
+  - 验收：
+    1. `index.html` 新增登录/注册面板（密码模式下先 unlock 拿 `vaultToken`，再登录拿 JWT）；登录成功把 JWT 存入 `state.token`（**内存变量，不落 localStorage**——符合 Vault 安全约定，刷新即失效）。
+    2. `api()` 统一附加 `Authorization: Bearer <token>`；无 token 时请求自动跳登录面板。
+    3. SSE 的 `EventSource` URL 拼 `?jwt=<token>`（EventSource 不能设头，只能走 query）；密码模式下同时保留 `&vaultToken=<vt>`。
+    4. 收到 401（token 失效/未登录）自动清 `state.token` 并跳登录面板。
+    5. 浏览器端到端：登录后 `start/answer/sessions/end/report` 全链路 200，SSE 能持续收到面试官消息流。
+    6. 密码模式双令牌叠加验证：unlock 后登录 → 业务接口 200；未 unlock 即便带 JWT 也 401。
+  - 估时：3–5 天　依赖：R1-1　难度：中
 - [ ] **R1-2 会话 / 资料 / 报告加 user_id 并迁移**
   - 目标：`InterviewSession / JdProfile / ResumeVersion / Note / ProjectDoc / RealInterviewRecord / CriticReport / WeakPoint / KnowledgeChunk` 全部挂 `user_id`；加 DB 索引；写迁移脚本（上线前 `ddl-auto:none`）。
   - 验收：旧数据无 `user_id` 的兼容处理；单用户查询自动带 `user_id` 过滤。

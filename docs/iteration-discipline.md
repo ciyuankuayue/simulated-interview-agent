@@ -45,3 +45,75 @@
 ## 附录：MVP 后的有序迭代循环
 
 ![MVP 后的有序迭代循环](images/mvp-iteration-loop.png)
+
+---
+
+## AI 编码工具产出后的人审清单（防错误堆积）
+
+Trea / Cursor 改完一个 task 后，按以下顺序检查。**任何一步不过，都不要推进下一个 task**。
+
+### 1. 先看分支与提交范围
+
+```bash
+git status --short
+git log --oneline -5
+git diff master..feature/xxx --stat
+```
+
+- 确认只改了本 task 该改的文件。
+- 警惕「顺手重构」：如果 diff 里出现无关文件的大规模改动，立刻叫停。
+
+### 2. 对照 `docs/tasks.md` 验收标准逐条过
+
+- 打开该 task 的「验收」。
+- 每条验收必须有测试或真实运行证据覆盖，不能只有代码看起来对。
+
+### 3. 跑全量测试
+
+```powershell
+.\mvnw.cmd test
+```
+
+- **必须全绿**，不能只跑新加的测试。
+- 记录：`Tests run: X, Failures: 0, Errors: 0, Skipped: Y`。
+
+### 4. 真实启动冒烟
+
+```powershell
+# 默认 H2（最快）
+.\mvnw.cmd spring-boot:run
+
+# 或真库形态
+# docker compose up -d
+# $env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd spring-boot:run
+```
+
+- `GET /api/health/deps` → database / redis ok。
+- 挑本 task 涉及的 1-2 个关键接口用 curl / 浏览器手动验。
+
+### 5. 审 diff 的重点
+
+- **新增实体 / 字段**：有没有加索引？外键是否合理？`user_id` 隔离是否到位？
+- **安全**：密码是否 BCrypt？JWT 密钥是否可配置且 ≥32 字节？有没有把 key 写进 git？
+- **日志**：有没有打印 token / 密码 / key？
+- **并发**：额度、计数等是否有竞态？
+- **异常**：失败是降级还是 500？
+
+### 6. 审文档同步
+
+- `docs/api.md` 和 `docs/domain.md` 是否跟代码一致？
+- 如果改了契约但文档没改，要求补文档。
+
+### 7. 发现问题怎么办
+
+- **小问题**：在 feature 分支上修，修完重跑 3-6 步。
+- **大问题 / 改动方向跑偏**：直接丢 feature 分支，回 `tasks.md` 重开任务。
+- **绝不带着已知 bug 进下一个 task**：这是错误越堆越多的根源。
+
+### 8. 合并与回写
+
+- 只有你确认全部通过，才允许把 feature 分支 merge 到 `main`。
+- merge 后更新 `docs/handoff.md` 和 `docs/tasks.md` 状态。
+- 再回答 Trea「可以推进下一个 task 了」。
+
+> **R1-1 本次实测样例**：`feature/R1-1` 分支，3 个 commits，全量 `mvnw test` **59 tests, 0 failures, 0 errors, 0 skipped**，`BUILD SUCCESS`。但 JWT 密钥、用户隔离边界、前端 SSE 的 `?jwt=` 参数仍需你在真机 / 浏览器下复核。

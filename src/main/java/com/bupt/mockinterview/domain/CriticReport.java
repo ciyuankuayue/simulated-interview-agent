@@ -9,7 +9,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.Instant;
 
 @Entity
-@Table(name = "critic_report")
+@Table(name = "critic_report", indexes = { @Index(name = "idx_report_session", columnList = "session_id"), @Index(name = "idx_report_session_user", columnList = "session_id, user_id") })
 @Getter
 @Setter
 @NoArgsConstructor

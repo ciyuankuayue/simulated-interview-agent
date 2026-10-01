@@ -20,7 +20,45 @@
 
     <!-- ======================= 左：准备区 ======================= -->
     <aside class="panel">
-        <h2>1. 准备</h2>
+        <h2>0. 账号</h2>
+
+        <!-- 未登录：登录 + 注册 -->
+        <div id="authLoginBox" class="keybox">
+            <input id="loginUsername" type="text" placeholder="用户名（≥4 字符）" autocomplete="username">
+            <div class="pwdWrap">
+                <input id="loginPassword" type="password" placeholder="密码（≥6 字符）" autocomplete="current-password">
+                <button type="button" class="pwdToggle" data-target="loginPassword" tabindex="-1">显示</button>
+            </div>
+            <div class="row">
+                <button id="btnLogin" class="primary">登录</button>
+                <button id="btnShowRegister" class="ghost">注册新账号</button>
+            </div>
+        </div>
+
+        <div id="authRegisterBox" class="keybox" hidden>
+            <input id="regUsername" type="text" placeholder="用户名（≥4 字符）" autocomplete="username">
+            <div class="pwdWrap">
+                <input id="regPassword" type="password" placeholder="密码（≥6 字符）" autocomplete="new-password">
+                <button type="button" class="pwdToggle" data-target="regPassword" tabindex="-1">显示</button>
+            </div>
+            <div class="pwdWrap">
+                <input id="regPassword2" type="password" placeholder="再输一遍密码" autocomplete="new-password">
+                <button type="button" class="pwdToggle" data-target="regPassword2" tabindex="-1">显示</button>
+            </div>
+            <div class="row">
+                <button id="btnRegister" class="primary">注册</button>
+                <button id="btnShowLogin" class="ghost">返回登录</button>
+            </div>
+        </div>
+
+        <!-- 已登录：状态 -->
+        <div id="authUserBox" class="keybox" hidden>
+            <div class="row">
+                <span class="lb">当前用户</span>
+                <span id="authUsername" class="keybadge ok">—</span>
+            </div>
+            <button id="btnLogout" class="ghost">退出登录</button>
+        </div>
 
         <div class="block keyblock">
             <div class="row">
