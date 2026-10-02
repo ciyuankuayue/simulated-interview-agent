@@ -7,16 +7,16 @@
 
 - Base URL：`/api`
 - 内容类型：请求/响应 `application/json; charset=utf-8`
-- 鉴权（R1-1 多用户，2026-09-28 起）：
+- 鉴权（R1-1 多用户，R1-3 统一形态）：
   - **JWT 令牌**：`POST /api/auth/login` 返回 `{ token }`；所有业务接口（除 §2 的 auth 白名单）必须带 `Authorization: Bearer <token>`（HTTP 头）。SSE 的 EventSource 无法设头，允许 query 参数 `?jwt=<token>`（优先级：header > query）。
   - 缺失/失效/过期 → **401** `{code:"UNAUTHORIZED",message:"请先登录"}`。
-  - 令牌结构：`{ sub: userId, username, exp: 24h }`，密钥配 `jwt.secret`（`application.yml`）。
-  - **与 KeyVault 门禁的关系**（R1-1→R1-3 过渡）：两者并行——JWT 管"谁"（多用户隔离），KeyVault 门禁管"能不能花钱调 LLM"（密码/机器绑定）。R1-3 平台统一持 key 后 KeyVault 门禁将弱化。
+  - 令牌结构：`{ sub: userId, username, exp: 24h }`，密钥配环境变量 `JWT_SECRET`（空则启动时自动生成临时密钥，仅开发便利）。
+  - **R1-3 起只有 JWT 一道门禁**：T11/T12 的页面保险箱 / `X-Vault-Token` / VaultAccessFilter 已整体删除。能不能调 LLM 由用户的 key 模式（PLATFORM 平台 key / BYOK 自带 key）与额度决定（见 §7），不再有第二枚令牌。
   - **auth 白名单**：`POST /api/auth/register`、`POST /api/auth/login` 不放令牌。
 - 时间：ISO-8601 字符串
 - 错误码：HTTP 状态码 + `{code, message}`
-  - 400 参数错误 / 401 未登录或 JWT 失效（R1-1）或保险箱密码错误/未带访问令牌（R1-1 前，现由 JWT 接管多用户鉴权）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册）/ 500 内部错误 / 504 LLM 超时（走降级）
-- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source,configured,unlocked}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。
+  - 400 参数错误 / 401 未登录或 JWT 失效 / 402 服务点数耗尽（R1-3，BYOK 余额不足，见 §7）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
+- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。
 
 ## 2. 认证（R1-1 新增，2026-09-28）
 
@@ -26,6 +26,7 @@
 - `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
 - `password`：≥6 字符，BCrypt 加密存储
 - resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
+- **R1-3 附带效果**：库中**第一个注册账号** role=ADMIN（其后均 USER）；同时为该用户创建 quota 并赠送服务点数（`app.quota.signup-bonus`，默认 1000）；新用户 key_mode=PLATFORM。
 - HTTP 201 Created
 
 ### POST /api/auth/login
@@ -148,44 +149,47 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 `{ ...列表字段, "resolved", "createdAt", "lastSessionId", "lastTurnSeq", "latest": { "sessionId", "turnSeq", "layer", "question", "answer", "score", "review": { "explanation", "correction", "knowledgeSupplement", "exemplarAnswer" } } | null }`
 - `latest=null`：旧数据/无法定位（前端降级为只显示状）；`review=null`：该场还没出 Critic 报告。
 
-## 7. 模型密钥保险箱（页面录入，免终端环境变量）
+## 7. 模型调用方式 / BYOK / 额度（R1-3，替代旧 /api/setup/** 保险箱接口）
 
-> 密钥只存本机（默认 `~/.mock-interview/vault.json`，可用 `app.vault.dir` 改目录），AES-256-GCM 加密；任何接口都不回传密钥明文。
-> **来源优先级：环境变量 `DEEPSEEK_API_KEY`/`DASHSCOPE_API_KEY` 优先**；已由环境变量提供的厂商，页面保存该厂商密钥 → 409。
->
-> **R1-1 与 JWT 的关系**（2026-09-28 起）：JWT 过滤器先于 VaultAccessFilter 执行。JWT 校验"你是谁"（多用户隔离 + 数据访问），VaultAccessFilter 校验"你能不能花 LLM 钱"（KeyVault 密码门禁）。两者并行不互斥：
-> - 纯 env 模式：VaultAccessFilter 不启用 → 只有 JWT 生效
-> - 机器绑定模式：VaultAccessFilter 不启用 → 只有 JWT 生效
-> - 密码保护模式：VaultAccessFilter 启用 → JWT 必须 **且** KeyVault 令牌必须（双令牌）
->
-> R1-3 平台统一持 key 后，VaultAccessFilter 将被弱化或移除。
+> R1-3 起平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
+> 每个登录用户有两种对话模型（DeepSeek）调用方式，由 `app_user.key_mode` 决定：
+> - **PLATFORM**（默认）：走平台 key 调 DeepSeek，R1-3 不扣点（按 token 计费在 R2）；embedding 始终走平台 `DASHSCOPE_API_KEY`，与模式无关。
+> - **BYOK**：走用户自己加密存储的 DeepSeek key（模型直连用户账号），**每次 DeepSeek 调用前扣 1 点服务费**；余额不足 → **402** `{code:"QUOTA_EXHAUSTED"}`，不发起调用。
+> - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
 
-### GET /api/setup/status
-`{ "deepseek": "ENV|VAULT|NONE", "dashscope": "ENV|VAULT|NONE", "passwordProtected": bool, "unlocked": bool }`
-- `VAULT` + `passwordProtected=true` + `unlocked=false` = 等待解锁（重启后常态）。
-- **JWT 白名单**（健康检查接口，免登录）。
+### GET /api/user/settings
+`{ "keyMode": "PLATFORM|BYOK" }`
 
-**密码模式 = 双令牌门禁**（T12 → R1-1 更新）：`passwordProtected=true` 的保险箱一旦落盘，服务端即启用 VaultAccessFilter——所有业务接口需要 **JWT（身份）+ Vault 令牌（花钱门禁）** 两个令牌。JWT 走 `Authorization` 头，Vault 令牌走 `X-Vault-Token` 头（或各自的 SSE query 参数）。
+### PUT /api/user/settings
+切换调用方式。body: `{ "keyMode": "BYOK" }`
+- 切到 `BYOK` 但该用户未保存 key → **409** `{code:"KEY_NOT_CONFIGURED",message:"请先保存你的 API Key"}`。
+- 成功 resp: 同 GET。
 
-### POST /api/setup/keys
-保存/增量更新（需 JWT + 保险箱已解锁）。
-- body: `{ "deepseekKey": "sk-…"(null=不动, ""=清除, 非空=覆盖), "dashscopeKey": "…"(同上), "password": "…"(可选) }`
-- `password` 非空 = 设为/改为密码保护（PBKDF2-HMAC-SHA256 310000 轮派生 KEK，重启需 unlock），同时**作废旧令牌并签发新令牌**；不传 = 沿用现状（首次保存进入机器绑定模式：随机 DEK 存同目录 `machine.key`，重启自动解锁）。密码模式下仅增量改密钥（不带 password）不触动已有令牌。
-- 两个密钥最终都空 → 409；密码箱锁定且未带密码就改 → 409。
-- resp: `{ "status": <同 GET status 的对象>, "token": "…"|null }`——仅本次设了/改了密码时 token 非空；机器绑定模式恒 null。
+### GET /api/user/api-key
+`{ "hasKey": bool, "last4": "abcd"|null }`——仅末 4 位，永不回显完整明文。
 
-### POST /api/setup/unlock
-body: `{ "password": "…" }`；密码错误 → **401**（消息为人话「密码错误，密钥未能解锁」）。
-- 成功 resp: `{ "status": {...}, "token": "…" }`（机器绑定箱调用时 token=null）。多设备各自解锁互不影响，每次签发独立新令牌。
+### PUT /api/user/api-key
+保存（首次）/轮换自带 key。body: `{ "apiKey": "sk-…" }`
+- 服务端先做一次极简 DeepSeek 调用验活（失败 → **402 之外的 400/502**：key 无效返 **400** `{code:"INVALID_API_KEY"}`；网络/5xx 返 **502** `{code:"PROVIDER_UNREACHABLE"}`），验活通过才加密落库。
+- 落库：AES-256-GCM（主密钥 `APP_DATA_KEY`），只存密文 + last4。幂等覆盖=轮换。
+- resp: `{ "hasKey": true, "last4": "abcd" }`
 
-### POST /api/setup/lock
-清除内存中的密钥明文、KEK 与**全部访问令牌**（所有设备立即掉线，需重新解锁；环境变量来源不受影响）。本接口本身也要带有效令牌（防匿名锁定 DoS）。resp 同 status 对象（无 token 包装）。
+### DELETE /api/user/api-key
+删除自带 key；若当前 key_mode=BYOK，**自动回退 PLATFORM**。resp: `{ "hasKey": false, "last4": null, "keyMode": "PLATFORM" }`
 
-> 密码无找回接口（否则保护形同虚设）：忘记密码需停止服务后删除 `vault.json` 重新填写。
+### GET /api/user/quota
+`{ "totalPoints": 1000, "usedPoints": 3, "remaining": 997 }`
+- R1-3 只有 BYOK 调用会增加 usedPoints（每次 +1）；PLATFORM 不增。
+
+### 402 语义
+BYOK 模式调用任意业务接口触发 DeepSeek 且点数不足时：
+- 面试流程中的追问/判分：接口返回 **402** `{code:"QUOTA_EXHAUSTED",message:"服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值"}`；前端弹提示并引导切回 PLATFORM（已有平台 key 时）。
+- 扣减为条件更新（`used_points < total_points`），不超发；R2 替换为 token 级计量 + 乐观锁。
 
 ## 8. 契约边界
 
-- **已实现**：用户注册/登录 + JWT 鉴权（R1-1，2026-09-28）
+- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + BYOK 服务费点数 + 自带 key 加密存储（R1-3，2026-10-02）
+- **R1-3 不做**（留 R2）：PLATFORM 模式按 DeepSeek usage 的 token 计费、并发扣减强化（乐观锁/Redis INCR）、充值入口、配额套餐管理
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）
 - 报告与明细分离：响应均为「表达精炼、抓核心」的版本（关键内容不省）；检索引用/判分过程细节/token 等内部明细只在 DB（interview_turn），不进响应

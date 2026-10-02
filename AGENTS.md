@@ -45,9 +45,10 @@
 - LLM：
   - 生成/追问：DeepSeek `deepseek-flash`（非思考型用于追问，思考型用于判分）
   - `max_tokens`：追问 / 判分 / Critic **不卡 800**；判分与 Critic 输出长，放宽到 ≥ 4096（或按需更大、彻底不传该参数）。仍**必须校验输出非空**（思考型 reasoning 与正文共用额度，超了正文可能变空串）
-  - Embedding：阿里通义 `qwen3.7-text-embedding-flash`（OpenAI 兼容，baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1），key 从环境变量 `DASHSCOPE_API_KEY` 读
-  - **密钥三来源（2026-09-19 起）**：环境变量优先；缺失时读页面保险箱（`security/KeyVault`，`~/.mock-interview/vault.json`，AES-GCM；机器绑定 DEK 或用户密码 PBKDF2 派生 KEK），解锁/保存后热生效无需重启。运行时取 key 一律走 `KeyVault`，不准直接读 `LlmProperties.apiKey`
-  - **密码模式 = 访问门禁（T12，服务器/多设备场景）**：密码箱落盘后 `security/VaultAccessFilter` 对所有业务 `/api/**` 强制令牌（header `X-Vault-Token`，SSE 走 query `?vaultToken=`；白名单仅静态资源 + `GET /api/setup/status` + `POST /api/setup/unlock`）。令牌 256b 随机、只存 KeyVault 内存（不落盘；重启/lock/改密码全失效），unlock/带密码 save 签发；前端令牌只存 JS 内存变量（刷新必失效，**严禁 localStorage**）。机器绑定/纯 env 模式不启用门禁
+  - Embedding：阿里通义 `qwen3.7-text-embedding-flash`（OpenAI 兼容，baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1），key 只从环境变量 `DASHSCOPE_API_KEY` 读（embedding 永远平台 key，与用户模式无关）
+  - **密钥体系（R1-3，2026-10-02 起，替代旧页面保险箱）**：平台 key（DeepSeek/DashScope）**只从环境变量**读，运维配置，不再有 vault.json/页面保存。运行时取对话 key 一律走 `security/KeyResolver.resolveForChat(userId)`：PLATFORM→env；BYOK→解密该用户 `user_api_key`（AES-GCM，KEK 走 env `APP_DATA_KEY`，未配则启动生成临时密钥并 WARN）；userId 为 null（测试 profile）→ env。**禁止在业务代码直接读 `LlmProperties.apiKey` 绕过路由**。embedding key 直接 `DashscopeProperties::getApiKey`
+  - **BYOK 服务费点数（R1-3 最小骨架）**：PLATFORM 不扣点（R2 做 token 计费）；BYOK 每次 DeepSeek 调用前 `billing/QuotaService.tryChargeOne(userId)`，不足抛 `QuotaExhaustedException`→402 QUOTA_EXHAUSTED（条件更新防超发）。注册即建 quota 赠点（`app.quota.signup-bonus` 默认 1000），首个注册账号 role=ADMIN
+  - **鉴权只有 JWT 一道**（R1-3 起）：T11/T12 的 `KeyVault`/`VaultAccessFilter`/`/api/setup/**`/`X-Vault-Token`/`vaultToken` 已整体删除，禁止复活。JWT 走 `Authorization` 头，SSE 走 query `?jwt=`；前端 token 只存 JS 内存变量（刷新必失效，**严禁 localStorage**）。`app.auth.jwt-enabled=false` 仅测试 profile 用，生产默认启用（统一多用户形态，本地也要注册登录）
   - **静态资源 `Cache-Control: no-cache`**（application.yml `spring.web.resources`，T12）：前端更新后不靠用户手动 Ctrl+F5；配 Last-Modified 协商，未变走 304
 - 包结构（分层；**领域逻辑不准直接调 LLM**，统一走 llm 层）：
   - `web/`       controller，SSE 流式推送
@@ -55,7 +56,9 @@
   - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）
   - `llm/`       LlmService（封装 DeepSeek 调用 + 超时重试；发 `tools` 字段做 function calling）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool），不混用 JDK HttpClient**（决策 2026-09-17）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度
-  - `domain/`    实体与持久化
+  - `billing/`   QuotaService（R1-3：注册赠点 + BYOK 每次扣 1 点 + 402；R2 扩 token 计量）
+  - `security/`  JWT（JwtService/JwtAuthFilter/UserContext）、CurrentUserService、KeyResolver（PLATFORM/BYOK 路由）、UserKeyCipher（用户 key AES-GCM）
+  - `domain/`    实体与持久化（含 User / UserApiKey / Quota）
 
 ### Restrictions（NEVER）
 - NEVER 把任何 API Key 写进代码或 git（代码用 `System.getenv(...)`，yml 用 `${DASHSCOPE_API_KEY}`）

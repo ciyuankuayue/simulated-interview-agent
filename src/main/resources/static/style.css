@@ -150,23 +150,34 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 .histItem span { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .histItem.noReport { opacity: .55; cursor: not-allowed; }
 
-/* ---------- 模型密钥卡片 ---------- */
+/* ---------- 模型调用方式卡片（R1-3 双密钥模式） ---------- */
 .keyblock { border-color: #35415c; }
 .keybadge {
-    font-size: 11px; padding: 2px 9px; border-radius: 10px; cursor: pointer;
+    font-size: 11px; padding: 2px 9px; border-radius: 10px;
     border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
-    user-select: none; transition: border-color .15s;
+    user-select: none;
 }
-.keybadge:hover { border-color: var(--accent); }
 .keybadge.ok { background: rgba(55, 214, 163, .12); color: var(--accent2); border-color: rgba(55, 214, 163, .35); }
 .keybadge.bad { background: rgba(255, 107, 107, .12); color: var(--bad); border-color: rgba(255, 107, 107, .35); }
 
-.keyStatus { margin: 8px 0; display: flex; flex-direction: column; gap: 3px; }
-.keyLine { font-size: 12px; color: var(--text); display: flex; align-items: center; gap: 6px; }
-.kd { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
-.kd.ok { background: var(--accent2); }
-.kd.lock { background: var(--warn); }
-.kd.none { background: #55607a; }
+/* PLATFORM / BYOK 单选 */
+.modeswitch { display: flex; gap: 8px; margin: 8px 0 4px; }
+.modeopt {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 7px 6px; border: 1px solid var(--line); border-radius: 8px;
+    font-size: 13px; color: var(--text); cursor: pointer; transition: border-color .15s, background .15s;
+}
+.modeopt:hover { border-color: var(--accent); }
+.modeopt:has(input:checked) {
+    border-color: var(--accent); background: rgba(124, 144, 255, .12); color: #cdd6ff;
+}
+.modeopt input { accent-color: var(--accent); cursor: pointer; }
+
+.quotaLine { font-size: 12px; color: var(--text); margin: 4px 0 2px; }
+.quotaLine b { color: var(--accent2); }
+.quotaLine small { color: var(--muted); }
+
+.keyStatus { margin: 4px 0; font-size: 12px; color: var(--muted); }
 
 .keybox { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
 .keybox[hidden] { display: none; }
@@ -174,6 +185,12 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 .keybox input[type="password"], .keybox input[type="text"] { width: 100%; }
 .keybox input:disabled { opacity: .5; }
 .keyhint { display: block; color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 2px; }
+
+/* 卡片内行内消息（验活失败/402 引导等） */
+.keyMsg { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+.keyMsg.ok { color: var(--accent2); }
+.keyMsg.bad { color: var(--bad); }
+.keyMsg[hidden] { display: none; }
 
 /* 密码框 + 显示/隐藏切换 */
 .pwdWrap { position: relative; display: flex; align-items: center; }

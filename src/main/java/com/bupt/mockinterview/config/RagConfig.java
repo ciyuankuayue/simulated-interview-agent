@@ -8,7 +8,6 @@ import com.bupt.mockinterview.rag.FakeEmbedder;
 import com.bupt.mockinterview.rag.InMemoryVectorStore;
 import com.bupt.mockinterview.rag.RagService;
 import com.bupt.mockinterview.security.CurrentUserService;
-import com.bupt.mockinterview.security.KeyVault;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,10 +15,10 @@ import org.springframework.context.annotation.Configuration;
 /**
  * RAG Bean 装配（T6 引入，T4 写的 rag 类此前没有进 Spring 容器）。
  *
- * ⚠️ 降级设计：DashScope 密钥不可用时退化为 {@link FakeEmbedder}
- * （本地词频哈希向量），保证未配置阶段整条链路能跑通；页面保险箱保存/解锁密钥后由
- * {@link DynamicEmbedder} 每次调用现判，<b>热切换真实通义，无需重启</b>（2026-09-19）。
- * 维度固定 1024（实测确认）。
+ * ⚠️ 降级设计：DashScope 平台密钥不可用时退化为 {@link FakeEmbedder}
+ * （本地词频哈希向量），保证未配置阶段整条链路能跑通。
+ * R1-3 起 embedding key 只从 env（DASHSCOPE_API_KEY）读——embedding 永远走平台 key，
+ * 不随用户 PLATFORM/BYOK 模式变化。维度固定 1024（实测确认）。
  */
 @Configuration
 public class RagConfig {
@@ -32,10 +31,10 @@ public class RagConfig {
     }
 
     @Bean
-    public Embedder embedder(OkHttpClient client, DashscopeProperties props, KeyVault keyVault) {
+    public Embedder embedder(OkHttpClient client, DashscopeProperties props) {
         DashscopeEmbedder real = new DashscopeEmbedder(client, props.getBaseUrl(),
-                keyVault::dashscopeKey, props.getEmbedModel());
-        return new DynamicEmbedder(real, new FakeEmbedder(DIM), keyVault::dashscopeKey);
+                props::getApiKey, props.getEmbedModel());
+        return new DynamicEmbedder(real, new FakeEmbedder(DIM), props::getApiKey);
     }
 
     @Bean

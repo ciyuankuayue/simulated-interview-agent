@@ -1,8 +1,8 @@
 package com.bupt.mockinterview.web;
 
+import com.bupt.mockinterview.llm.LlmProperties;
 import com.bupt.mockinterview.rag.Embedder;
 import com.bupt.mockinterview.rag.InMemoryVectorStore;
-import com.bupt.mockinterview.security.KeyVault;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,18 +26,18 @@ public class DepCheckController {
     private final RedisConnectionFactory redisConnectionFactory;
     private final Embedder embedder;
     private final InMemoryVectorStore vectorStore;
-    private final KeyVault keyVault;
+    private final LlmProperties llmProps;
 
     private volatile long pingAt;
     private volatile Map<String, Object> pingCache;
 
     public DepCheckController(JdbcTemplate jdbcTemplate, RedisConnectionFactory redisConnectionFactory,
-                              Embedder embedder, InMemoryVectorStore vectorStore, KeyVault keyVault) {
+                              Embedder embedder, InMemoryVectorStore vectorStore, LlmProperties llmProps) {
         this.jdbcTemplate = jdbcTemplate;
         this.redisConnectionFactory = redisConnectionFactory;
         this.embedder = embedder;
         this.vectorStore = vectorStore;
-        this.keyVault = keyVault;
+        this.llmProps = llmProps;
     }
 
     @GetMapping("/api/health/deps")
@@ -66,16 +66,14 @@ public class DepCheckController {
     }
 
     /**
-     * DeepSeek 对话模型密钥状态（不做真实 chat 探活——会烧 token；调用时失败自有重试/降级）。
-     * source ∈ ENV/VAULT/NONE，configured=当前进程是否已能取到可用 key。
+     * DeepSeek 平台密钥状态（不做真实 chat 探活——会烧 token；调用时失败自有重试/降级）。
+     * R1-3 起只反映平台 env key；用户 BYOK key 不在此暴露（见 GET /api/user/api-key）。
      */
     private Map<String, Object> deepseekBlock() {
-        KeyVault.KeyStatus s = keyVault.status();
+        boolean configured = llmProps.getApiKey() != null && !llmProps.getApiKey().isBlank();
         Map<String, Object> block = new LinkedHashMap<>();
-        block.put("source", s.deepseek());
-        block.put("configured", !"NONE".equals(s.deepseek())
-                && (!"VAULT".equals(s.deepseek()) || s.unlocked()));
-        block.put("unlocked", s.unlocked());
+        block.put("source", "ENV");
+        block.put("configured", configured);
         return block;
     }
 

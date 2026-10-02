@@ -3,11 +3,13 @@
 > 唯一事实源：本文件定义实体、字段、关系、可见性边界。改结构先确认，再动代码。
 > 原则：明细全在 DB 给 AI 推理用；用户看到的是「状态视图」和「Critic 报告」——**精简 = 表达精炼、抓核心、不啰嗦；关键内容（每答评价/纠正/知识补充/示范回答/整体注意事项/提醒）不省**。
 
-## 1. 实体清单（11 个，2026-09-28 R1-1 新增 User）
+## 1. 实体清单（13 个，2026-10-02 R1-3 新增 user_api_key / quota）
 
 | # | 实体 | 用途 | 可见性 |
 |---|------|------|--------|
-| 0 | **app_user**（R1-1） | 用户账号：注册/登录 + JWT 鉴权，所有实体的 owner | 不对外暴露 |
+| 0 | **app_user**（R1-1，R1-3 扩） | 用户账号：注册/登录 + JWT 鉴权，所有实体的 owner；含 key_mode / role | 不对外暴露 |
+| 0a | **user_api_key**（R1-3） | 用户自带 DeepSeek key（BYOK），AES-GCM 密文落库 | 仅回 hasKey + last4 |
+| 0b | **quota**（R1-3 最小骨架） | 用户服务点数：注册赠送、BYOK 每次调用扣 1 点 | 用户可看余额 |
 | 1 | jd_profile | JD 原文 + 考点关键词 + 岗位类型 + 同类标签 | 列表（精简），按 user_id 隔离 |
 | 2 | resume_version | 多版本简历原文 + 上传时间 | 可切换，按 user_id 隔离 |
 | 3 | note | 笔记存档点（可加可看） | 可看，按 user_id 隔离 |
@@ -21,13 +23,33 @@
 
 ## 2. 字段定义
 
-### app_user（R1-1 新增）
+### app_user（R1-1 新增；R1-3 扩 key_mode / role）
 - id (PK)
 - username         # 唯一用户名，4-32 字符
 - password_hash    # BCrypt 加密（10 轮）
+- key_mode         # PLATFORM（平台 key，默认）/ BYOK（用户自带 DeepSeek key）
+- role             # ADMIN（库中首个注册账号）/ USER（其后注册者）；R1-3 仅持久化，管理接口 R 后续迭代用
 - created_at
 
 > 表名用 `app_user` 避开 H2/MySQL `user` 保留字。密码 BCrypt，不存明文也不存加盐哈希——Spring Security 的 `BCryptPasswordEncoder` 自带盐值。
+
+### user_api_key（R1-3 新增，BYOK）
+- id (PK)
+- user_id (FK UNIQUE, NOT NULL)   # 一用户至多一条
+- key_ciphertext                  # DeepSeek key 的 AES-256-GCM 密文（Base64，含 12B IV/128b tag）
+- key_last4                       # 明文末 4 位（展示用，如 sk-...abcd）
+- created_at / updated_at
+
+> 主密钥（KEK）从环境变量 `APP_DATA_KEY` 读（Base64 32B）；未配置时启动自动生成临时密钥并 WARN（重启后旧密文不可解，BYOK 用户需重新填写——仅开发便利；多实例部署必须显式配置同一密钥）。API **永不回显明文**：GET 只回 `{hasKey, last4}`；保存=轮换（先调一次 DeepSeek 验活再落库）；删除后用户 key_mode 自动回退 PLATFORM。BYOK 仅支持 DeepSeek；embedding（DashScope）永远走平台 key。
+
+### quota（R1-3 新增，最小骨架；R2 扩展 token 计量）
+- id (PK)
+- user_id (FK UNIQUE, NOT NULL)
+- total_points      # 总额度（注册赠送，配置 app.quota.signup-bonus，默认 1000）
+- used_points       # 已用点数
+- created_at / updated_at
+
+> R1-3 计量规则：**PLATFORM 模式不扣点**（平台 key 的按 token 计费在 R2-1/R2-2 做）；**BYOK 模式每次 DeepSeek 调用（追问/判分/Critic 各一次）调用前扣 1 点服务费**，余额不足 → 402 QUOTA_EXHAUSTED，不发起调用、不超发（条件 UPDATE `used_points < total_points` 保证）。R2 在此表上扩展 DeepSeek usage 回写、@Version 乐观锁/Redis INCR、充值与 402 降级引导。
 
 ### jd_profile
 - id (PK)
@@ -123,6 +145,7 @@
 
 ## 3. 关系
 
+- app_user 1—1 user_api_key（BYOK 可缺省）；app_user 1—1 quota（注册即建）
 - jd_profile 1—* interview_session（一次模拟基于一个 JD；同类多 JD 可勾选一起练）
 - interview_session 1—* interview_turn
 - resume_version / note / project_doc / real_interview_record → 经 RAG 切分为 knowledge_chunk（检索源，双源：简历入口 + project_doc 弹药库）

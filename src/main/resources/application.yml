@@ -72,3 +72,14 @@ dashscope:
 jwt:
   secret: ${JWT_SECRET:}                  # 空=启动时自动生成（仅开发便利；生产必须显式设）
   expiry-ms: 86400000                     # 24 小时（24 * 60 * 60 * 1000）
+
+# ---- R1-3 服务点额度（PLATFORM 不扣点；BYOK 每次 DeepSeek 调用扣 byok-charge-per-call） ----
+app:
+  quota:
+    signup-bonus: 1000                    # 注册赠送点数（首个 ADMIN 也赠）
+    byok-charge-per-call: 1               # BYOK 每次调用扣的服务费；余额不足→402
+  security:
+    # BYOK key 入库的 AES-256 KEK（Base64 编码 32 字节）。空=启动自动生成临时 key（重启后旧密文不可解）。
+    # 生产/多实例必须显式设置同一 APP_DATA_KEY：
+    #   PowerShell: [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+    data-key: ${APP_DATA_KEY:}

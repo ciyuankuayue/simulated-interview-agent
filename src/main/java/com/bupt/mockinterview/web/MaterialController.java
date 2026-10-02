@@ -1,5 +1,6 @@
 package com.bupt.mockinterview.web;
 
+import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.domain.*;
 import com.bupt.mockinterview.domain.repository.*;
 import com.bupt.mockinterview.llm.LlmPort;
@@ -280,6 +281,9 @@ public class MaterialController {
             out.put("keywords", keywords);
             out.put("jobType", root.path("jobType").asText(null));
             return out;
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            // 业务决策（402 点数耗尽 / 409 BYOK 未配 key）不是瞬时故障，必须透传给用户，不许降级吞掉
+            throw e;
         } catch (Exception e) {
             log.warn("JD 解析失败，keywords 留空：{}", e.getMessage());
             return Map.of("keywords", List.of());

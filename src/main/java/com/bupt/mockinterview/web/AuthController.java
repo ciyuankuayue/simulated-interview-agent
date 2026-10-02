@@ -1,6 +1,8 @@
 package com.bupt.mockinterview.web;
 
+import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.User;
+import com.bupt.mockinterview.domain.UserRole;
 import com.bupt.mockinterview.domain.repository.UserRepository;
 import com.bupt.mockinterview.security.JwtService;
 import jakarta.validation.Valid;
@@ -27,14 +29,17 @@ public class AuthController {
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final QuotaService quotaService;
 
-    public AuthController(UserRepository userRepo, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthController(UserRepository userRepo, PasswordEncoder passwordEncoder,
+                          JwtService jwtService, QuotaService quotaService) {
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.quotaService = quotaService;
     }
 
-    /** 注册新用户 → 自动签发 JWT。 */
+    /** 注册新用户 → 自动签发 JWT。库中首个账号为 ADMIN（全新部署引导注册）；并赠送服务点数。 */
     @PostMapping("/register")
     @Transactional
     public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest req) {
@@ -46,7 +51,13 @@ public class AuthController {
         }
 
         User user = new User(req.username, passwordEncoder.encode(req.password));
+        // 全新库的第一个注册者 = 管理员；其余均普通用户
+        if (userRepo.count() == 0) {
+            user.setRole(UserRole.ADMIN);
+        }
         userRepo.save(user);
+        // 注册即建额度并赠送点数（同事务，失败整体回滚）
+        quotaService.grantForNewUser(user);
 
         String token = jwtService.generateToken(user.getId(), user.getUsername());
         return ResponseEntity.status(HttpStatus.CREATED).body(responseOf(user, token));

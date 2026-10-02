@@ -28,18 +28,16 @@
         awaiting: false,
         reportRendered: false,
         rendered: new Set(),  // 事件去重：type + turnSeq
-        weakDetailLoaded: new Set(),  // 错题本详情懒加载：已拉取过的 weakPointId
-        // 密码模式的访问令牌：只放内存（不落 localStorage）——刷新/换标签页即失效，必须重新输密码
-        vaultToken: null
+        weakDetailLoaded: new Set()  // 错题本详情懒加载：已拉取过的 weakPointId
+        // R1-3 起只有 JWT 一道门禁（旧保险箱 vaultToken 已删除）；token 只在内存，刷新必失
     };
 
     // ---------- 工具 ----------
 
     async function api(path, method, body) {
         const headers = { 'Content-Type': 'application/json; charset=utf-8' };
-        // R1-1.5 双令牌并行：JWT（谁）+ X-Vault-Token（给不给钱）—— 两个过滤器独立工作
+        // R1-3 起单令牌：只有 JWT（Authorization header；SSE 走 ?jwt= query）
         if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
-        if (state.vaultToken) headers['X-Vault-Token'] = state.vaultToken;
         const opt = { method: method || 'GET', headers: headers };
         if (body !== undefined) opt.body = JSON.stringify(body);
         let res;
@@ -53,45 +51,25 @@
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
         if (!res.ok) {
             const msg = (data && data.message) ? data.message : (typeof data === 'string' ? data : res.status);
-            // 401 分流：登录/解锁接口的 401 是密码错误，直接透传给弹窗；其余按「JWT 失效 vs Vault 锁定」区分
+            // 401：登录接口=用户名密码错误直接抛给弹窗；其余一律 JWT 失效 → 强制下线（R1-3 已无第二道门禁）
             if (res.status === 401) {
                 if (path === '/api/auth/login') throw new Error(msg || '用户名或密码错误');
-                if (path === '/api/setup/unlock') throw new Error(msg);
-                if (state.token && await jwtStillAlive()) {
-                    // JWT 还有效 → 只是 vaultToken 失效（点了锁定/令牌被作废）：留在主界面，弹保险箱解锁框
-                    state.vaultToken = null;
-                    try { await loadKeyStatus(); } catch (e) { /* 忽略，解锁框已在 */ }
-                    throw new Error('模型保险箱已锁定，请先在左侧输入密码解锁');
-                }
-                // JWT 失效/缺失：强制下线（不能在这里再调 loadKeyStatus——无 JWT 时它自己也会 401，形成递归）
                 forceLogout('登录已过期，请重新登录');
                 throw new Error('登录已过期，请重新登录');
             }
-            throw new Error('HTTP ' + res.status + ' · ' + msg);
+            // 402：BYOK 服务点耗尽。服务端消息本身含「删除 Key 切回平台模式」的引导，直接透传
+            const err = new Error(msg);
+            err.code = (data && data.code) ? data.code : null;
+            err.status = res.status;
+            throw err;
         }
         return data;
     }
 
-    /**
-     * 探活 JWT：直接 fetch setup/status（该接口要过 JwtAuthFilter、但在 VaultAccessFilter 白名单内）。
-     * 不走 api()，避免 401 递归。200=JWT 有效（是 Vault 挂了）；401=JWT 挂了。
-     */
-    async function jwtStillAlive() {
-        try {
-            const r = await fetch('/api/setup/status', {
-                headers: { 'Authorization': 'Bearer ' + state.token }
-            });
-            return r.ok;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    /** 强制下线：清双令牌、停 SSE、隐藏主界面、弹登录窗（带错误提示）。 */
+    /** 强制下线：清 JWT、停 SSE、隐藏主界面、弹登录窗（带错误提示）。 */
     function forceLogout(message) {
         state.token = null;
         state.username = null;
-        state.vaultToken = null;
         closeStream();
         $('appShell').hidden = true;
         $('userArea').hidden = true;
@@ -292,12 +270,9 @@
 
     function openStream(sessionId) {
         closeStream();
-        // EventSource 不能自定义请求头：双令牌都走 query 参数（JwtAuthFilter 和 VaultAccessFilter 都认可 query fallback）
-        const params = [];
-        if (state.token) params.push('jwt=' + encodeURIComponent(state.token));
-        if (state.vaultToken) params.push('vaultToken=' + encodeURIComponent(state.vaultToken));
+        // EventSource 不能自定义请求头：JWT 走 query 参数（R1-3 起唯一令牌）
         const url = '/api/interview/' + sessionId + '/events'
-            + (params.length ? '?' + params.join('&') : '');
+            + (state.token ? '?jwt=' + encodeURIComponent(state.token) : '');
         const es = new EventSource(url);
         state.es = es;
         let sseFails = 0;   // 连续连接失败计数：收到任何消息/onopen 归零，达上限停止重连（防 401 后无限打接口）
@@ -360,6 +335,7 @@
             if (!state.reportRendered) setState('已结束');
             loadWeak();     // 本场答崩的点已入错题本，顺手刷新
             loadHistory();  // 新一场进入历史列表
+            loadUserSettings();  // BYOK 本场扣的点同步到额度展示
         });
     }
 
@@ -370,8 +346,8 @@
     // ---------- 事件绑定 ----------
 
     function bind() {
-        bindAuth();       // R1-1.5：登录/注册/登出（先于保险箱绑定，确保面板切换顺序正确）
-        bindKeySetup();   // 密码框「显示/隐藏」的全局绑定会覆盖登录/注册面板，在 bindAuth 之后执行
+        bindAuth();          // R1-1.5：登录/注册/登出
+        bindUserSettings();  // R1-3：PLATFORM/BYOK 模式切换、自带 key 管理、额度展示
 
         // JD
         $('btnJd').onclick = async () => {
@@ -448,7 +424,10 @@
                 // 首题由 SSE 重放渲染（见文件头说明），这里不重复渲染 firstQuestion
                 openStream(r.sessionId);
                 tip('会话 #' + r.sessionId + ' 已开始');
-            } catch (e) { tip(e.message, true); }
+            } catch (e) {
+                if (e.code === 'QUOTA_EXHAUSTED') loadUserSettings();
+                tip(e.message, true);
+            }
         };
 
         // 作答
@@ -464,6 +443,7 @@
             try {
                 await api('/api/interview/' + state.sessionId + '/answer', 'POST', { answer: text });
             } catch (e) {
+                if (e.code === 'QUOTA_EXHAUSTED') loadUserSettings();
                 tip(e.message, true);
                 setState('作答失败，可重试');
                 $('answerText').disabled = false;
@@ -484,6 +464,7 @@
                 renderReport(r);   // 响应与 SSE 的 report 只渲染一次（flag 去重）
                 loadWeak();
                 loadHistory();     // 报告已出，历史条目变为可点开
+                loadUserSettings();  // 同步 BYOK 扣点后的额度
             } catch (e) { tip(e.message, true); }
         };
 
@@ -583,15 +564,10 @@
         }
     }
 
-    /** 登录/注册成功的统一收尾：先查保险箱门禁（弹窗仍遮着，避免「检测中」闪烁），再进主界面。 */
+    /** 登录/注册成功的统一收尾：进主界面，加载模型调用方式 + 业务数据（R1-3 起无保险箱门禁）。 */
     async function handleAuthSuccess(r) {
         state.token = r.token;
         state.username = r.username;
-
-        let gated = true;
-        try {
-            gated = await loadKeyStatus();
-        } catch (e) { gated = true; }
 
         // 用户身份用 textContent 注入（用户名是服务端数据，不拼 innerHTML）
         $('authUsername').textContent = r.username || '—';
@@ -602,8 +578,8 @@
         clearAuthError();
         tip(r.username ? '欢迎，' + r.username : '登录成功');
 
-        // 密码模式门禁：gated 时停在左侧保险箱解锁框，不载业务数据（未 unlock 调业务接口照样 401）
-        if (!gated) loadBusinessData();
+        loadUserSettings();
+        loadBusinessData();
     }
 
     /** 绑定登录弹窗：Tab 切换、两个 form 的 submit、登出。 */
@@ -670,11 +646,10 @@
             });
         });
 
-        // 登出：清双令牌（只在 JS 内存）+ 停 SSE + 刷新页面回登录弹窗，状态最干净
+        // 登出：清 JWT（只在 JS 内存）+ 停 SSE + 刷新页面回登录弹窗，状态最干净
         $('btnLogout').onclick = () => {
             state.token = null;
             state.username = null;
-            state.vaultToken = null;
             closeStream();
             location.reload();
         };
@@ -692,18 +667,28 @@
         return m || '注册失败，请稍后重试';
     }
 
-    // ---------- 模型密钥（页面保险箱，免终端环境变量） ----------
+    // ---------- 模型调用方式（R1-3：平台额度 PLATFORM / 自带 Key BYOK） ----------
 
-    function bindKeySetup() {
-        // 点状态徽标 = 展开修改表单（门禁未通过时不响应）
-        $('keyBadge').onclick = () => {
-            const s = state.keyStatus;
-            if (s && s.passwordProtected && !state.vaultToken) return;
-            $('keyFormBox').hidden = false;
-            $('btnKeyCancel').hidden = false;
-        };
+    function showKeyMsg(message, bad) {
+        const el = $('keyMsg');
+        el.textContent = message || '';
+        el.hidden = !message;
+        el.className = 'keyMsg' + (bad ? ' bad' : 'ok');
+    }
 
-        // 密码框「显示/隐藏」切换（解锁框 + 保存表单两处）
+    function setBtnLoading(btn, on, loadingText) {
+        if (on) {
+            btn.dataset.originText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = loadingText;
+        } else {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.originText || btn.textContent;
+        }
+    }
+
+    function bindUserSettings() {
+        // 密码框「显示/隐藏」：登录/注册 + BYOK key 输入共用
         document.querySelectorAll('.pwdToggle').forEach((btn) => {
             btn.onclick = () => {
                 const input = $(btn.getAttribute('data-target'));
@@ -714,64 +699,135 @@
             };
         });
 
-        $('btnKeySave').onclick = async () => {
-            const ds = $('ksDeep').value.trim();
-            const dash = $('ksDash').value.trim();
-            const pwd = $('ksPass').value.trim();
-            if (!ds && !dash && !pwd) {
-                return tip('请至少填写一个密钥（仅修改密码时密钥框可留空）', true);
+        // 模式单选：PLATFORM 直接切；BYOK 已存 key 直接切，没存则展开录入框（服务端也会 409 兜底）
+        document.querySelectorAll('input[name="keyMode"]').forEach((radio) => {
+            radio.addEventListener('change', async () => {
+                if (!radio.checked) return;
+                showKeyMsg('');
+                const mode = radio.value;
+                $('byokBox').hidden = (mode !== 'BYOK');
+                if (mode === 'PLATFORM') {
+                    try {
+                        await api('/api/user/settings', 'PUT', { keyMode: 'PLATFORM' });
+                        showKeyMsg('已切回平台额度（不扣服务点）');
+                        await loadUserSettings();
+                    } catch (e) {
+                        showKeyMsg(e.message, true);
+                        await loadUserSettings();   // 单选 UI 回滚到服务端真实状态
+                    }
+                } else {
+                    try {
+                        await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
+                        showKeyMsg('已切换为自带 Key 模式（每次调用扣 1 服务点）');
+                        await loadUserSettings();
+                    } catch (e) {
+                        if (e.code === 'KEY_NOT_CONFIGURED') {
+                            // 服务端仍停在 PLATFORM，但 UI 要停在 BYOK 并展开录入框：
+                            // 不能 loadUserSettings()，否则会按服务端状态把单选和输入框拉回去
+                            document.querySelector('input[name="keyMode"][value="BYOK"]').checked = true;
+                            document.querySelector('input[name="keyMode"][value="PLATFORM"]').checked = false;
+                            $('byokBox').hidden = false;
+                            showKeyMsg('请先填写并保存你的 DeepSeek API Key');
+                        } else {
+                            showKeyMsg(e.message, true);
+                            await loadUserSettings();
+                        }
+                    }
+                }
+            });
+        });
+
+        // 保存（并切换）：先验活加密落库，成功后显式切 BYOK
+        $('btnByokSave').onclick = async () => {
+            const key = $('byokKey').value.trim();
+            if (!key) return showKeyMsg('请输入 DeepSeek API Key（sk- 开头）', true);
+            if (key.indexOf('sk-') !== 0) return showKeyMsg('DeepSeek API Key 应以 sk- 开头', true);
+            const btn = $('btnByokSave');
+            setBtnLoading(btn, true, '验活并保存…');
+            try {
+                await api('/api/user/api-key', 'PUT', { apiKey: key });
+                await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
+                $('byokKey').value = '';
+                showKeyMsg('已保存并切换到自带 Key 模式');
+                tip('自带 Key 已生效');
+                await loadUserSettings();
+            } catch (e) {
+                showKeyMsg(e.message, true);
+            } finally {
+                setBtnLoading(btn, false);
             }
-            const body = {};
-            if (ds) body.deepseekKey = ds;
-            if (dash) body.dashscopeKey = dash;
-            if (pwd) body.password = pwd;
+        };
+
+        // 删除：服务端同时强制回退 PLATFORM（避免 BYOK 无 key 的死状态）
+        $('btnByokDelete').onclick = async () => {
+            const btn = $('btnByokDelete');
+            setBtnLoading(btn, true, '删除中…');
             try {
-                // 响应 {status, token}：设了/改了密码时 token 非空（旧令牌同时作废）；
-                // 密码模式下仅增量改密钥则 token=null，继续用手里的令牌。
-                const data = await api('/api/setup/keys', 'POST', body);
-                if (data && data.token) state.vaultToken = data.token;
-                $('ksDeep').value = ''; $('ksDash').value = ''; $('ksPass').value = '';
-                tip(pwd ? '密钥已保存，本浏览器已解锁（其他设备需输入新密码）' : '密钥已保存到本机保险箱');
-                await loadKeyStatus();
-                loadBusinessData();
-            } catch (e) { tip(e.message, true); }
-        };
-
-        $('btnKeyUnlock').onclick = async () => {
-            const pwd = $('kuPassword').value.trim();
-            if (!pwd) return tip('请输入密码', true);
-            try {
-                const data = await api('/api/setup/unlock', 'POST', { password: pwd });
-                if (!data || !data.token) throw new Error('解锁未返回访问令牌');
-                state.vaultToken = data.token;   // 只在 JS 内存：刷新即失，必须重新输密码
-                $('kuPassword').value = '';
-                tip('已解锁，可以开始面试');
-                await loadKeyStatus();
-                loadBusinessData();
-            } catch (e) { tip(e.message, true); }
-        };
-
-        $('btnKeyLock').onclick = async () => {
-            try {
-                await api('/api/setup/lock', 'POST');
-                state.vaultToken = null;   // 本浏览器也立刻掉线
-                tip('已锁定，全部设备需重新输入密码');
-                await loadKeyStatus();
-            } catch (e) { tip(e.message, true); }
-        };
-
-        $('btnKeyCancel').onclick = () => {
-            $('keyFormBox').hidden = true;
-            $('btnKeyCancel').hidden = true;
-        };
-
-        // 密码保护没有「找回」接口（否则保护形同虚设）：物理删除保险箱文件后重新填写即可
-        $('btnKeyFromUnlock').onclick = () => {
-            tip('密码无法找回：请停止服务后删除本机 ~/.mock-interview/vault.json，再回到本页重新填写', true);
+                await api('/api/user/api-key', 'DELETE');
+                $('byokKey').value = '';
+                showKeyMsg('已删除自带 Key，切回平台额度');
+                tip('已切回平台额度');
+                await loadUserSettings();
+            } catch (e) {
+                showKeyMsg(e.message, true);
+            } finally {
+                setBtnLoading(btn, false);
+            }
         };
     }
 
-    /** 门禁通过后需要补载的业务数据（首屏 gated 时为避免一串 401 而延后）。 */
+    /** 拉取模式 / key 状态 / 额度 / 平台 env 就绪情况，重绘卡片（登录后、每次切换、402 后都调）。 */
+    async function loadUserSettings() {
+        let settings, keyInfo, quota;
+        try {
+            [settings, keyInfo, quota] = await Promise.all([
+                api('/api/user/settings'),
+                api('/api/user/api-key'),
+                api('/api/user/quota')
+            ]);
+        } catch (e) {
+            $('keyBadge').textContent = '状态未知';
+            $('keyBadge').className = 'keybadge bad';
+            return;
+        }
+
+        const mode = settings.keyMode === 'BYOK' ? 'BYOK' : 'PLATFORM';
+        state.keyMode = mode;
+
+        // 单选与服务端状态对齐（切模式失败时也靠它回滚）
+        document.querySelectorAll('input[name="keyMode"]').forEach((radio) => {
+            radio.checked = (radio.value === mode);
+        });
+
+        const badge = $('keyBadge');
+        if (mode === 'BYOK') {
+            badge.textContent = keyInfo.hasKey ? '自带 Key · sk-…' + esc(keyInfo.last4 || '') : '自带 Key（未保存）';
+            badge.className = 'keybadge ' + (keyInfo.hasKey ? 'ok' : 'bad');
+        } else {
+            badge.textContent = '平台额度';
+            badge.className = 'keybadge ok';
+        }
+
+        $('quotaRemaining').textContent = quota.remaining;
+        $('quotaTotal').textContent = quota.total;
+        $('quotaUsed').textContent = quota.used;
+
+        $('byokBox').hidden = (mode !== 'BYOK');
+        $('btnByokDelete').hidden = !keyInfo.hasKey;
+        $('byokStatus').textContent = keyInfo.hasKey
+            ? '已保存 sk-…' + (keyInfo.last4 || '') + '（输入新 Key 可更换）'
+            : '尚未保存 Key';
+
+        // 平台 env key 缺失时给一行引导（best-effort：deps 探活失败不打扰）
+        try {
+            const deps = await api('/api/health/deps');
+            if (mode === 'PLATFORM' && deps && deps.deepseek && deps.deepseek.configured === false) {
+                showKeyMsg('平台未配置 DEEPSEEK_API_KEY：请选「自带 Key」，或让运维配置环境变量', true);
+            }
+        } catch (e) { /* 探活接口失败不影响主流程 */ }
+    }
+
+    /** 登录后需要加载的业务数据。 */
     function loadBusinessData() {
         refreshJd();
         refreshResume();
@@ -779,58 +835,10 @@
         loadHistory();
     }
 
-    /** @returns {Promise<boolean>} 是否处于「需要密码且本地无令牌」的门禁态 */
-    async function loadKeyStatus() {
-        let s;
-        try {
-            s = await api('/api/setup/status');
-        } catch (e) {
-            $('keyBadge').textContent = '状态未知';
-            $('keyBadge').className = 'keybadge bad';
-            return false;
-        }
-        state.keyStatus = s;
-
-        // 门禁判定以「本浏览器手里有没有令牌」为准，而不是服务端 unlocked：
-        // 刷新/新标签页后内存令牌丢失，即使服务端仍 unlocked 也必须重新输密码。
-        const gated = !!s.passwordProtected && !state.vaultToken;
-        const usable = (src) => !gated && src !== 'NONE' && (src !== 'VAULT' || s.unlocked);
-        const label = { ENV: '环境变量提供', VAULT: '已保存在本机', NONE: '未配置' };
-        const dotCls = (src) => usable(src) ? 'ok' : (src === 'NONE' ? 'none' : 'lock');
-        const line = (name, src) => '<div class="keyLine"><span class="kd ' + dotCls(src) + '"></span>'
-            + name + '：' + (gated && src === 'VAULT'
-                ? '已保存（请输入密码）' : label[src]) + '</div>';
-        $('keyStatus').innerHTML = line('DeepSeek（对话/判分）', s.deepseek)
-            + line('DashScope（向量化）', s.dashscope);
-
-        const badge = $('keyBadge');
-        const deepReady = usable(s.deepseek);
-        if (gated) {
-            badge.textContent = '需要密码 · 点此解锁';
-        } else {
-            badge.textContent = deepReady ? '模型可用 · 点此修改' : '未配置 · 点此填写';
-        }
-        badge.className = 'keybadge ' + ((gated || !deepReady) ? 'bad' : 'ok');
-
-        $('keyUnlockBox').hidden = !gated;
-        // 门禁态强制走解锁；未配置时直接展开表单；已就绪默认收起（点徽标展开）
-        $('keyFormBox').hidden = gated || deepReady;
-        $('btnKeyCancel').hidden = true;
-        $('btnKeyLock').hidden = !(s.passwordProtected && s.unlocked && !!state.vaultToken);
-
-        $('ksDeep').disabled = s.deepseek === 'ENV';
-        $('ksDash').disabled = s.dashscope === 'ENV';
-        $('ksDeep').placeholder = s.deepseek === 'ENV'
-            ? 'DeepSeek 已由环境变量提供，无需填写' : 'DeepSeek API Key（sk-…）';
-        $('ksDash').placeholder = s.dashscope === 'ENV'
-            ? 'DashScope 已由环境变量提供，无需填写' : 'DashScope Key（通义向量化，可选）';
-        return gated;
-    }
-
     // ---------- 启动 ----------
-    // 两层门禁：JWT（谁）+ Vault（给不给钱），令牌全部只在 JS 内存，刷新必失。
+    // R1-3 起只有 JWT 一道门禁（旧保险箱已删除），token 只在 JS 内存，刷新必失。
     // 静态 HTML 初始即「#authModal 可见、#appShell hidden」，无首屏闪烁；
-    // 这里只绑事件、不调任何接口——无 JWT 时 setup/status 也会 401。
-    // 登录成功后 handleAuthSuccess 才查保险箱门禁 + 载业务数据。
+    // 这里只绑事件、不调任何业务接口（无 JWT 会 401）。
+    // 登录成功后 handleAuthSuccess 加载模型调用方式 + 业务数据。
     bind();
 })();

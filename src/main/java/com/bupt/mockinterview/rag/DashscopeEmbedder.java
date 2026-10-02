@@ -14,7 +14,8 @@ import java.util.function.Supplier;
 
 /**
  * 通义千问 embedding（dashscope compatible-mode/v1 的 OpenAI 兼容 /embeddings 接口）。
- * 需 {@code DASHSCOPE_API_KEY}；沙盒无限流、未 set 密钥时不可用，离线逻辑用 {@link FakeEmbedder} 验。
+ * 需 {@code DASHSCOPE_API_KEY}；R1-3 起平台 key 只从环境变量读（BYOK 不覆盖 embedding），
+ * 沙盒无限流、未 set 密钥时不可用，离线逻辑用 {@link FakeEmbedder} 验。
  *
  * ⚠️ 响应解析按 OpenAI 兼容格式 {@code data[0].embedding} 写；真实联调若字段不符（如原生 output.embeddings），
  *    以实际返回 JSON 为准微调。模型串 {@code qwen3.7-text-embedding-flash}（application.yml 配置）。
@@ -54,7 +55,7 @@ public class DashscopeEmbedder implements Embedder {
     public float[] embed(String text) throws Exception {
         String apiKey = apiKeySupplier.get();
         if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("DashScope 密钥未配置：请在页面「模型密钥」中填写，或设置 DASHSCOPE_API_KEY");
+            throw new IllegalStateException("DashScope 平台密钥未配置：请设置环境变量 DASHSCOPE_API_KEY");
         }
         // OpenAI 兼容接口：input 直接是字符串（或字符串数组），不是原生 {"texts":[...]}
         String body = mapper.writeValueAsString(Map.of(

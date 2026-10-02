@@ -1,24 +1,30 @@
 package com.bupt.mockinterview.llm;
 
-import com.bupt.mockinterview.rag.DashscopeProperties;
-import com.bupt.mockinterview.security.KeyVault;
+import com.bupt.mockinterview.billing.QuotaService;
+import com.bupt.mockinterview.domain.repository.UserApiKeyRepository;
+import com.bupt.mockinterview.domain.repository.UserRepository;
+import com.bupt.mockinterview.security.CurrentUserService;
+import com.bupt.mockinterview.security.KeyResolver;
+import com.bupt.mockinterview.security.UserKeyCipher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Files;
+import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 /**
  * T5 真实联调：验证 DeepSeek 两条链路 ——「追问生成（非思考）」与「判分 JSON（思考 + 结构化输出）」。
  *
  * 运行（需本机 set 密钥，沙盒无限流不跑）：
  *   PowerShell:  $env:DEEPSEEK_API_KEY="sk-xxx"; .\mvnw.cmd test -Dtest=DeepSeekVerifyTest
- *   Git Bash:    DEEPSEEK_API_KEY=sk-xxx ./mvnw.cmd test -Dtest=DeepSeekVerifyTest
  * 未 set 密钥时整类自动跳过（Assumptions）。
+ *
+ * R1-3：无 UserContext（测试直接构造）→ KeyResolver 走平台 env key，不经过 BYOK 扣点。
  */
 public class DeepSeekVerifyTest {
 
@@ -31,10 +37,11 @@ public class DeepSeekVerifyTest {
         LlmProperties props = new LlmProperties();
         props.setApiKey(key); // baseUrl / model 用默认值（deepseek-flash）
 
-        // KeyVault 的 env 分支直接返回 props 里的 key；保险箱目录给临时路径，不落用户目录
-        KeyVault vault = new KeyVault(props, new DashscopeProperties(),
-                Files.createTempDirectory("vault-verify").toString());
-        LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props, vault);
+        KeyResolver resolver = new KeyResolver(props, mock(UserApiKeyRepository.class),
+                new UserKeyCipher(Base64.getEncoder().encodeToString(new byte[32])));
+        CurrentUserService currentUser = new CurrentUserService(mock(UserRepository.class));
+        LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props,
+                resolver, currentUser, mock(QuotaService.class));
 
         // ---------- 链路 1：追问生成（非思考模式） ----------
         String system = "你是 Java 后端技术深挖官。用户答得浅时只追问一句 why，不展开讲解。";

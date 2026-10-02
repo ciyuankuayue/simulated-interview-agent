@@ -23,6 +23,11 @@ public class StubLlmPort implements LlmPort {
     /** chat 返回的原文（Critic 报告 JSON）。 */
     public String criticJson = "{}";
 
+    /** R1-3：非 null 时对应方法直接抛（用于验证 402/409 穿透降级边界，而不是被降级吞掉）。 */
+    public RuntimeException followUpError;
+    public RuntimeException scoreError;
+    public RuntimeException chatError;
+
     /** 记录每次调用收到的 user prompt，便于断言 prompt 是否带了 JD/历史。 */
     public final List<String> userPrompts = new ArrayList<>();
 
@@ -38,8 +43,26 @@ public class StubLlmPort implements LlmPort {
         this.criticJson = criticJson;
     }
 
+    /** 恢复到构造后的初始序列并清零调用游标 / 异常注入（stub 是 context 级单例，测试方法间必须重置）。 */
+    public void reset(List<String> initialQuestions, List<ScoreResult> initialScores, String initialCriticJson) {
+        questions.clear();
+        questions.addAll(initialQuestions);
+        scores.clear();
+        scores.addAll(initialScores);
+        criticJson = initialCriticJson;
+        userPrompts.clear();
+        followUpError = null;
+        scoreError = null;
+        chatError = null;
+        qIdx = 0;
+        sIdx = 0;
+    }
+
     @Override
     public LlmReply followUp(String system, String user) {
+        if (followUpError != null) {
+            throw followUpError;
+        }
         userPrompts.add(user);
         if (qIdx >= questions.size()) {
             return new LlmReply("（预设题目已用完）", null);
@@ -49,6 +72,9 @@ public class StubLlmPort implements LlmPort {
 
     @Override
     public ScoreResult score(String question, String answer) {
+        if (scoreError != null) {
+            throw scoreError;
+        }
         if (sIdx >= scores.size()) {
             return new ScoreResult(8, Map.of(), List.of(), "");
         }
@@ -64,6 +90,9 @@ public class StubLlmPort implements LlmPort {
     @Override
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
+        if (chatError != null) {
+            throw chatError;
+        }
         if (messages != null && !messages.isEmpty()) {
             Object last = messages.get(messages.size() - 1).get("content");
             userPrompts.add(String.valueOf(last));

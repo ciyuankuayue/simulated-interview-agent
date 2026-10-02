@@ -34,6 +34,16 @@ public class User {
     @Column(nullable = false, name = "password_hash", length = 128)
     private String passwordHash;
 
+    /** 对话模型调用方式：平台 key（默认）/ 自带 key（BYOK，R1-3）。 */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, name = "key_mode", length = 16)
+    private KeyMode keyMode = KeyMode.PLATFORM;
+
+    /** 角色：库中首个注册账号 = ADMIN，其余 USER（R1-3 持久化，管理接口后续迭代）。 */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    private UserRole role = UserRole.USER;
+
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     private Instant createdAt;

@@ -1,5 +1,6 @@
 package com.bupt.mockinterview.agent;
 
+import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.llm.LlmException;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmProperties;
@@ -82,6 +83,9 @@ public class CriticService {
                     List.of(msg("system", SYSTEM), msg("user", user)),
                     null, true, props.getCriticMaxTokens()).content();
             return parse(content);
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            // 402 点数耗尽 / 409 BYOK 未配 key：业务决策，必须透传（end 接口映射 402/409），不许降级成占位报告
+            throw e;
         } catch (LlmException e) {
             return new Payload(null, List.of(), List.of(), List.of(),
                     "Critic 报告生成失败（LLM 不可用）：" + e.getMessage(), List.of());

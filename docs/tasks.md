@@ -42,9 +42,11 @@
   - 目标：`InterviewSession / JdProfile / ResumeVersion / Note / ProjectDoc / RealInterviewRecord / CriticReport / WeakPoint / KnowledgeChunk` 全部挂 `user_id`；加 DB 索引；写迁移脚本（上线前 `ddl-auto:none`）。
   - 验收：旧数据无 `user_id` 的兼容处理；单用户查询自动带 `user_id` 过滤。
   - 估时：3–5 天　依赖：R1-1　难度：中
-- [ ] **R1-3 替换本地密码模式为多用户密钥体系**
-  - 目标：现有 `KeyVault` + `VaultAccessFilter` 是为单机设计的，多用户下改为"平台统一持有 LLM key、按用户额度扣减"；保留机器绑定 / 密码保护仅作运维门禁。
-  - 验收：多用户共存时各自额度独立；运维门禁不干扰普通用户登录态。
+- [x] **R1-3 双密钥模式：平台额度 / BYOK 自带 Key（2026-10-02 完成，待人审，未 commit）**
+  - 目标（用户拍板的双形态）：用户可选「平台额度」（平台 env key，R1-3 不扣点，R2 做 token 计费）或「自带 Key」（用户 DeepSeek key，AES-GCM 加密入库，每次调用扣 1 服务点，余额不足 → 402）；embedding 永远走平台 DashScope key；首个注册账号 = ADMIN；注册赠 1000 点（`app.quota.signup-bonus`）。
+  - 交付：删除 T11/T12 旧页面保险箱+密码门禁全套（KeyVault/VaultAccessFilter/KeySetupController/X-Vault-Token，减 16 个旧测试）；新增 `security/KeyResolver`+`UserKeyCipher`、`billing/QuotaService`（条件更新防超发）、`UserApiKey`/`Quota` 实体、`/api/user/settings|api-key|quota`（验活 GET /models：401→400、不可达→502，无效不落库，只回 last4）；前端「模型调用方式」卡片（单选切换/录入验活/额度/删除回退/402 引导）。
+  - 关键修复：**402/409 穿透全部 LLM 降级边界**（MaterialController.parseJd、InterviewOrchestrator 判分/追问/出题 3 处、CriticService），否则点数耗尽被静默降级（E2E 真抓到 POST /jd 返回空 keywords）。
+  - 验收：`.\mvnw.cmd -B test` **62 tests, 0 failures, 0 errors**（新增 4 个穿透回归：JdQuotaPropagationTest + 编排层 3 例）；真机 E2E（bonus=0）：BYOK 余额 0 调 `/api/jd` → **HTTP 402 QUOTA_EXHAUSTED + 切回平台引导**；bonus=1000 全链路（赠点/默认 PLATFORM/409/假 key 400/真 key 验活落库/切 BYOK 扣 1 点/切回不扣/删除强制回退）；浏览器验收单选展开、sk- 校验、绿色切换提示全通过。
   - 估时：2–3 天　依赖：R1-1　难度：中
 - [ ] **R1-4 部署形态（Docker + 反向代理 + 进程守护）**
   - 目标：`Dockerfile` 打镜像；`docker-compose` 加应用服务；nginx 反代 + HTTPS；systemd / 容器编排做进程守护；CI（GitHub Actions）跑测试 + 构建。

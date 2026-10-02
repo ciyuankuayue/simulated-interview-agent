@@ -74,39 +74,35 @@
 
         <div class="block keyblock">
             <div class="row">
-                <span class="lb">模型密钥（填一次即可）</span>
-                <span id="keyBadge" class="keybadge">检测中…</span>
-            </div>
-            <div id="keyStatus" class="keyStatus"></div>
-
-            <!-- 密码模式重启/刷新/新设备：只显示解锁框 -->
-            <div id="keyUnlockBox" class="keybox" hidden>
-                <div class="pwdWrap">
-                    <input id="kuPassword" type="password" placeholder="输入保险箱密码" autocomplete="off">
-                    <button type="button" class="pwdToggle" data-target="kuPassword" tabindex="-1">显示</button>
-                </div>
-                <div class="row">
-                    <button id="btnKeyUnlock" class="primary">解锁</button>
-                    <button id="btnKeyFromUnlock" class="ghost">忘记密码 / 重新填写</button>
-                </div>
-                <small class="keyhint">设过密码后，每次刷新页面、换设备或重启服务都需要重新输入密码，防止同网络下他人直接使用你的模型额度。</small>
+                <span class="lb">模型调用方式</span>
+                <span id="keyBadge" class="keybadge">加载中…</span>
             </div>
 
-            <!-- 保存 / 修改表单 -->
-            <div id="keyFormBox" class="keybox" hidden>
-                <input id="ksDeep" type="password" placeholder="DeepSeek API Key（sk-…）" autocomplete="off">
-                <input id="ksDash" type="password" placeholder="DashScope Key（通义向量化，可选）" autocomplete="off">
+            <!-- PLATFORM（平台额度，不扣点）/ BYOK（自带 DeepSeek key，每次调用扣 1 服务点） -->
+            <div class="modeswitch" role="radiogroup" aria-label="模型调用方式">
+                <label class="modeopt"><input type="radio" name="keyMode" value="PLATFORM"> <span>平台额度</span></label>
+                <label class="modeopt"><input type="radio" name="keyMode" value="BYOK"> <span>自带 Key</span></label>
+            </div>
+
+            <div id="quotaLine" class="quotaLine">
+                服务点：<b id="quotaRemaining">—</b> / <span id="quotaTotal">—</span>
+                <small>（已用 <span id="quotaUsed">—</span>；自带 Key 每次调用扣 1 点，平台模式不扣点）</small>
+            </div>
+
+            <!-- BYOK：保存/更换自带 key；仅 DeepSeek，embedding 永远走平台 -->
+            <div id="byokBox" class="keybox" hidden>
+                <div id="byokStatus" class="keyStatus"></div>
                 <div class="pwdWrap">
-                    <input id="ksPass" type="password" placeholder="设密码保护（可选；不填=本机免密自动解锁）" autocomplete="new-password">
-                    <button type="button" class="pwdToggle" data-target="ksPass" tabindex="-1">显示</button>
+                    <input id="byokKey" type="password" placeholder="DeepSeek API Key（sk-…，仅支持 DeepSeek）" autocomplete="off">
+                    <button type="button" class="pwdToggle" data-target="byokKey" tabindex="-1">显示</button>
                 </div>
                 <div class="row">
-                    <button id="btnKeySave" class="primary">保存密钥</button>
-                    <button id="btnKeyLock" class="ghost" hidden>锁定</button>
-                    <button id="btnKeyCancel" class="ghost" hidden>收起</button>
+                    <button id="btnByokSave" class="primary">保存并切换</button>
+                    <button id="btnByokDelete" class="warn" hidden>删除并切回平台</button>
                 </div>
-                <small class="keyhint">加密保存在本机 ~/.mock-interview/（AES-GCM），不上传任何服务器；环境变量若已设置则优先使用。留空表示不修改该项。<b>填了密码</b>：刷新/换设备/重启后都要重新输密码（适合放到服务器多设备访问）；<b>不填密码</b>：仅本机免密自动解锁。</small>
+                <small class="keyhint">Key 经 AES-GCM 加密存入服务端，页面只显示末 4 位；保存时向 DeepSeek 验活，无效不落库。向量化（通义）始终走平台 key。</small>
             </div>
+            <p id="keyMsg" class="keyMsg" hidden></p>
         </div>
 
         <div class="block">

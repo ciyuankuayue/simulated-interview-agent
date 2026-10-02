@@ -32,4 +32,12 @@ public interface LlmPort {
      */
     LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                   List<Map<String, Object>> tools, boolean jsonMode);
+
+    /**
+     * R1-3：校验一个「待保存」的用户自带 DeepSeek key（GET /models，不烧对话 token、不扣点）。
+     * 离线 stub 默认抛 UnsupportedOperationException（只有 UserController 的真实验活路径用到）。
+     */
+    default ApiKeyStatus verifyApiKey(String candidateKey) {
+        throw new UnsupportedOperationException("该 LlmPort 实现不支持 key 验活");
+    }
 }

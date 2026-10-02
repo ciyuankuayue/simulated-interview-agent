@@ -2,6 +2,7 @@ package com.bupt.mockinterview.agent;
 
 import com.bupt.mockinterview.agent.CriticService.Payload;
 import com.bupt.mockinterview.agent.CriticService.TurnBrief;
+import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.domain.CriticReport;
 import com.bupt.mockinterview.domain.InterviewSession;
 import com.bupt.mockinterview.domain.InterviewTurn;
@@ -160,6 +161,9 @@ public class InterviewOrchestrator {
         try {
             sr = llm.score(current.getQuestion(), answer);
             current.setScoreJson(mapper.writeValueAsString(scoreJsonOf(sr)));
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            // 402 点数耗尽 / 409 BYOK 未配 key：业务决策，直接打断面试透传给前端，不许降级吞掉
+            throw e;
         } catch (Exception e) {
             // 降级：判分失败不中断，跳过追问直接下一题
             current.setScoreJson("{\"error\":\"判分失败: " + e.getMessage().replace("\"", "'") + "\"}");
@@ -193,6 +197,8 @@ public class InterviewOrchestrator {
                     followup = llm.followUp(currentRole(session, turns).systemPrompt(),
                             "题目：" + current.getQuestion() + "\n候选人的回答：" + answer
                                     + "\n请就这个回答再追一层 why（一句话，只输出追问本身）").content();
+                } catch (QuotaExhaustedException | IllegalStateException e) {
+                    throw e;
                 } catch (Exception e) {
                     followup = null;
                     events.add(AgentEvent.of(AgentEvent.ERROR, "code", "FOLLOWUP_FAILED", "message", e.getMessage()));
@@ -243,6 +249,9 @@ public class InterviewOrchestrator {
             question = llm.followUp(nextRole.systemPrompt(),
                     "岗位 JD：\n" + jdText + "\n\n已经问过的问题（不要重复）：\n" + asked
                             + "\n\n请出一道新的面试题，一句话，只输出题目本身。").content();
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            // 402/409：不降级为 QUESTION_FAILED，直接打断（start/answer HTTP 由全局 handler 映射 402/409）
+            throw e;
         } catch (Exception e) {
             events.add(AgentEvent.of(AgentEvent.ERROR, "code", "QUESTION_FAILED", "message", e.getMessage()));
             return events;

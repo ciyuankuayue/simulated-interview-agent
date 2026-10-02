@@ -182,18 +182,6 @@ Note: java.version=17 is the bytecode TARGET (major version 61); you do NOT need
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
-            <!-- 测试隔离：@SpringBootTest 一律用 target/test-vault 当保险箱目录，
-                 绝不读用户家目录 ~/.mock-interview——否则本机若存过密码模式保险箱，
-                 VaultAccessFilter 会把未带令牌的 MockMvc 业务请求全部拦成 401。 -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <systemPropertyVariables>
-                        <app.vault.dir>${project.build.directory}/test-vault</app.vault.dir>
-                    </systemPropertyVariables>
-                </configuration>
-            </plugin>
         </plugins>
     </build>
 

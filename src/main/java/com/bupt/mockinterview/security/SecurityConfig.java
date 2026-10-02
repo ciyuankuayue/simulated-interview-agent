@@ -10,7 +10,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * R1-1 安全配置。
  * <p>
  * 只注册 BCryptPasswordEncoder（密码加密），不启用完整的 Spring Security Web。
- * 鉴权走手写的 {@link JwtAuthFilter} + 现有 {@link com.bupt.mockinterview.security.VaultAccessFilter}。
+ * 鉴权走手写的 {@link JwtAuthFilter}（R1-3 起为唯一门禁；旧 VaultAccessFilter 已删除）。
  */
 @Configuration
 @EnableConfigurationProperties(JwtProperties.class)

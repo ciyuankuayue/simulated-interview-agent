@@ -1,6 +1,10 @@
 package com.bupt.mockinterview.llm;
 
-import com.bupt.mockinterview.security.KeyVault;
+import com.bupt.mockinterview.billing.QuotaExhaustedException;
+import com.bupt.mockinterview.billing.QuotaService;
+import com.bupt.mockinterview.domain.User;
+import com.bupt.mockinterview.security.CurrentUserService;
+import com.bupt.mockinterview.security.KeyResolver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.MediaType;
@@ -49,12 +53,17 @@ public class LlmService implements LlmPort {
     private final OkHttpClient client;
     private final ObjectMapper mapper;
     private final LlmProperties props;
-    private final KeyVault keyVault;
+    private final KeyResolver keyResolver;
+    private final CurrentUserService currentUser;
+    private final QuotaService quotaService;
 
-    public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props, KeyVault keyVault) {
+    public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props,
+                      KeyResolver keyResolver, CurrentUserService currentUser, QuotaService quotaService) {
         this.mapper = mapper;
         this.props = props;
-        this.keyVault = keyVault;
+        this.keyResolver = keyResolver;
+        this.currentUser = currentUser;
+        this.quotaService = quotaService;
         // 由全局单例派生：共享连接池与线程池，仅覆盖超时
         this.client = okHttpClient.newBuilder()
                 .callTimeout(props.getTimeoutMs(), TimeUnit.MILLISECONDS)
@@ -65,13 +74,11 @@ public class LlmService implements LlmPort {
 
     /** 追问/实时交互：非思考模式，返回一句追问或纠正。 */
     public LlmReply followUp(String system, String user) {
-        requireApiKey();
         return chat(props.getModelFlash(), false, List.of(sys(system), userMsg(user)), null, false);
     }
 
     /** 判分：思考模式 + JSON 输出，解析并校验后返回结构化结果。 */
     public ScoreResult score(String question, String answer) {
-        requireApiKey();
         String user = "题目：\n" + question + "\n\n候选人的回答：\n" + answer;
         LlmReply reply = chat(props.getModelReasoner(), true, List.of(sys(SCORE_SYSTEM), userMsg(user)), null, true);
         return parseScore(reply.content());
@@ -97,7 +104,17 @@ public class LlmService implements LlmPort {
      */
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
-        requireApiKey();
+        // 统一在此解析 key 并计费：followUp/score/Critic/JD 解析等所有 DeepSeek 调用的唯一收口。
+        // BYOK 扣点在 HTTP 调用之前——余额不足抛 402，一次 LLM 请求都不会发出（重试也不重复扣）。
+        User user = currentUser.currentUser();
+        KeyResolver.ResolvedKey resolved = keyResolver.resolveForChat(user);
+        if (resolved.byok() && user != null
+                && !quotaService.chargeForByokCall(user.getId())) {
+            throw new QuotaExhaustedException(
+                    "服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值");
+        }
+        requireApiKey(resolved.apiKey());
+
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("messages", messages);
@@ -111,7 +128,7 @@ public class LlmService implements LlmPort {
         }
         // 思考模式不支持 temperature / presence_penalty / frequency_penalty，一律不传
 
-        JsonNode root = callWithRetry(body);
+        JsonNode root = callWithRetry(body, resolved.apiKey());
         JsonNode msg = root.path("choices").path(0).path("message");
         if (msg.isMissingNode()) {
             throw new LlmException("DeepSeek 响应缺少 choices[0].message: " + root);
@@ -121,11 +138,33 @@ public class LlmService implements LlmPort {
 
     // ---------- HTTP + 重试 ----------
 
-    private JsonNode callWithRetry(Map<String, Object> body) {
+    /**
+     * 校验一个「待保存」的 DeepSeek key 是否可用：GET {baseUrl}/models 最轻量
+     * （不生成 token、不消耗对话额度），200=有效；401/403=key 无效；其余/网络异常=服务商不可达。
+     * 注意：不走 {@link KeyResolver}、不扣 BYOK 点数——此刻用户可能还是 PLATFORM 模式。
+     */
+    @Override
+    public ApiKeyStatus verifyApiKey(String candidateKey) {
+        Request req = new Request.Builder()
+                .url(props.getBaseUrl() + "/models")
+                .addHeader("Authorization", "Bearer " + candidateKey)
+                .get()
+                .build();
+        try (Response resp = client.newCall(req).execute()) {
+            if (resp.isSuccessful()) {
+                return ApiKeyStatus.VALID;
+            }
+            return (resp.code() == 401 || resp.code() == 403) ? ApiKeyStatus.INVALID : ApiKeyStatus.UNREACHABLE;
+        } catch (IOException e) {
+            return ApiKeyStatus.UNREACHABLE;
+        }
+    }
+
+    private JsonNode callWithRetry(Map<String, Object> body, String apiKey) {
         LlmException last = null;
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
             try {
-                return callOnce(body);
+                return callOnce(body, apiKey);
             } catch (HttpStatusException e) {
                 // 4xx 属请求本身有问题，重试无意义
                 if (e.code < 500) {
@@ -142,11 +181,11 @@ public class LlmService implements LlmPort {
         throw last;
     }
 
-    private JsonNode callOnce(Map<String, Object> body) throws IOException {
+    private JsonNode callOnce(Map<String, Object> body, String apiKey) throws IOException {
         String json = mapper.writeValueAsString(body);
         Request req = new Request.Builder()
                 .url(props.getBaseUrl() + "/chat/completions")
-                .addHeader("Authorization", "Bearer " + keyVault.deepseekKey())
+                .addHeader("Authorization", "Bearer " + apiKey)
                 .post(RequestBody.create(json, JSON))
                 .build();
         try (Response resp = client.newCall(req).execute()) {
@@ -222,9 +261,9 @@ public class LlmService implements LlmPort {
         return m;
     }
 
-    private void requireApiKey() {
-        if (keyVault.deepseekKey() == null || keyVault.deepseekKey().isBlank()) {
-            throw new LlmException("DeepSeek 密钥未配置：请在页面「模型密钥」中填写，或设置 DEEPSEEK_API_KEY");
+    private void requireApiKey(String apiKey) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new LlmException("DeepSeek 密钥未配置：平台模式请让运维设置 DEEPSEEK_API_KEY，或在「模型调用方式」中填写你自己的 API Key");
         }
     }
 

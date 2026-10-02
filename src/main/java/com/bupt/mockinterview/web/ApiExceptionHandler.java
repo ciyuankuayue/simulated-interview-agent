@@ -1,7 +1,7 @@
 package com.bupt.mockinterview.web;
 
+import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.llm.LlmException;
-import com.bupt.mockinterview.security.KeyVaultException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -18,10 +18,11 @@ import java.util.Map;
  * 统一错误响应，对齐 api.md §1：HTTP 状态码 + `{code, message}`。
  *
  * 状态码约定（api.md §1）：
- * 400 参数错误 / 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答）/ 500 内部错误 / 504 LLM 超时。
+ * 400 参数错误 / 401 JWT 失效 / 402 BYOK 点数耗尽 / 404 资源不存在 /
+ * 409 状态冲突（如会话已 DONE 再回答）/ 500 内部错误 / 504 LLM 超时。
  * 业务层只需抛语义异常，不必关心 HTTP 细节：
  * - {@link IllegalArgumentException} → 404（找不到资源）
- * - {@link IllegalStateException}    → 409（会话状态冲突）
+ * - {@link IllegalStateException}    → 409（会话状态冲突 / BYOK 未配 key）
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -46,10 +47,10 @@ public class ApiExceptionHandler {
         return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", e.getMessage());
     }
 
-    /** 保险箱密码错误/未解锁 → 401（KeyVaultException 自带的 @ResponseStatus 会被本兜底 Advice 覆盖，必须显式声明）。 */
-    @ExceptionHandler(KeyVaultException.class)
-    public ResponseEntity<Map<String, Object>> unauthorized(KeyVaultException e) {
-        return body(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", e.getMessage());
+    /** BYOK 服务点数耗尽 → 402（R1-3；扣点发生在 LLM 调用之前，不会打出半截请求）。 */
+    @ExceptionHandler(QuotaExhaustedException.class)
+    public ResponseEntity<Map<String, Object>> paymentRequired(QuotaExhaustedException e) {
+        return body(HttpStatus.PAYMENT_REQUIRED, "QUOTA_EXHAUSTED", e.getMessage());
     }
 
     /** LLM 不可用/超时：api.md §1 约定 504（正常链路已有降级，走到这里说明降级也没兜住）。 */
