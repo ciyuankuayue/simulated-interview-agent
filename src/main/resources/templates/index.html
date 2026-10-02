@@ -8,11 +8,61 @@
 </head>
 <body>
 
+<!-- ======================= 登录 / 注册模态弹窗（未登录时唯一可见内容，静态 HTML 默认显示，无首屏闪烁） ======================= -->
+<div id="authModal" class="auth-overlay">
+    <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <h1 id="authTitle" class="authTitle">AI 模拟面试</h1>
+
+        <div class="auth-tabs" role="tablist">
+            <button type="button" id="tabLogin" class="auth-tab active" role="tab" aria-selected="true">登录</button>
+            <button type="button" id="tabRegister" class="auth-tab" role="tab" aria-selected="false">注册</button>
+        </div>
+
+        <!-- 登录表单 -->
+        <form id="loginForm" class="auth-form" autocomplete="on">
+            <input id="loginUsername" type="text" placeholder="用户名（≥4 字符）" autocomplete="username">
+            <div class="pwdWrap">
+                <input id="loginPassword" type="password" placeholder="密码（≥6 字符）" autocomplete="current-password">
+                <button type="button" class="pwdToggle" data-target="loginPassword" tabindex="-1">显示</button>
+            </div>
+            <button type="submit" id="btnLogin" class="primary big">登录</button>
+        </form>
+
+        <!-- 注册表单 -->
+        <form id="registerForm" class="auth-form" hidden autocomplete="on">
+            <input id="regUsername" type="text" placeholder="用户名（4-32 字符）" autocomplete="username">
+            <div class="pwdWrap">
+                <input id="regPassword" type="password" placeholder="密码（6-128 字符）" autocomplete="new-password">
+                <button type="button" class="pwdToggle" data-target="regPassword" tabindex="-1">显示</button>
+            </div>
+            <div class="pwdWrap">
+                <input id="regPassword2" type="password" placeholder="再输一遍密码" autocomplete="new-password">
+                <button type="button" class="pwdToggle" data-target="regPassword2" tabindex="-1">显示</button>
+            </div>
+            <button type="submit" id="btnRegister" class="primary big">注册</button>
+        </form>
+
+        <!-- 弹窗内错误提示（红色）；切 Tab / 重新输入 / 提交时清空 -->
+        <p id="authError" class="auth-error" hidden></p>
+        <p class="auth-hint">令牌仅保存在浏览器内存中，刷新页面需重新登录</p>
+    </div>
+</div>
+
+<!-- ======================= 主应用（登录成功后才显示） ======================= -->
+<div id="appShell" hidden>
+
 <header class="topbar">
     <div class="brand">AI 模拟面试<span class="sub">贴 JD → 角色追问 → Critic 报告 + 错题本</span></div>
-    <div class="conn">
-        <span id="connDot" class="dot offline"></span>
-        <span id="connText">未连接</span>
+    <div class="topbar-right">
+        <div class="conn">
+            <span id="connDot" class="dot offline"></span>
+            <span id="connText">未连接</span>
+        </div>
+        <div class="user-area" id="userArea">
+            <span id="userAvatar" class="user-avatar">?</span>
+            <span id="authUsername" class="user-name">—</span>
+            <button id="btnLogout" class="ghost">登出</button>
+        </div>
     </div>
 </header>
 
@@ -20,45 +70,7 @@
 
     <!-- ======================= 左：准备区 ======================= -->
     <aside class="panel">
-        <h2>0. 账号</h2>
-
-        <!-- 未登录：登录 + 注册 -->
-        <div id="authLoginBox" class="keybox">
-            <input id="loginUsername" type="text" placeholder="用户名（≥4 字符）" autocomplete="username">
-            <div class="pwdWrap">
-                <input id="loginPassword" type="password" placeholder="密码（≥6 字符）" autocomplete="current-password">
-                <button type="button" class="pwdToggle" data-target="loginPassword" tabindex="-1">显示</button>
-            </div>
-            <div class="row">
-                <button id="btnLogin" class="primary">登录</button>
-                <button id="btnShowRegister" class="ghost">注册新账号</button>
-            </div>
-        </div>
-
-        <div id="authRegisterBox" class="keybox" hidden>
-            <input id="regUsername" type="text" placeholder="用户名（≥4 字符）" autocomplete="username">
-            <div class="pwdWrap">
-                <input id="regPassword" type="password" placeholder="密码（≥6 字符）" autocomplete="new-password">
-                <button type="button" class="pwdToggle" data-target="regPassword" tabindex="-1">显示</button>
-            </div>
-            <div class="pwdWrap">
-                <input id="regPassword2" type="password" placeholder="再输一遍密码" autocomplete="new-password">
-                <button type="button" class="pwdToggle" data-target="regPassword2" tabindex="-1">显示</button>
-            </div>
-            <div class="row">
-                <button id="btnRegister" class="primary">注册</button>
-                <button id="btnShowLogin" class="ghost">返回登录</button>
-            </div>
-        </div>
-
-        <!-- 已登录：状态 -->
-        <div id="authUserBox" class="keybox" hidden>
-            <div class="row">
-                <span class="lb">当前用户</span>
-                <span id="authUsername" class="keybadge ok">—</span>
-            </div>
-            <button id="btnLogout" class="ghost">退出登录</button>
-        </div>
+        <h2>1. 准备</h2>
 
         <div class="block keyblock">
             <div class="row">
@@ -199,6 +211,8 @@
     </aside>
 
 </main>
+
+</div><!-- /#appShell -->
 
 <script th:src="@{/app.js}"></script>
 </body>

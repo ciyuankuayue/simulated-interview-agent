@@ -185,3 +185,59 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
     border: 1px solid var(--line); border-radius: 6px;
 }
 .pwdToggle:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---------- 全局 hidden（display:flex 的元素如遮罩层也必须被 hidden 压过） ---------- */
+[hidden] { display: none !important; }
+
+/* ---------- 登录 / 注册模态弹窗（R1-1.5） ---------- */
+.auth-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(5, 8, 15, .72);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.auth-card {
+    width: 360px; max-width: 100%;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 24px 22px 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+}
+.authTitle { margin: 0 0 16px; text-align: center; font-size: 18px; font-weight: 700; }
+
+.auth-tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.auth-tab {
+    flex: 1 1 auto; background: transparent; border: none; border-radius: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 0; font-size: 14px;
+}
+.auth-tab:hover:not(:disabled) { border-color: transparent; color: var(--text); }
+.auth-tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+.auth-form { display: flex; flex-direction: column; gap: 10px; }
+.auth-form input[type="text"], .auth-form input[type="password"] {
+    width: 100%; margin: 0;
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; font: inherit;
+}
+.auth-form input:focus { outline: none; border-color: var(--accent); }
+.auth-form .big { margin-top: 2px; }
+
+.auth-error {
+    margin: 10px 0 0; padding: 7px 10px;
+    font-size: 12px; color: var(--bad); word-break: break-all;
+    background: rgba(255, 107, 107, .1); border: 1px solid rgba(255, 107, 107, .35);
+    border-radius: 6px;
+}
+.auth-hint { margin: 10px 0 0; text-align: center; font-size: 11px; color: var(--muted); }
+
+/* ---------- 顶栏用户区 ---------- */
+.topbar-right { display: flex; align-items: center; gap: 18px; }
+.user-area { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.user-avatar {
+    width: 26px; height: 26px; border-radius: 50%; flex: none;
+    background: var(--accent); color: #0b1020; font-weight: 700; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.user-name {
+    color: var(--text); max-width: 120px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

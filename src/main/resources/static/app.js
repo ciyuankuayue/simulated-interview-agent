@@ -53,25 +53,49 @@
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
         if (!res.ok) {
             const msg = (data && data.message) ? data.message : (typeof data === 'string' ? data : res.status);
-            // 401 分流：JWT 失效 vs Vault 失效 vs 密码错误
+            // 401 分流：登录/解锁接口的 401 是密码错误，直接透传给弹窗；其余按「JWT 失效 vs Vault 锁定」区分
             if (res.status === 401) {
-                const code = data && data.code;
-                // /auth/login 的 401 = 密码错误，直接透传给用户
-                if (path === '/api/auth/login') throw new Error(msg);
-                // /api/setup/unlock 的 401 = 保险箱密码错误，直接透传
+                if (path === '/api/auth/login') throw new Error(msg || '用户名或密码错误');
                 if (path === '/api/setup/unlock') throw new Error(msg);
-                // 其他所有业务接口 401 = 令牌失效
-                // 两个令牌都清（反正都只在 JS 内存），让用户分别重新登录/解锁
-                state.token = null;
-                state.vaultToken = null;
-                showAuthLogin();
-                // 保险箱状态也重置一下
-                try { loadKeyStatus(); } catch (e) {}
-                throw new Error(code === 'UNAUTHORIZED' ? '登录已过期，请重新登录' : msg);
+                if (state.token && await jwtStillAlive()) {
+                    // JWT 还有效 → 只是 vaultToken 失效（点了锁定/令牌被作废）：留在主界面，弹保险箱解锁框
+                    state.vaultToken = null;
+                    try { await loadKeyStatus(); } catch (e) { /* 忽略，解锁框已在 */ }
+                    throw new Error('模型保险箱已锁定，请先在左侧输入密码解锁');
+                }
+                // JWT 失效/缺失：强制下线（不能在这里再调 loadKeyStatus——无 JWT 时它自己也会 401，形成递归）
+                forceLogout('登录已过期，请重新登录');
+                throw new Error('登录已过期，请重新登录');
             }
             throw new Error('HTTP ' + res.status + ' · ' + msg);
         }
         return data;
+    }
+
+    /**
+     * 探活 JWT：直接 fetch setup/status（该接口要过 JwtAuthFilter、但在 VaultAccessFilter 白名单内）。
+     * 不走 api()，避免 401 递归。200=JWT 有效（是 Vault 挂了）；401=JWT 挂了。
+     */
+    async function jwtStillAlive() {
+        try {
+            const r = await fetch('/api/setup/status', {
+                headers: { 'Authorization': 'Bearer ' + state.token }
+            });
+            return r.ok;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** 强制下线：清双令牌、停 SSE、隐藏主界面、弹登录窗（带错误提示）。 */
+    function forceLogout(message) {
+        state.token = null;
+        state.username = null;
+        state.vaultToken = null;
+        closeStream();
+        $('appShell').hidden = true;
+        $('userArea').hidden = true;
+        showAuthModal('login', message);
     }
 
     function esc(s) {
@@ -276,12 +300,14 @@
             + (params.length ? '?' + params.join('&') : '');
         const es = new EventSource(url);
         state.es = es;
+        let sseFails = 0;   // 连续连接失败计数：收到任何消息/onopen 归零，达上限停止重连（防 401 后无限打接口）
 
-        es.onopen = () => setConn(true, 'SSE 已连接');
+        es.onopen = () => { sseFails = 0; setConn(true, 'SSE 已连接'); };
 
         const on = (type, fn) => es.addEventListener(type, (e) => {
             let ev = {};
             try { ev = JSON.parse(e.data); } catch (err) { ev = {}; }
+            if (e.data != null) sseFails = 0;   // 有数据=真消息；连接错误的 error 事件 e.data 为 null，不重置
             const key = type + ':' + (ev.turnSeq == null ? '' : ev.turnSeq);
             if (ev.turnSeq == null || !state.rendered.has(key)) {
                 state.rendered.add(key);
@@ -301,11 +327,19 @@
         });
         on('report', renderReport);
         on('error', (ev) => {
-            // 注意：EventSource 自带的 onerror 也走这里（那是连接错误），用 code 字段区分业务错误
+            // 注意：EventSource 自带的 onerror 也走这里（那是连接错误，e.data 为 null），用 code 字段区分业务错误
             if (ev && ev.code) {
                 bubble('err', '异常 · ' + ev.code, esc(ev.message || ''));
             } else {
-                setConn(false, 'SSE 断开（会自动重连）');
+                sseFails++;
+                if (sseFails >= 3) {
+                    // 连续失败（后端重启 / 401 被拒 / 网络断）：浏览器默认会无限重连，这里主动停掉，避免空打接口
+                    closeStream();
+                    setConn(false, 'SSE 已断开');
+                    tip('实时连接连续失败已停止，可重新开始一场面试', true);
+                } else {
+                    setConn(false, 'SSE 断开（自动重连 ' + sseFails + '/3）');
+                }
             }
         });
         on('done', async () => {
@@ -499,86 +533,163 @@
         } catch (e) { /* 列表刷新失败不打扰用户 */ }
     }
 
-    // ---------- 用户登录 / 注册 / 登出（R1-1.5） ----------
+    // ---------- 用户登录 / 注册 / 登出（R1-1.5 模态弹窗） ----------
 
-    /** 显示登录面板（隐藏注册/已登录）。 */
-    function showAuthLogin() {
-        $('authLoginBox').hidden = false;
-        $('authRegisterBox').hidden = true;
-        $('authUserBox').hidden = true;
+    /** 弹窗内红色错误条（所有弹窗阶段的错误都走这里——#tip 在隐藏的主界面里，登录前不可见）。 */
+    function showAuthError(message) {
+        const el = $('authError');
+        el.textContent = message || '';
+        el.hidden = !message;
     }
 
-    /** 显示已登录状态（隐藏登录/注册）。 */
-    function showAuthUser() {
-        $('authLoginBox').hidden = true;
-        $('authRegisterBox').hidden = true;
-        $('authUserBox').hidden = false;
-        $('authUsername').textContent = state.username || '—';
+    function clearAuthError() { showAuthError(''); }
+
+    /**
+     * 显示登录弹窗。
+     * @param tab 'login' | 'register'，默认登录 Tab
+     * @param error 可选错误文案（如登录过期被强制下线时带入）
+     */
+    function showAuthModal(tab, error) {
+        switchAuthTab(tab || 'login');
+        $('loginPassword').value = '';
+        $('regPassword').value = '';
+        $('regPassword2').value = '';
+        showAuthError(error || '');
+        $('authModal').hidden = false;
+        setTimeout(() => $(tab === 'register' ? 'regUsername' : 'loginUsername').focus(), 0);
     }
 
-    /** 绑定登录/注册/登出按钮事件。 */
+    /** 只切 Tab（active 类 + 表单 hidden），不重建 DOM，保证密码框按钮的一次性绑定不丢。 */
+    function switchAuthTab(tab) {
+        const isLogin = tab === 'login';
+        $('tabLogin').classList.toggle('active', isLogin);
+        $('tabRegister').classList.toggle('active', !isLogin);
+        $('tabLogin').setAttribute('aria-selected', String(isLogin));
+        $('tabRegister').setAttribute('aria-selected', String(!isLogin));
+        $('loginForm').hidden = !isLogin;
+        $('registerForm').hidden = isLogin;
+        clearAuthError();
+    }
+
+    /** 按钮 loading 态：禁用 + 文案切换，防重复提交；finally 里必须调 setAuthLoading(btn, false)。 */
+    function setAuthLoading(btn, on, loadingText) {
+        if (on) {
+            btn.dataset.originText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = loadingText;
+        } else {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.originText || btn.textContent;
+        }
+    }
+
+    /** 登录/注册成功的统一收尾：先查保险箱门禁（弹窗仍遮着，避免「检测中」闪烁），再进主界面。 */
+    async function handleAuthSuccess(r) {
+        state.token = r.token;
+        state.username = r.username;
+
+        let gated = true;
+        try {
+            gated = await loadKeyStatus();
+        } catch (e) { gated = true; }
+
+        // 用户身份用 textContent 注入（用户名是服务端数据，不拼 innerHTML）
+        $('authUsername').textContent = r.username || '—';
+        $('userAvatar').textContent = (r.username || '?').charAt(0).toUpperCase();
+        $('userArea').hidden = false;
+        $('appShell').hidden = false;
+        $('authModal').hidden = true;
+        clearAuthError();
+        tip(r.username ? '欢迎，' + r.username : '登录成功');
+
+        // 密码模式门禁：gated 时停在左侧保险箱解锁框，不载业务数据（未 unlock 调业务接口照样 401）
+        if (!gated) loadBusinessData();
+    }
+
+    /** 绑定登录弹窗：Tab 切换、两个 form 的 submit、登出。 */
     function bindAuth() {
-        // 点密码框的「显示/隐藏」也要覆盖登录/注册面板（bindKeySetup 已有全局绑定，但在那之前先初始化面板状态）
+        $('tabLogin').onclick = () => switchAuthTab('login');
+        $('tabRegister').onclick = () => switchAuthTab('register');
 
-        // 登录 ↔ 注册切换
-        $('btnShowRegister').onclick = () => {
-            $('authLoginBox').hidden = true;
-            $('authRegisterBox').hidden = false;
-        };
-        $('btnShowLogin').onclick = () => {
-            $('authLoginBox').hidden = false;
-            $('authRegisterBox').hidden = true;
-        };
-
-        // 登录
-        $('btnLogin').onclick = async () => {
+        // 登录（form submit 天然支持 Enter；必须 preventDefault，否则原生提交会刷新页面）
+        $('loginForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = $('btnLogin');
+            if (btn.disabled) return;
             const u = $('loginUsername').value.trim();
             const p = $('loginPassword').value;
-            if (!u || !p) return tip('请输入用户名和密码', true);
+            if (!u) return showAuthError('请输入用户名');
+            if (!p) return showAuthError('请输入密码');
+            setAuthLoading(btn, true, '登录中…');
             try {
                 const r = await api('/api/auth/login', 'POST', { username: u, password: p });
-                state.token = r.token;
-                state.username = r.username;
-                $('loginPassword').value = '';
-                tip('登录成功');
-                showAuthUser();
-                // 登录成功后：先查保险箱门禁，再载业务数据
-                const gated = await loadKeyStatus();
-                if (!gated) loadBusinessData();
-            } catch (e) { tip(e.message, true); }
+                await handleAuthSuccess(r);
+            } catch (err) {
+                showAuthError(err.message);   // 401 已在 api() 转成人话
+            } finally {
+                setAuthLoading(btn, false);
+            }
         };
 
-        // 注册
-        $('btnRegister').onclick = async () => {
+        // 注册（成功即自动登录：register 直接返回 JWT）
+        $('registerForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = $('btnRegister');
+            if (btn.disabled) return;
             const u = $('regUsername').value.trim();
             const p = $('regPassword').value;
             const p2 = $('regPassword2').value;
-            if (!u || u.length < 4) return tip('用户名至少 4 字符', true);
-            if (!p || p.length < 6) return tip('密码至少 6 字符', true);
-            if (p !== p2) return tip('两次密码不一致', true);
+            if (!u || u.length < 4 || u.length > 32) return showAuthError('用户名需 4-32 个字符');
+            if (!p || p.length < 6 || p.length > 128) return showAuthError('密码需 6-128 个字符');
+            if (p !== p2) return showAuthError('两次输入的密码不一致');
+            setAuthLoading(btn, true, '注册中…');
             try {
                 const r = await api('/api/auth/register', 'POST', { username: u, password: p });
-                state.token = r.token;
-                state.username = r.username;
-                $('regUsername').value = '';
-                $('regPassword').value = '';
-                $('regPassword2').value = '';
-                tip('注册成功，已自动登录');
-                showAuthUser();
-                const gated = await loadKeyStatus();
-                if (!gated) loadBusinessData();
-            } catch (e) { tip(e.message, true); }
+                await handleAuthSuccess(r);
+            } catch (err) {
+                showAuthError(friendlyRegisterError(err));
+            } finally {
+                setAuthLoading(btn, false);
+            }
         };
 
-        // 登出
+        // 输入时清掉旧错误
+        ['loginUsername', 'loginPassword', 'regUsername', 'regPassword', 'regPassword2'].forEach((id) => {
+            $(id).addEventListener('input', clearAuthError);
+        });
+
+        // Enter 显式提交（不依赖浏览器隐式提交规则；requestSubmit 会走 onsubmit 的 preventDefault 流程）
+        [['loginUsername', 'loginForm'], ['loginPassword', 'loginForm'],
+         ['regUsername', 'registerForm'], ['regPassword', 'registerForm'],
+         ['regPassword2', 'registerForm']].forEach(([inputId, formId]) => {
+            $(inputId).addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    $(formId).requestSubmit();
+                }
+            });
+        });
+
+        // 登出：清双令牌（只在 JS 内存）+ 停 SSE + 刷新页面回登录弹窗，状态最干净
         $('btnLogout').onclick = () => {
             state.token = null;
             state.username = null;
+            state.vaultToken = null;
             closeStream();
-            // 登出不主动调 /logout（无状态），清本地令牌即可
-            tip('已退出登录');
-            showAuthLogin();
+            location.reload();
         };
+    }
+
+    /** 注册接口错误文案友好化：409 用户名占用、400 服务端 @Valid 技术串兜底，其余透传。 */
+    function friendlyRegisterError(err) {
+        const m = err && err.message ? err.message : '';
+        if (m.indexOf('409') >= 0 || m.indexOf('占用') >= 0 || m.indexOf('已被注册') >= 0) {
+            return '用户名已被注册，换一个试试';
+        }
+        if (m.indexOf('400') >= 0) {
+            return '提交内容不符合要求：用户名需 4-32 字符，密码需 6-128 字符';
+        }
+        return m || '注册失败，请稍后重试';
     }
 
     // ---------- 模型密钥（页面保险箱，免终端环境变量） ----------
@@ -716,11 +827,10 @@
         return gated;
     }
 
-    // ---------- 启动：两层门禁并行（JWT 谁 + Vault 给不给钱） ----------
-    // JWT（R1-1.5）：JS 内存变量，刷新必失 → 每次刷新都要重新登录
-    // Vault（T12）：密码模式下刷新/换设备也要重新输密码；非密码模式自动解锁
+    // ---------- 启动 ----------
+    // 两层门禁：JWT（谁）+ Vault（给不给钱），令牌全部只在 JS 内存，刷新必失。
+    // 静态 HTML 初始即「#authModal 可见、#appShell hidden」，无首屏闪烁；
+    // 这里只绑事件、不调任何接口——无 JWT 时 setup/status 也会 401。
+    // 登录成功后 handleAuthSuccess 才查保险箱门禁 + 载业务数据。
     bind();
-    showAuthLogin();   // 刷新后 token 必失，先显示登录面板
-    // 保险箱状态查询走白名单（/api/setup/status），不阻塞登录面板显示
-    (async () => { await loadKeyStatus(); })();
 })();
