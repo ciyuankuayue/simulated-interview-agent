@@ -29,12 +29,14 @@
 - [ ] **R1-1.5 前端接入 JWT 鉴权（补 R1-1 缺口，已立项 2026-09-29）**
   - 目标：R1-1 后端鉴权 + 隔离已完成，但前端 `app.js` 完全未接 JWT（无登录 UI、不存 token、`api()` 不带 `Authorization`、SSE 只拼 `vaultToken`），浏览器当前全线 401、不可用。本任务补齐前端接线，使浏览器端到端可用。
   - 验收：
-    1. `index.html` 新增登录/注册面板（密码模式下先 unlock 拿 `vaultToken`，再登录拿 JWT）；登录成功把 JWT 存入 `state.token`（**内存变量，不落 localStorage**——符合 Vault 安全约定，刷新即失效）。
-    2. `api()` 统一附加 `Authorization: Bearer <token>`；无 token 时请求自动跳登录面板。
-    3. SSE 的 `EventSource` URL 拼 `?jwt=<token>`（EventSource 不能设头，只能走 query）；密码模式下同时保留 `&vaultToken=<vt>`。
-    4. 收到 401（token 失效/未登录）自动清 `state.token` 并跳登录面板。
-    5. 浏览器端到端：登录后 `start/answer/sessions/end/report` 全链路 200，SSE 能持续收到面试官消息流。
-    6. 密码模式双令牌叠加验证：unlock 后登录 → 业务接口 200；未 unlock 即便带 JWT 也 401。
+    1. **登录/注册必须做成独立模态弹窗**：页面加载时若 `state.token` 为空，立即显示居中登录弹窗（参考抖音登录弹窗），背后三栏主面板**不可见且不可操作**；登录成功后弹窗关闭、显示主应用。
+    2. 登录弹窗内提供"登录 / 注册"两个 Tab 切换；字段：用户名、密码；密码支持显示/隐藏切换；点击按钮后有明确的 loading、成功、失败提示（错误信息用人话）。
+    3. 登录成功把 JWT 存入 `state.token`（**内存变量，不落 localStorage**——符合 Vault 安全约定，刷新即失效）；关闭弹窗并重新加载业务数据。
+    4. 登录成功后，在页面显著位置（建议右上角）显示当前用户名/昵称 + 登出按钮；登出清空 `state.token` 和 `state.vaultToken` 并回到登录弹窗。
+    5. `api()` 统一附加 `Authorization: Bearer <token>`；无 token 时请求自动跳登录面板；收到 401（token 失效/未登录）自动清 `state.token` 并显示登录弹窗。
+    6. SSE 的 `EventSource` URL 拼 `?jwt=<token>`（EventSource 不能设头，只能走 query）；密码模式下同时保留 `&vaultToken=<vt>`。
+    7. 浏览器端到端：登录后 `start/answer/sessions/end/report` 全链路 200，SSE 能持续收到面试官消息流。
+    8. 密码模式双令牌叠加验证：unlock 后登录 → 业务接口 200；未 unlock 即便带 JWT 也 401。
   - 估时：3–5 天　依赖：R1-1　难度：中
 - [ ] **R1-2 会话 / 资料 / 报告加 user_id 并迁移**
   - 目标：`InterviewSession / JdProfile / ResumeVersion / Note / ProjectDoc / RealInterviewRecord / CriticReport / WeakPoint / KnowledgeChunk` 全部挂 `user_id`；加 DB 索引；写迁移脚本（上线前 `ddl-auto:none`）。
