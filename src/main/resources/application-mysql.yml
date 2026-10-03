@@ -18,3 +18,10 @@ spring:
       hibernate:
         format_sql: false
         dialect: org.hibernate.dialect.MySQLDialect
+
+# ---- R4：MySQL 生产形态资料持久化，绝不因启动而清空向量索引 ----
+# 索引目录建议显式指向挂载的持久卷（默认相对路径 data/rag-index 也可，只要容器挂了卷）。
+app:
+  rag:
+    clean-on-empty-sources: false
+    # index-dir: /app/data/rag-index   # Docker 部署时经 APP_RAG_INDEX_DIR 环境变量注入并挂卷

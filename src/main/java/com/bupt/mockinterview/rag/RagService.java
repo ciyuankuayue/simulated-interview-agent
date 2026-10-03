@@ -24,33 +24,33 @@ public class RagService {
     private static final Logger log = LoggerFactory.getLogger(RagService.class);
 
     private final Embedder embedder;
-    private final InMemoryVectorStore store;
+    private final VectorStore store;
     private final int maxChars;
     private final int overlap;
     private final CurrentUserService currentUser;
     private final QuotaService quota;
     private final QuotaProperties quotaProps;
 
-    public RagService(Embedder embedder, InMemoryVectorStore store) {
+    public RagService(Embedder embedder, VectorStore store) {
         this(embedder, store, 500, 50, null, null, null);
     }
 
-    public RagService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser) {
+    public RagService(Embedder embedder, VectorStore store, CurrentUserService currentUser) {
         this(embedder, store, 500, 50, currentUser, null, null);
     }
 
     /** 生产构造：带 token 计量（预检 + 实扣 + 流水）。 */
-    public RagService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser,
+    public RagService(Embedder embedder, VectorStore store, CurrentUserService currentUser,
                       QuotaService quota, QuotaProperties quotaProps) {
         this(embedder, store, 500, 50, currentUser, quota, quotaProps);
     }
 
-    public RagService(Embedder embedder, InMemoryVectorStore store, int maxChars, int overlap,
+    public RagService(Embedder embedder, VectorStore store, int maxChars, int overlap,
                       CurrentUserService currentUser) {
         this(embedder, store, maxChars, overlap, currentUser, null, null);
     }
 
-    public RagService(Embedder embedder, InMemoryVectorStore store, int maxChars, int overlap,
+    public RagService(Embedder embedder, VectorStore store, int maxChars, int overlap,
                       CurrentUserService currentUser, QuotaService quota, QuotaProperties quotaProps) {
         this.embedder = embedder;
         this.store = store;
@@ -61,20 +61,34 @@ public class RagService {
         this.quotaProps = quotaProps;
     }
 
-    /** 把一份资料（note/resume/project_doc 文本）切块向量化后入库。 */
+    /**
+     * 把一份资料（note/resume/project_doc 文本）切块向量化后入库。
+     *
+     * <p>事务语义（R4）：预检（402 在任何索引动作之前，旧块不动）→ beginReplace 删旧块
+     * （pieces 为空也执行 = PUT 清空语义）→ embed+add 循环 → commitBatch；异常 rollbackBatch
+     * （Lucene 丢弃本批 delete+add、旧块保持可用；InMemory 立即生效，rollback 为空操作）。
+     * 402/409 照常穿透 MaterialController。
+     */
     public void ingest(String text, String sourceType, String sourceId) throws Exception {
         List<String> pieces = TextChunker.chunk(text, maxChars, overlap);
         Long userId = billableUserId();
         if (userId != null && !pieces.isEmpty()) {
-            // 入库前预检一次：0 余额直接 402，一个 chunk 都不发
+            // 入库前预检一次：0 余额直接 402，一个 chunk 都不发（旧块完全不动）
             quota.ensureAvailable(userId, KeyMode.PLATFORM);
         }
-        for (int i = 0; i < pieces.size(); i++) {
-            String piece = pieces.get(i);
-            Embedding emb = embedder.embed(piece);
-            store.add(new KnowledgeChunk(sourceType + "#" + sourceId + "#" + i, sourceType, sourceId,
-                    piece, emb.vector()));
-            settle(userId, UsageScene.EMBED_INGEST, piece, emb);
+        store.beginReplace(userId, sourceType, sourceId);
+        try {
+            for (int i = 0; i < pieces.size(); i++) {
+                String piece = pieces.get(i);
+                Embedding emb = embedder.embed(piece);
+                store.add(new KnowledgeChunk(sourceType + "#" + sourceId + "#" + i, userId,
+                        sourceType, sourceId, piece, emb.vector()));
+                settle(userId, UsageScene.EMBED_INGEST, piece, emb);
+            }
+            store.commitBatch();
+        } catch (Exception e) {
+            store.rollbackBatch();   // Lucene: rollback+重建 writer，旧块保留；InMemory: 空操作
+            throw e;                 // 402/409 照常穿透 MaterialController
         }
     }
 
@@ -86,7 +100,7 @@ public class RagService {
         }
         Embedding q = embedder.embed(query);
         settle(userId, UsageScene.EMBED_QUERY, query, q);
-        return store.search(q.vector(), topK);
+        return store.search(userId, q.vector(), topK);
     }
 
     /** 登录用户且装配了 QuotaService 才计量（离线实验/单测构造返回 null）。 */

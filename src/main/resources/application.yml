@@ -75,6 +75,16 @@ jwt:
 
 # ---- R2 token 额度（PLATFORM 按 usage 实扣；BYOK 对话按次服务费；embedding 也计量） ----
 app:
+  # ---- R4 向量索引（Lucene FSDirectory 持久化） ----
+  rag:
+    # 索引目录：相对路径基于进程工作目录解析为绝对路径；也可填绝对路径。
+    # 环境变量 APP_RAG_INDEX_DIR 可覆盖（Docker 挂卷时指向 /app/data/rag-index）。
+    index-dir: ${APP_RAG_INDEX_DIR:data/rag-index}
+    dim: 1024                          # 通义 qwen embedding 维度；写入/查询统一 pad/截断到此长度
+    # 启动时若四张资料表（resume_version/note/project_doc/real_interview_record）全空，
+    # 则清空向量索引——dev/H2 create-drop 每次重建库，防止上一轮落盘向量变孤儿块。
+    # 生产 mysql profile 在 application-mysql.yml 显式置 false。
+    clean-on-empty-sources: true
   quota:
     signup-bonus-tokens: 500000            # 注册赠送 token 额度（PLATFORM 对话+embedding 按 token 扣；首个 ADMIN 也赠）
     byok-charge-per-call: 1                # BYOK 每次 DeepSeek 对话扣的服务费（token 当量）；余额不足→402

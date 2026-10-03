@@ -128,8 +128,8 @@
             <artifactId>spring-security-crypto</artifactId>
         </dependency>
 
-        <!-- L3 对比实验：向量库侧 = Apache Lucene HNSW（仅测试用，生产不引入） -->
-        <!-- 选型 2026-09-18：FAISS 的 Java 绑定不在 Maven Central（bytedeco 无 faiss 预设；
+        <!-- R4：向量持久化（Lucene FSDirectory + HNSW）+ L3 对比实验共用。
+             选型 2026-09-18：FAISS 的 Java 绑定不在 Maven Central（bytedeco 无 faiss 预设；
              karellen/faiss-java、jelmerk/faiss4j 均 404），只能走 JitPack 且实测 401 拒绝。
              改用 Lucene HNSW：同属 ANN 算法族，纯 Java / 零原生库 / 零 JitPack，
              是 OpenSearch / Elasticsearch 使用的同一套向量检索实现。 -->
@@ -137,14 +137,12 @@
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-core</artifactId>
             <version>9.12.3</version>
-            <scope>test</scope>
         </dependency>
         <!-- IndexWriterConfig() 默认用 StandardAnalyzer，它不在 lucene-core 而在本模块，需显式引入 -->
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-analysis-common</artifactId>
             <version>9.12.3</version>
-            <scope>test</scope>
         </dependency>
     </dependencies>
 

@@ -16,7 +16,7 @@
 - 时间：ISO-8601 字符串
 - 错误码：HTTP 状态码 + `{code, message}`
   - 400 参数错误 / 401 未登录或 JWT 失效 / 402 token 额度耗尽（PLATFORM/BYOK 余额不足，见 §7）/ 403 非 ADMIN 调管理接口（R2）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
-- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。
+- 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。R4 起 `vectorChunks` 是 **Lucene 落盘索引的全局存活 doc 总数（跨用户、不含已逻辑删除待合并的旧 replace 版本，仅作粗监控，不是当前用户块数）**。
 
 ## 2. 认证（R1-1 新增，2026-09-28）
 

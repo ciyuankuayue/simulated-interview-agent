@@ -2,3 +2,12 @@
 app:
   auth:
     jwt-enabled: false
+  rag:
+    # R4：测试套件因不同 @MockBean 组合会并存多个 Spring 上下文。统一用 ByteBuffersDirectory
+    # 内存目录（每个上下文各自独立，走与生产相同的 Lucene 代码路径），避免多上下文争用同一
+    # FSDirectory 的 write.lock；持久化能力由 POJO + @TempDir 的 LuceneVectorStoreTest 单独保证。
+    ram-directory: true
+    # 下方 index-dir 在 ram-directory=true 时不生效，仅作文档占位（生产默认 data/rag-index）。
+    index-dir: target/rag-index-test
+    # 测试资料库随上下文/用例变化，不能因"某次启动表为空"就清空索引，关闭启动清理。
+    clean-on-empty-sources: false

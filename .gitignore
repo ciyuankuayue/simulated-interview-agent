@@ -56,3 +56,7 @@ Thumbs.db
 
 # ===== 临时验证工具（DeepSeek function calling 验通 demo，验完即弃，勿入库） =====
 scripts/deepseek-fc-demo/
+
+# ===== R4 向量索引落盘目录（Lucene FSDirectory，运行时数据，不入库） =====
+# 生产 Docker 部署时该目录必须挂载持久卷，否则容器重启向量即丢。
+data/

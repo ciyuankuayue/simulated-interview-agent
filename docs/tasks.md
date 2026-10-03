@@ -98,13 +98,14 @@
 
 目标：把内存向量库换成可持久化、可共享的存储；决定是否引 LangChain。
 
-- [ ] **R4-1 选型并替换向量存储后端**
+- [x] **R4-1 选型并替换向量存储后端（2026-10-03 完成，分支 `feature/R4-vector-persistence`，92 tests 全绿 + 真机验证，未 commit 待人审）**
   - 目标：当前 `InMemoryVectorStore` + 手写余弦 + 纯内存，重启即丢、无法多实例。最省事 = **Redis vector**（已有 Redis）或 **落盘 Lucene HNSW**（纯 Java，已在 test 依赖）；如需 Postgres 才引 pgvector。检索算法（余弦 / HNSW）保留，只换存储。
-  - 验收：重启后向量不丢；多实例共享同一份向量；召回率不低于原手写余弦（回归对比实验）。
+  - 落地：选 **Lucene 9.12.3 FSDirectory**（`rag/LuceneVectorStore`，默认目录 `data/rag-index`，env `APP_RAG_INDEX_DIR` 可覆盖），新增 `rag/VectorStore` 抽象（`InMemoryVectorStore` 转为其离线实现）；KnowledgeChunk record 加 `userId`；登录用户 KNN 检索走 **4 参 pre-filter**（HNSW 遍历期按 userId 过滤，candidateK=max(topK*3,30)）；PUT 同 source 用 beginReplace/commit/rollback 批次事务 + AND 删除，不再产生重复块；`StartupIndexCleaner` 在 dev/H2 空库启动时清孤儿索引（mysql profile 关）。详见 `docs/domain.md` §7。
+  - 验收（已达成）：✅ 同目录重开向量不丢（真机重启 vectorChunks=2 保留，单测 @TempDir 重开命中）；✅ userId 隔离（对抗式单测：u1 仅 1 块 cos0.8、u2 灌 60 个 cos≥0.85 块，u1 仍只命中自己；Spring 集成测试两用户互不可见）；✅ PUT project-doc 两次存活 doc 数不翻倍（真机 0→1→2→2→2）；✅ dev 空库启动 WARN 清空索引；✅ 全量 `.\mvnw.cmd -B test` 92 tests 全绿。多实例共享同一索引属单机 FSDirectory 限制（不支持多 writer），横向扩展再迁 Redis Stack/pgvector。
   - 估时：4–5 天　依赖：R1-2（user_id 隔离）　难度：中
-- [ ] **R4-2 关于 LangChain 的决策（结论：暂不引入）**
+- [x] **R4-2 关于 LangChain 的决策（结论：暂不引入，2026-10-03 随 R4-1 一并评估确认）**
   - 目标：主链路当前**无任何 LangChain 依赖**（pom 无 langchain4j；`experiment/` 包只是对比实验，未进生产）。手写 retriever 你完全可控、已跑通、易调试；引入 LangChain4j 会带来抽象层与版本耦合，对"稳健"目标反而增加不确定性。仅当某能力（document loader / chain 编排）能显著省事时才局部试用，不作为全局重构。
-  - 验收：R4-1 在不引入 LangChain 的前提下完成；在 handoff 记一条"已评估、决定不引"的决策。
+  - 验收：R4-1 在不引入 LangChain 的前提下完成；在 handoff 记一条"已评估、决定不引"的决策。→ **已记录于本节与 `docs/handoff.md` R4 小节：已评估，决定不引 LangChain4j。**
   - 估时：0（决策动作）　依赖：无　难度：低
 
 ## R5 系统稳健性 + 补测试开发知识

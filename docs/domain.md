@@ -20,7 +20,7 @@
 | 7 | real_interview_record | 上传的真实面试记录 | 内部，按 user_id 隔离 |
 | 8 | weak_point | 错题本：知识点 + 错几次 + 复习阶段 + 下次复习时间 | 状态（精简），按 user_id 隔离 |
 | 9 | critic_report | 报告：逐轮讲解 + 纠正 + 知识补充 + 示范回答 + 整体注意事项 + 提醒 + 匹配度 | 给用户看（精炼不省关键），按 user_id 隔离 |
-| 10 | knowledge_chunk | 分块文本 + 来源（向量存 Redis/内存） | 内部，按 user_id 隔离 |
+| 10 | knowledge_chunk | 分块文本 + 来源（**JPA 死表，实际向量存 Lucene 索引，见 §7**） | 内部，按 user_id 隔离 |
 
 ## 2. 字段定义
 
@@ -152,12 +152,13 @@
 - created_at
 
 ### knowledge_chunk
+> ⚠️ **R4 起此 JPA 实体 / `knowledge_chunk` 表是 T8 预留的死代码**（无 service 注入，ddl-auto 仍建表但从不读写）。向量块唯一真实存储是 **Lucene FSDirectory 索引**（见 §7），字段口径以下方 Lucene 文档为准，与本表列无关。
 - id (PK)
 - **user_id (FK, NOT NULL)**  # R1-1
 - source_type       # resume / note / project_doc / real_record
 - source_id         # 来源实体 id
 - chunk_text        # 分块文本
-- embedding         # 向量（通义 qwen3.7-text-embedding-flash，存 Redis/内存）
+- embedding         # 历史字段；实际向量不落 DB，存 Lucene（通义 qwen3.7-text-embedding-flash，dim=1024）
 - created_at
 
 ## 3. 关系
@@ -200,6 +201,33 @@
 ## 6. 边界（MVP，按 §6）
 
 - 输入：JD 文本 + 你的 md 文档（简历 / 笔记 / 项目文档 / 真实面试记录）
-- 向量：先内存手写余弦（L3 对比点），不引向量库
+- 向量：**R4 起落盘 Lucene FSDirectory（持久化 + userId pre-filter，见 §7）**；此前的内存手写余弦仅 L3 对比实验保留
 - 角色：支持部分启用（可只开技术深挖官）；Critic 始终在
 - 用户绝不接触 interview_turn / project_doc / real_interview_record / knowledge_chunk 原始明细
+
+## 7. R4 向量持久化（Lucene FSDirectory，2026-10-03）
+
+> 结论：向量块从「进程内 `InMemoryVectorStore`（重启即丢、向量层跨用户可见）」迁到 **Lucene 9.12.3 FSDirectory 落盘索引**，并在向量检索层做用户隔离。检索算法仍是归一化向量上的最近邻（Lucene HNSW，等价余弦）。
+
+**存储位置与配置**
+- 索引目录默认 `data/rag-index`（相对路径基于进程 `user.dir` 解析为绝对路径；env `APP_RAG_INDEX_DIR` 可覆盖），`.gitignore` 忽略 `data/`。
+- 打开模式显式 `CREATE_OR_APPEND`：重启追加、绝不静默重建（重建=丢数据）。维度由启动时校验：现有索引向量维度与 `app.rag.dim`（默认 1024）不一致直接抛带中文指引的异常，不混用。
+- **Docker / 部署**：索引目录必须挂持久卷并随应用容器生命周期（`APP_RAG_INDEX_DIR=/app/data/rag-index` + `./data/rag-index` 卷挂载，docker-compose 已放注释态 app 模板，R1-4 写 Dockerfile 时启用）；不挂卷容器重启即丢。FSDirectory 不支持多机多 writer，横向扩展需迁 Redis Stack / pgvector。
+
+**Lucene 文档字段**：`id`(=`sourceType#sourceId#chunkIdx`) / `userId` / `sourceType` / `sourceId`（StringField，索引+存储）、`chunkIdx`(IntPoint)、`content`(StoredField)、`vec`(KnnVectorField，**不**回存向量，读取侧 embedding=null)。写入/查询统一 pad-0/truncate 到 1024 后 L2 归一化（零向量原样），归一化后 Lucene 默认 EUCLIDEAN 排序等价余弦。
+
+**用户隔离（pre-filter）**
+- 登录用户用 4 参 `KnnVectorQuery("vec", q, candidateK, TermQuery(userId))`，filter 在 **HNSW 图遍历期**生效——别人的块不占召回名额，单用户资料极少也能召回自己；`candidateK=max(topK*3,30)`。离线（userId=null）用 3 参无 filter。
+- 跨用户互不可见 + 自己必能召回，由 `LuceneVectorStoreTest` 的极端 post-filter 场景（u1 仅 1 块 cos 0.8、u2 灌 60 个 cos≥0.85 更近块，u1 仍命中自己）与 `RagServiceUserIsolationTest` 保证。
+
+**replace 批次事务（PUT 同 source 不产生重复块）**
+- 入库唯一入口 `MaterialController.index → RagService.ingest`：预检（402 在任何索引动作前）→ `beginReplace`（缓冲删旧，提交前不可见）→ 逐块 embed+add → `commitBatch`（commit + 切 NRT reader）；异常 `rollbackBatch`（`IndexWriter.rollback()` 丢弃本批删/增并关闭 writer，锁内重建，旧已提交块保持可用）。
+- 删除是 **AND 语义** `BooleanQuery MUST(userId)+MUST(sourceType)+MUST(sourceId)` 传 `deleteDocuments(Query)`；严禁 `deleteDocuments(Term...)`（变长参是 OR，会删光该用户全部资料）。
+- 读一致性：NRT reader 只在构造后 / 提交后 / rollback、deleteAll 后切换；检索进行中命中旧快照。一把 `ReentrantLock` 串行化批次区间，search 走独立监视器不阻塞写。
+- **将来新增「删除资料」接口时，必须同步调 `deleteBySource` 清向量**，否则成为孤儿块。
+
+**孤儿块边界与 dev 启动清理**
+- userId pre-filter 保证**跨用户不泄露**；但「资料行被删 / H2 create-drop 重建库」后，本用户旧向量若不清，仍会被**自己**检索到（悬空块）。
+- `StartupIndexCleaner`（ApplicationRunner）：开关 `app.rag.clean-on-empty-sources`（默认 **true**，mysql profile 显式 **false**）打开时，启动统计四张源表（`resume_version/note/project_doc/real_interview_record`）行数之和，=0 则 `deleteAll()` 并打 WARN，>0 不动；任何异常只告警不阻断启动。生产 mysql 资料持久，不存在该问题。
+
+**监控语义**：`GET /api/health/deps` 的 `embedder.vectorChunks` = 全局**存活** Lucene doc 总数（`reader.numDocs()`，跨用户、不含已逻辑删除待合并的旧 replace 版本），仅作粗监控，**不是**当前用户块数。

@@ -2,7 +2,7 @@ package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.llm.LlmProperties;
 import com.bupt.mockinterview.rag.Embedder;
-import com.bupt.mockinterview.rag.InMemoryVectorStore;
+import com.bupt.mockinterview.rag.VectorStore;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,14 +25,14 @@ public class DepCheckController {
     private final JdbcTemplate jdbcTemplate;
     private final RedisConnectionFactory redisConnectionFactory;
     private final Embedder embedder;
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
     private final LlmProperties llmProps;
 
     private volatile long pingAt;
     private volatile Map<String, Object> pingCache;
 
     public DepCheckController(JdbcTemplate jdbcTemplate, RedisConnectionFactory redisConnectionFactory,
-                              Embedder embedder, InMemoryVectorStore vectorStore, LlmProperties llmProps) {
+                              Embedder embedder, VectorStore vectorStore, LlmProperties llmProps) {
         this.jdbcTemplate = jdbcTemplate;
         this.redisConnectionFactory = redisConnectionFactory;
         this.embedder = embedder;
@@ -79,7 +79,8 @@ public class DepCheckController {
 
     /**
      * 嵌入模型状态：provider 标识（dashscope:&lt;model&gt; 为真实通义；FakeEmbedder 为降级）+
-     * 当前内存向量条数（重启清零，属 MVP 内存余弦形态）+ 一次真实 embed ping 的维度结果。
+     * 全局存活向量索引 doc 总数（R4 起 Lucene 持久化：跨用户；不含已逻辑删除待合并的旧 replace
+     * 版本；仅作粗监控，不是"当前用户块数"）+ 一次真实 embed ping 的维度结果。
      */
     private Map<String, Object> embedderBlock() {
         Map<String, Object> block = new LinkedHashMap<>();

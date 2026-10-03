@@ -40,7 +40,7 @@
 
 ### Architecture（技术栈精确版本 + 分层）
 - **Java 17 是编译目标**（release 17，产物 major=61）；**本机构建 JDK 固定 21**（`C:\Users\19284\jdk-21`，mvnw 自动选择；JDK 24 被 enforcer 拒绝，Lombok 在高版本 JDK 曾静默失效）；Spring Boot 3.3.5 / Maven 3.9.9（mvnw 自带 dist）
-- 存储：MySQL 8（持久化 JD、简历版本、笔记、模拟记录）/ Redis（指纹去重、会话缓存）
+- 存储：MySQL 8（持久化 JD、简历版本、笔记、模拟记录）/ Redis（指纹去重、会话缓存）/ **Lucene 9.12.3 FSDirectory（R4 起向量块持久化，目录 `data/rag-index`，env `APP_RAG_INDEX_DIR` 可覆盖；userId pre-filter 隔离、beginReplace/commit/rollback 批次事务；部署必须挂持久卷，详见 docs/domain.md §7）**
 - 消息：RabbitMQ（D3 引入，异步判分/追问；非必须，可后加）
 - LLM：
   - 生成/追问：DeepSeek `deepseek-flash`（非思考型用于追问，思考型用于判分）
@@ -53,7 +53,7 @@
 - 包结构（分层；**领域逻辑不准直接调 LLM**，统一走 llm 层）：
   - `web/`       controller，SSE 流式推送
   - `agent/`     角色编排（技术深挖官 / 项目质疑官 / Critic）
-  - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）
+  - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）。**VectorStore 抽象 + LuceneVectorStore（FSDirectory 落盘，唯一生产实现）+ InMemoryVectorStore（离线/实验）；向量检索按 userId pre-filter，删除必须 BooleanQuery AND（严禁 deleteDocuments(Term...) 的 OR 语义）**
   - `llm/`       LlmService（封装 DeepSeek 调用 + 超时重试；发 `tools` 字段做 function calling）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool），不混用 JDK HttpClient**（决策 2026-09-17）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度
   - `billing/`   QuotaService（预检/用后实扣/条件 UPDATE 防超发 + llm_usage_log 流水 + ADMIN 充值；402）
