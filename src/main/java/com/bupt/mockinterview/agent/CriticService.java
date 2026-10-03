@@ -81,7 +81,8 @@ public class CriticService {
         try {
             String content = llm.chat(props.getModelReasoner(), true,
                     List.of(msg("system", SYSTEM), msg("user", user)),
-                    null, true, props.getCriticMaxTokens()).content();
+                    null, true, props.getCriticMaxTokens(),
+                    com.bupt.mockinterview.billing.UsageScene.CRITIC).content();
             return parse(content);
         } catch (QuotaExhaustedException | IllegalStateException e) {
             // 402 点数耗尽 / 409 BYOK 未配 key：业务决策，必须透传（end 接口映射 402/409），不许降级成占位报告

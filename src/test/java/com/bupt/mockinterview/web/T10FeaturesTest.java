@@ -272,6 +272,7 @@ class T10FeaturesTest {
         };
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(chatAnswer);
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt())).thenAnswer(chatAnswer);
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt(), any())).thenAnswer(chatAnswer);
     }
 
     private static String body(ResultActions actions) throws Exception {

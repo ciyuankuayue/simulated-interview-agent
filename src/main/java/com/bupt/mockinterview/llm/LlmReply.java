@@ -11,6 +11,12 @@ public record LlmReply(
         /** 最终回答（JSON 模式下即为结构化 JSON 文本）。 */
         String content,
         /** 思维链；非思考模式或模型未返回时为 null。 */
-        String reasoningContent
+        String reasoningContent,
+        /** 本次调用 token 用量（R2 计费）；非计费/测试桩路径可为 null。 */
+        TokenUsage usage
 ) {
+    /** 不带用量的便捷构造（测试桩 / 内部默认实现用，usage=null）。 */
+    public LlmReply(String content, String reasoningContent) {
+        this(content, reasoningContent, null);
+    }
 }

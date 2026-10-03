@@ -40,7 +40,7 @@ public class DashscopeVerifyTest {
         DashscopeEmbedder embedder = new DashscopeEmbedder(client, base, key, model);
 
         // 1) 探维度
-        float[] probe = embedder.embed("探维度用的一句话");
+        float[] probe = embedder.embed("探维度用的一句话").vector();
         System.out.println("[verify] embedding dim = " + probe.length);
         if (probe.length != 1024) {
             System.out.println("[verify] ⚠️ 真实维度 != 1024，请改 DashscopeEmbedder.DIM 与 RagService 预期");

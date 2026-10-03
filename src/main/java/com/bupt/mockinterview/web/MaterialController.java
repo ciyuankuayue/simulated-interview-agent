@@ -249,10 +249,13 @@ public class MaterialController {
 
     // ---------- 内部 ----------
 
-    /** 写入 RAG 语料库；失败只记日志（embedding 未配时不影响主流程）。 */
+    /** 写入 RAG 语料库；技术故障只记日志（embedding 未配时不影响主流程），但 402/409 必须透传。 */
     private void index(String sourceType, Long id, String text) {
         try {
             rag.ingest(text, sourceType, String.valueOf(id));
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            // 402 token 耗尽 / 平台 embedding key 缺失：不是瞬时故障，不许静默降级吞掉
+            throw e;
         } catch (Exception e) {
             log.warn("RAG 入库失败（{}#{}）：{}", sourceType, id, e.getMessage());
         }
@@ -270,7 +273,8 @@ public class MaterialController {
             LlmReply reply = llm.chat(props.getModelFlash(), false,
                     List.of(Map.of("role", "system", "content", system),
                             Map.of("role", "user", "content", rawText)),
-                    null, true);
+                    null, true, props.getMaxTokens(),
+                    com.bupt.mockinterview.billing.UsageScene.JD_PARSE);
             JsonNode root = mapper.readTree(stripFence(reply.content()));
             List<String> keywords = new ArrayList<>();
             JsonNode arr = root.path("keywords");

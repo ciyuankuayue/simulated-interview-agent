@@ -95,7 +95,7 @@ public class DepCheckController {
             return pingCache;
         }
         try {
-            float[] v = embedder.embed("连通性测试");
+            float[] v = embedder.embed("连通性测试").vector();
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("ok", true);
             ok.put("dim", v.length);

@@ -1,7 +1,10 @@
 package com.bupt.mockinterview.llm;
 
 import com.bupt.mockinterview.billing.QuotaExhaustedException;
+import com.bupt.mockinterview.billing.QuotaProperties;
 import com.bupt.mockinterview.billing.QuotaService;
+import com.bupt.mockinterview.billing.UsageEstimates;
+import com.bupt.mockinterview.billing.UsageScene;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.security.CurrentUserService;
 import com.bupt.mockinterview.security.KeyResolver;
@@ -12,6 +15,8 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -37,6 +42,7 @@ public class LlmService implements LlmPort {
 
     private static final MediaType JSON = MediaType.get("application/json");
     private static final int MAX_RETRY = 3;
+    private static final Logger log = LoggerFactory.getLogger(LlmService.class);
 
     /** 判分 system prompt：4 维 × 0-2 = 0-8（domain.md §4），强制纯 JSON 输出。 */
     private static final String SCORE_SYSTEM = """
@@ -56,14 +62,17 @@ public class LlmService implements LlmPort {
     private final KeyResolver keyResolver;
     private final CurrentUserService currentUser;
     private final QuotaService quotaService;
+    private final QuotaProperties quotaProps;
 
     public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props,
-                      KeyResolver keyResolver, CurrentUserService currentUser, QuotaService quotaService) {
+                      KeyResolver keyResolver, CurrentUserService currentUser,
+                      QuotaService quotaService, QuotaProperties quotaProps) {
         this.mapper = mapper;
         this.props = props;
         this.keyResolver = keyResolver;
         this.currentUser = currentUser;
         this.quotaService = quotaService;
+        this.quotaProps = quotaProps;
         // 由全局单例派生：共享连接池与线程池，仅覆盖超时
         this.client = okHttpClient.newBuilder()
                 .callTimeout(props.getTimeoutMs(), TimeUnit.MILLISECONDS)
@@ -74,13 +83,15 @@ public class LlmService implements LlmPort {
 
     /** 追问/实时交互：非思考模式，返回一句追问或纠正。 */
     public LlmReply followUp(String system, String user) {
-        return chat(props.getModelFlash(), false, List.of(sys(system), userMsg(user)), null, false);
+        return chat(props.getModelFlash(), false, List.of(sys(system), userMsg(user)),
+                null, false, props.getMaxTokens(), UsageScene.FOLLOWUP);
     }
 
     /** 判分：思考模式 + JSON 输出，解析并校验后返回结构化结果。 */
     public ScoreResult score(String question, String answer) {
         String user = "题目：\n" + question + "\n\n候选人的回答：\n" + answer;
-        LlmReply reply = chat(props.getModelReasoner(), true, List.of(sys(SCORE_SYSTEM), userMsg(user)), null, true);
+        LlmReply reply = chat(props.getModelReasoner(), true, List.of(sys(SCORE_SYSTEM), userMsg(user)),
+                null, true, props.getMaxTokens(), UsageScene.SCORE);
         return parseScore(reply.content());
     }
 
@@ -88,12 +99,17 @@ public class LlmService implements LlmPort {
 
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools) {
-        return chat(model, thinking, messages, tools, false);
+        return chat(model, thinking, messages, tools, false, props.getMaxTokens(), UsageScene.CHAT);
     }
 
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode) {
-        return chat(model, thinking, messages, tools, jsonMode, props.getMaxTokens());
+        return chat(model, thinking, messages, tools, jsonMode, props.getMaxTokens(), UsageScene.CHAT);
+    }
+
+    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+                         List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
+        return chat(model, thinking, messages, tools, jsonMode, maxTokens, UsageScene.CHAT);
     }
 
     /**
@@ -101,17 +117,25 @@ public class LlmService implements LlmPort {
      * @param jsonMode 是否强制 JSON 输出（判分用）。
      * @param tools    function calling 工具定义；非空时后续轮次须回传 reasoning_content，否则 400。
      * @param maxTokens 生成 token 上限（思考模式下限制 reasoning+content 总预算）。
+     * @param scene    计费场景（R2 用量流水归类）。
      */
     public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
-                         List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
+                         List<Map<String, Object>> tools, boolean jsonMode, int maxTokens,
+                         UsageScene scene) {
         // 统一在此解析 key 并计费：followUp/score/Critic/JD 解析等所有 DeepSeek 调用的唯一收口。
-        // BYOK 扣点在 HTTP 调用之前——余额不足抛 402，一次 LLM 请求都不会发出（重试也不重复扣）。
         User user = currentUser.currentUser();
         KeyResolver.ResolvedKey resolved = keyResolver.resolveForChat(user);
-        if (resolved.byok() && user != null
-                && !quotaService.chargeForByokCall(user.getId())) {
-            throw new QuotaExhaustedException(
-                    "服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值");
+        boolean billable = user != null;
+        if (billable) {
+            if (resolved.byok()) {
+                // BYOK 服务费在调用前扣（绝不超发）；余额不足抛 402，一次请求都不发出
+                if (!quotaService.chargeForByokCall(user.getId())) {
+                    throw QuotaExhaustedException.forMode(resolved.mode());
+                }
+            } else {
+                // PLATFORM 预检：余额 0 直接 402，不烧请求
+                quotaService.ensureAvailable(user.getId(), resolved.mode());
+            }
         }
         requireApiKey(resolved.apiKey());
 
@@ -133,7 +157,62 @@ public class LlmService implements LlmPort {
         if (msg.isMissingNode()) {
             throw new LlmException("DeepSeek 响应缺少 choices[0].message: " + root);
         }
-        return new LlmReply(msg.path("content").asText(""), msg.path("reasoning_content").asText(null));
+        String content = msg.path("content").asText("");
+        String reasoning = msg.path("reasoning_content").asText(null);
+
+        if (billable) {
+            settleUsage(user.getId(), resolved.byok(), scene, model, messages, content, root.path("usage"));
+        }
+        return new LlmReply(content, reasoning, parseUsage(root.path("usage"), messages, content));
+    }
+
+    /** 用后计费：PLATFORM 按 usage 实扣；BYOK 只落流水（服务费已在调用前扣）。计费失败不吞掉用户已拿到的回复。 */
+    private void settleUsage(Long userId, boolean byok, UsageScene scene, String model,
+                             List<Map<String, Object>> messages, String content, JsonNode usageNode) {
+        TokenUsage usage = parseUsage(usageNode, messages, content);
+        if (usage == null) {
+            // 厂商没回 usage 且关闭了估算兜底：无法准确计费，只告警不扣（宁可漏不可错停服务）
+            log.warn("DeepSeek 响应缺 usage 且 app.quota.usage-estimate-enabled=false，本次未扣 token：scene={}", scene);
+            return;
+        }
+        try {
+            if (byok) {
+                quotaService.recordByokChat(userId, scene, model,
+                        usage.promptTokens(), usage.completionTokens(),
+                        usage.totalTokens(), usage.estimated());
+            } else {
+                quotaService.settlePlatformCall(userId, scene, model,
+                        usage.promptTokens(), usage.completionTokens(),
+                        usage.totalTokens(), usage.estimated());
+            }
+        } catch (Exception e) {
+            // token 已真实烧掉，回复也已生成：计费落库失败不能让用户看到 500（会诱发重复调用双倍烧钱）
+            log.error("token 计费落库失败（请人工对账 llm_usage_log 缺口）：userId={} scene={} tokens={}",
+                    userId, scene, usage.totalTokens(), e);
+        }
+    }
+
+    /**
+     * 解析 DeepSeek usage；缺失/异常时按字符估算兜底（受 app.quota.usage-estimate-enabled 控制）。
+     * 返回 null = 无 usage 且不允许估算（调用方不扣费）。
+     */
+    private TokenUsage parseUsage(JsonNode usage, List<Map<String, Object>> messages, String content) {
+        long prompt = usage.path("prompt_tokens").asLong(0L);
+        long completion = usage.path("completion_tokens").asLong(0L);
+        long total = usage.path("total_tokens").asLong(0L);
+        if (total > 0L) {
+            return new TokenUsage(prompt, completion, total, false);
+        }
+        if (!quotaProps.isUsageEstimateEnabled()) {
+            return null;
+        }
+        // 字符估算：输入消息全文 + 输出内容，1 字符≈1 token（中文偏保守，防漏算）
+        List<CharSequence> texts = new ArrayList<>();
+        if (messages != null) {
+            messages.forEach(m -> texts.add(String.valueOf(m.get("content"))));
+        }
+        texts.add(content);
+        return new TokenUsage(0L, 0L, UsageEstimates.estimateChars(texts.toArray(new CharSequence[0])), true);
     }
 
     // ---------- HTTP + 重试 ----------

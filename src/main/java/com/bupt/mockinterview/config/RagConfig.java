@@ -38,7 +38,9 @@ public class RagConfig {
     }
 
     @Bean
-    public RagService ragService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser) {
-        return new RagService(embedder, store, currentUser);
+    public RagService ragService(Embedder embedder, InMemoryVectorStore store, CurrentUserService currentUser,
+                                 com.bupt.mockinterview.billing.QuotaService quota,
+                                 com.bupt.mockinterview.billing.QuotaProperties quotaProps) {
+        return new RagService(embedder, store, currentUser, quota, quotaProps);
     }
 }

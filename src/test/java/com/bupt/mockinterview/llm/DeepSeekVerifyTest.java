@@ -41,7 +41,8 @@ public class DeepSeekVerifyTest {
                 new UserKeyCipher(Base64.getEncoder().encodeToString(new byte[32])));
         CurrentUserService currentUser = new CurrentUserService(mock(UserRepository.class));
         LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props,
-                resolver, currentUser, mock(QuotaService.class));
+                resolver, currentUser, mock(QuotaService.class),
+                new com.bupt.mockinterview.billing.QuotaProperties());
 
         // ---------- 链路 1：追问生成（非思考模式） ----------
         String system = "你是 Java 后端技术深挖官。用户答得浅时只追问一句 why，不展开讲解。";

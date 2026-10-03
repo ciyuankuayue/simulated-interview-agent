@@ -31,7 +31,7 @@ public class DynamicEmbedder implements Embedder {
     }
 
     @Override
-    public float[] embed(String text) throws Exception {
+    public Embedding embed(String text) throws Exception {
         return current().embed(text);
     }
 

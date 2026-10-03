@@ -210,8 +210,9 @@ class InterviewFlowTest {
                      "reminders":["多练"]}
                     """, null);
         };
-        // CriticService 现在调用带 maxTokens 的 6 参重载，两个重载都要桩上
+        // CriticService 现在调用带 scene 的 7 参重载，各重载都要桩上
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(chatAnswer);
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt())).thenAnswer(chatAnswer);
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt(), any())).thenAnswer(chatAnswer);
     }
 }

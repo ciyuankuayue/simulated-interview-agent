@@ -3,7 +3,7 @@
 > 每轮续对话先读本文件。记录：当前进度 / 已锁决策 / 任务拆解 / 卡点 / 下一步。
 > 配套：`./domain.md`（领域模型）、`./api.md`（契约）、`../AGENTS.md`（规则）。
 
-## 1. 当前进度（截至 2026-09-19）
+## 1. 当前进度（截至 2026-10-03）
 
 | 阶段 | 产物 | 状态 | 备注 |
 |---|---|---|---|
@@ -19,6 +19,7 @@
 | **R1-1.5** | **前端 JWT 接线** | **✅ 已合并（含登录弹窗返工，用户验收通过）** | **`state.token` 内存存 JWT（不落 localStorage）、`api()` 带 `Authorization: Bearer` + `X-Vault-Token`、SSE 拼 `?jwt=`+`&vaultToken=`、401 自动跳登录、`bindAuth()` 登录/注册/登出齐全；按抖音弹窗模式返工：独立登录弹窗、未登录隐藏主面板、登录后显示用户名 + 登出按钮。2026-10-02 用户验收通过并合并。** |
 | **R1-2** | **实体 user_id 索引 + 迁移脚本 + Repository 过滤** | **✅ Trea 完成（commit 9ef7f88）✅ 已合并** | **11 实体补 `@Table(indexes=@Index(user_id)…)` + 迁移脚本 `V1__add_user_id_indexes.sql`（username 唯一索引在 SQL 中注释，因实体层 `@Column(unique=true)` 已有约束，409 由此触发）；`MaterialController` 全 list/get/update/activate 走 `findByUser`/`findByIdAndUserId`，create 都 `setUser`，并顺手修 MVP 全局 count 的 per-user 首份简历自动激活 bug；Repository 加 `findByUser`/`findByIdAndUserId`。** |
 | **R1-3** | **双密钥模式：平台额度 / BYOK 自带 Key** | **✅ 完成（2026-10-02，62 tests 全绿 + 真机/浏览器 E2E，未 commit 待人审）** | **用户拍板双形态：PLATFORM 走平台 env key（R1-3 不扣点，R2 做 token 计费）；BYOK 走用户自带 DeepSeek key（AES-GCM 入库），每次调用扣 1 服务点，不足 402 QUOTA_EXHAUSTED。embedding 永远平台 key。首个注册者 ADMIN，注册赠 1000 点。已删 T11/T12 保险箱+密码门禁全套。402/409 已穿透 6 处 LLM 降级边界。详见 §3 R1-3 小节。** |
+| **R2** | **按真实 token 计量计费（R2-1/2/3）** | **✅ 完成（2026-10-03，83 tests 全绿 + 真机 API/浏览器 E2E，未 commit 待人审）** | **PLATFORM 对话+embedding 按厂商 usage.total_tokens 实扣（缺失字符估算兜底，最后一次可透支 clamp）；BYOK 每次对话扣固定服务费（默认 1）；预检在 HTTP 调用前，扣费+流水 REQUIRES_NEW；llm_usage_log 流水；GET /api/user/usage；POST /api/admin/quota（403/404/400）。真机实测：JD 150/181 token、embedding 24/58 token、BYOK 165 token 仅扣 1、402 双文案、充值恢复。详见 §3 R2 小节。** |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -229,6 +230,23 @@
   - ✅ **验收（2026-10-02）**：`.\mvnw.cmd -B test` **62 tests, 0 failures, 0 errors, BUILD SUCCESS**（58 + 4 新穿透用例；Node node --check app.js 通过）。真机 E2E：bonus=1000 用户 e2ealice 全链路（赠点/默认 PLATFORM/无 key 切 BYOK 409/假 key 真实验活 400 INVALID_API_KEY/真 key last4=a16c 保存且 GET 不回显/切 BYOK 一次真实 JD 调用 used=1 remaining=999/切回 PLATFORM 额度不变/删 key 强制回退）；bonus=0 用户 e2echarlie 修复后 POST /api/jd 返 **HTTP 402 {"code":"QUOTA_EXHAUSTED",message 含"切回平台"}**。浏览器（uibrowser）：登录弹窗、单选切换展开/收起、sk- 前缀校验红字、切回平台绿色提示全部 PASS。⚠️ 改前端后对运行中的 spring-boot:run 需 `mvnw resources:resources` 同步 target/classes（或重启），否则跑的是旧静态资源。
   - 全部改动未 commit，等人审；建议 message：`feat(R1-3): 平台额度/BYOK 双密钥模式与 402 计费骨架`。
 
+- [x] **R2 按真实 token 计量计费（R2-1/2/3，2026-10-03 完成，未 commit 待人审）**
+  - **计费规则（用户冻结 4 项决策）**：① 计量单位直接用 **token**；② **PLATFORM**：DeepSeek 对话 + DashScope embedding 都先预检余额（=0 抛 `QuotaExhaustedException`→402，不发请求），调用后按厂商 `usage.total_tokens` 实扣（厂商未返 usage 时按字符 1:1 估算兜底，可配 `app.quota.usage-estimate-enabled` 关闭）；③ **BYOK**：API 费用户自付，每次 DeepSeek 对话前扣固定服务费 `app.quota.byok-charge-per-call`（token 当量默认 1），embedding 恒走平台 key 按 token 扣；④ **最后一次可透支**：实扣时 clamp `used_tokens` 到 `total_tokens`，之后再调 402。注册赠 `app.quota.signup-bonus-tokens`（默认 **500000**）。
+  - **唯一计费收口**：对话在 `llm/LlmService.chat`（`settleUsage`：PLATFORM 实扣 / BYOK recordByokChat；记账 try/catch 失败只 log 不抛用户）；embedding 在 `rag/RagService`（ingest 前预检一次、逐 chunk `settle(EMBED_INGEST)`；retrieve 预检 + `settle(EMBED_QUERY)`；`settle()` try/catch RuntimeException 记 error 不炸主流程）。扣减 + `llm_usage_log` 流水一律走 **REQUIRES_NEW 独立事务**（业务回滚不退款）。
+  - **并发安全（R2-2）**：`QuotaRepository.tryChargeTokens` 用**条件 UPDATE**（`WHERE used_tokens + :n <= total_tokens`，affected=0 即余额不足）防超发；透支分支 `clampUsedToTotal`；充值 `addTotalTokens`。不引 @Version / Redis / 行锁（配额单行热点，条件 UPDATE 足够；R2-1 已含并发压测）。
+  - **契约 / 领域变更**：`quota` 语义从 R1-3 的「服务点」改为 token（`totalTokens/usedTokens`，注册赠 50 万）；新实体 `domain/LlmUsageLog`（scene/keyMode/model/prompt/completion/total/chargedTokens + userId，**无 estimated 出参**，估算仅在日志）；枚举 `billing/UsageScene`（JD_PARSE/FOLLOWUP/SCORE/CRITIC/EMBED_INGEST/EMBED_QUERY）+ `UsageEstimates`（字符估算）。新接口：`GET /api/user/usage?limit=50`（limit clamp 1..50，DTO 无 userId/estimated）、`POST /api/admin/quota`（body `{username, grantTokens}`，`@Min(1)`→400；非 ADMIN→403 新 `security/ForbiddenException`；用户不存在→404 新 `web/UserNotFoundException`，注意它要独立映射、排在 IllegalArgumentException handler 前）。
+  - **Embedding 签名变更（波及面最大）**：`rag/Embedding` record(vector, tokens, estimated)；`Embedder.embed` 返回类型 float[]→Embedding，`DashscopeEmbedder` 解析 `usage.total_tokens`（缺失按入参字符估算、estimated=true），`FakeEmbedder` tokens=0（离线测试不计量），`DynamicEmbedder` 跟签名；消费方（DepCheckController/LuceneHnswRetriever/DashscopeVerifyTest）取 `.vector()`。`RagConfig` 的 ragService bean 加 QuotaService+QuotaProperties 两参（保留离线构造）。
+  - **402 穿透扩到 8 处边界**：R1-3 的 6 处（parseJd 1 + 编排器 3 + Critic 1 等）之外，R2 新增 embedding 扣费后，`MaterialController.index()` 与 `InterviewOrchestrator.retrieveContext()` 的 catch(Exception) 前同样显式重抛 `QuotaExhaustedException | IllegalStateException`——402/409 绝不能被 RAG 降级吞成「入库失败但 200」。
+  - **前端**：index.html 额度行改「Token 额度：…平台模式对话与向量化按真实 token 扣，自带 Key 每次对话另扣 1 token 服务费」；app.js 新增 `formatTokens`（≥10000 显 x.x 万）、`renderQuota`、`loadQuota()`（只打 /api/user/quota，不重刷设置——避免面试中 BYOK 单选被服务端状态重置）；接入点：JD/简历/笔记/项目文档上传、start、answer 成功、402 catch、SSE done、手动 end。
+  - **额度耗尽弹窗（2026-10-03 用户反馈「无法上传 JD」后追加，纯前端）**：两道防线——① **前置拦截**：`state.quota`（renderQuota 时缓存）已知 `remainingTokens<=0` 时，点上传 JD/简历/项目文档/笔记/开始模拟 5 个收费入口直接弹 `#quotaModal`、不发请求；额度视图未加载（null，如登录后 settings 未归）不拦，交后端 402 兜底，避免状态未知误拦。② **全局兜底**：`api()` 对 HTTP 402 / `code==='QUOTA_EXHAUSTED'` 统一弹窗（透传服务端 message）+ loadQuota 刷新数字，错误仍抛给各调用方 catch；判定只认状态码/错误码不认中文文案。弹窗复用 auth-overlay/auth-card 样式，唯一动作「我知道了」（R2 决策不做充值页面，引导联系管理员；账号名+余额显示在弹窗上），按钮/点遮罩关闭；forceLogout 清 state.quota + 关弹窗。浏览器实测 9 项全过（5 入口前置无请求发出/两种关闭方式/有余额正常上传实扣 173 token 不误拦/mock 402 弹窗显示服务端原文案/console 无错），83 tests 仍全绿。
+  - 🐞 **`embedder.name()` 返回 null 致结算静默回滚**：@MockBean Embedder 替换 RagConfig bean 后未桩 `name()`，`LlmUsageLog.model` 是 NOT NULL 列 → INSERT 失败 → 整个 REQUIRES_NEW 回滚，表面 HTTP 200 但扣费 0。双保险：RagService.settle try/catch 兜底 + 所有计费测试桩 `when(embedder.name()).thenReturn(...)`。
+  - 🐞 **BYOK 存 key 是 PUT 不是 POST**：`POST /api/user/api-key` 无路由落到静态资源抛 NoResourceFoundException→500；正确接口 `PUT /api/user/api-key`。
+  - 🐞 **LlmPort mock 不走 interface default 委托**：Mockito mock 必须桩实际被调的 7 参签名（末参 UsageScene），桩旧 6 参不生效；JdQuotaPropagationTest/InterviewFlowTest/T10FeaturesTest/WeakPointApiTest 均已补 7 参桩，DeepSeekVerifyTest 构造加第 7 参 new QuotaProperties()。
+  - 🐞 **测试事务禁忌**：QuotaService 结算走 REQUIRES_NEW，计费测试类（AdminQuotaTest 等）**不能加类级 @Transactional**，否则独立事务写入对外不可见、断言扣费 0；UserSettingsApiTest 期望值随赠点改 500000/499999。
+  - ✅ **验收（2026-10-03）**：`.\mvnw.cmd -B test` **83 tests, 0 failures, BUILD SUCCESS**；新增 RagServiceBillingTest 6 例（匿名不扣/预检失败不 embed/逐 chunk 真实 token/估算/Fake 不扣/禁用估算不扣）、EmbeddingQuotaTest 2 例（0 余额 POST /api/note →402 且 embedder never 被调/真实 12 token 扣费+流水）、AdminQuotaTest 6 例（403/200 充值/404/400×2/usage 字段+limit clamp）。
+  - ✅ **真机 API E2E（bonus=500 启动，H2 默认 profile）**：用户 e2e_admin（首注册=ADMIN）JD 解析实扣 **181** token；笔记 embedding 实扣 **58** token（流水 model=`dashscope:qwen3.7-text-embedding-flash`、scene=EMBED_INGEST）；start 出题 261 / FOLLOWUP 275 token 把 500 额度打满；再答/end/JD 全部 **402 `{"code":"QUOTA_EXHAUSTED","message":"Token 额度已用完，请联系管理员充值"}`**；ADMIN `POST /api/admin/quota` +100000 后立即恢复（retry JD 179 token）；非 ADMIN 充值 403、未知用户 404 USER_NOT_FOUND、grantTokens=0 →400 均验证。BYOK 专项：真实 JD 165 token 的流水 totalTokens=165 但 **chargedTokens=1、keyMode=BYOK**，余额 delta=1。浏览器走查（e2e_ui）：JD 150 token（123+27）；首走发现笔记上传后前端额度不刷新（后端实扣 24/36/40），补 loadQuota 接入点后复验 178→147→116 实时刷新、console 无报错（Ctrl+F5 在浏览器 agent 内不可靠，用 `?v=r2fix2` 新标签强制加载确认）。E2E 脚本留存 `target/e2e_r2.ps1`、`target/e2e_byok.ps1`（target/ 不提交；PowerShell 5.1 按 GBK 读 UTF-8 脚本，脚本须纯 ASCII，中文 body 放 `target/e2e/*.json` 用 UTF8 字节 + curl.exe `--data-binary "@file.json"` 发送）。
+  - 全部改动未 commit，等人审；建议 message：`feat(R2): token 计量计费（PLATFORM 实扣/BYOK 服务费/embedding/流水/admin 充值）`。
+
 ## 4. 卡点 / 待确认
 
 - **L3 对比版**：已纳入 MVP 关键路径（决策 #10）。D2 做 RAG 时先手写余弦相似度检索、再换向量库，当场记录召回率/耗时/代码量对比数字；首版 demo 就要能讲，不后置。
@@ -253,8 +271,8 @@
 
 **MVP 全链路已打通（T1–T12 全部 ✅，48 用例全绿）**，下一阶段是「单用户本地」→「多用户可部署」。迭代总原则见 `docs/tasks.md` 与 vibe-coding 实战手册第 17 章。
 - 每个新需求按轻量六阶段（规划 → feature 分支 → 单任务闭环 → 验证 Gate → 小步提交人审 → merge 回写 handoff）。
-- **当前卡点：R1-1 / R1-1.5（前端 JWT）/ R1-2 已合并。进入 R1-3（多用户密钥体系）—— Trea 提出删 KeyVault 密码门禁方案，待用户确认删除破坏性变更。** R1-3 验收：多用户共存时各自额度独立；运维门禁不干扰普通用户登录态（见 `docs/tasks.md` R1-3）。
-- **第一优先 R1（多用户 + 部署）+ R2（账号 + 额度）**：没有它，多用户与额度无从谈起；且现有 `InMemoryVectorStore` 内存向量库必须先换持久化，否则一部署即崩。
+- **当前状态：R1-1 / R1-1.5（前端 JWT）/ R1-2 已合并；R1-3（双密钥模式）与 R2（token 计量计费）代码均已完成（62 / 83 测试全绿 + 真机/浏览器 E2E），在 `feature/R1-3` 与 `feature/R2-token-quota` 分支上，均未 commit/merge，等用户终审。** 验收要点见 §3 R1-3 / R2 两小节；提交前注意两个噪音文件勿带入：`.workbuddy/memory/2026-10-02.md`、`docs/l3-comparison.md`。
+- **下一优先（R1+R2 地基审完后）**：**R4 向量持久化**（`InMemoryVectorStore` 非用户隔离且重启清零，多用户部署前必须换，落盘 Lucene 或 Redis vector）；其后 **R3 多模型**（抽 ModelProvider + 路由，第一个接通义千问，embedding 维度隔离需随 R4 存储一起考虑）；R7 软性面试官低成本可穿插；R6 语音/视频最后做。
 - 同步 R5（测试加固）。详细任务拆解与验收见 `docs/tasks.md`。
 
 > 开工前提示：本机需 `DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY` 环境变量；Redis 需 docker 起。缺则 T2 会卡，先确认环境就绪。

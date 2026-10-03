@@ -9,7 +9,8 @@
 |---|------|------|--------|
 | 0 | **app_user**（R1-1，R1-3 扩） | 用户账号：注册/登录 + JWT 鉴权，所有实体的 owner；含 key_mode / role | 不对外暴露 |
 | 0a | **user_api_key**（R1-3） | 用户自带 DeepSeek key（BYOK），AES-GCM 密文落库 | 仅回 hasKey + last4 |
-| 0b | **quota**（R1-3 最小骨架） | 用户服务点数：注册赠送、BYOK 每次调用扣 1 点 | 用户可看余额 |
+| 0b | **quota**（R2 token 计量） | 用户 token 额度：注册赠送、PLATFORM 按真实 token 扣、BYOK 按次扣服务费、ADMIN 可充值 | 用户可看余额/明细 |
+| 0c | **llm_usage_log**（R2 新增） | 每次 LLM/embedding 调用的 token 用量与扣减流水 | 仅本人/ADMIN，内部明细 |
 | 1 | jd_profile | JD 原文 + 考点关键词 + 岗位类型 + 同类标签 | 列表（精简），按 user_id 隔离 |
 | 2 | resume_version | 多版本简历原文 + 上传时间 | 可切换，按 user_id 隔离 |
 | 3 | note | 笔记存档点（可加可看） | 可看，按 user_id 隔离 |
@@ -42,14 +43,30 @@
 
 > 主密钥（KEK）从环境变量 `APP_DATA_KEY` 读（Base64 32B）；未配置时启动自动生成临时密钥并 WARN（重启后旧密文不可解，BYOK 用户需重新填写——仅开发便利；多实例部署必须显式配置同一密钥）。API **永不回显明文**：GET 只回 `{hasKey, last4}`；保存=轮换（先调一次 DeepSeek 验活再落库）；删除后用户 key_mode 自动回退 PLATFORM。BYOK 仅支持 DeepSeek；embedding（DashScope）永远走平台 key。
 
-### quota（R1-3 新增，最小骨架；R2 扩展 token 计量）
+### quota（R2：token 计量；R1-3 的 points 列已整体替换）
 - id (PK)
 - user_id (FK UNIQUE, NOT NULL)
-- total_points      # 总额度（注册赠送，配置 app.quota.signup-bonus，默认 1000）
-- used_points       # 已用点数
+- total_tokens      # 总额度（token 单位；注册赠送 app.quota.signup-bonus-tokens，默认 500000；ADMIN 可加）
+- used_tokens       # 已消耗（token 当量；非负，永不超过 total，最后一次透支由 clamp 归零到 total）
 - created_at / updated_at
 
-> R1-3 计量规则：**PLATFORM 模式不扣点**（平台 key 的按 token 计费在 R2-1/R2-2 做）；**BYOK 模式每次 DeepSeek 调用（追问/判分/Critic 各一次）调用前扣 1 点服务费**，余额不足 → 402 QUOTA_EXHAUSTED，不发起调用、不超发（条件 UPDATE `used_points < total_points` 保证）。R2 在此表上扩展 DeepSeek usage 回写、@Version 乐观锁/Redis INCR、充值与 402 降级引导。
+> R2 计量规则（2026-10-02 用户冻结）：
+> - **PLATFORM**：DeepSeek 与 embedding（DashScope）都走平台 key。调用**前预检**余额（=0 直接 402，不发请求）；调用**后**按响应 `usage.total_tokens` **实扣**；usage 缺失按「输入+输出字符数 1 字符≈1 token」估算兜底（偏保守，`app.quota.usage-estimate-enabled` 可关）。允许最后一次小幅超出，扣减时 clamp 到 total，之后预检拦死。
+> - **BYOK**：API 费由用户自己付给 DeepSeek；平台仍在调用**前**扣固定服务费 `app.quota.byok-charge-per-call`（token 当量，默认 1），条件 UPDATE 不超发，余额不足 402。BYOK 的 embedding 仍走平台 key → 按 token 实扣（与对话模式无关）。
+> - 扣减与流水在 REQUIRES_NEW 独立事务提交：token 已真实烧掉，业务事务后续回滚不退款。
+> - 并发安全：单条条件 UPDATE 原子扣减（不引 @Version/Redis INCR），并发压测保证不超发。
+
+### llm_usage_log（R2 新增，用量流水）
+- id (PK)
+- user_id (FK NOT NULL, 索引)
+- scene            # JD_PARSE / FOLLOWUP / SCORE / CRITIC / CHAT / EMBED_INGEST / EMBED_QUERY
+- key_mode         # PLATFORM / BYOK（embedding 恒 PLATFORM）
+- model            # 实际模型名（deepseek-flash / deepseek-reasoner / text-embedding-v?）
+- prompt_tokens / completion_tokens / total_tokens   # 厂商 usage 原值；embedding 只 total；估算兜底时三者可为 0 而 total=估算值并记 estimated=true 的来源（实现上以 total_tokens>0 为准）
+- charged_tokens   # 实际从 quota 扣减的 token 当量（BYOK 对话时为服务费 1，不等于 total_tokens）
+- created_at
+
+> 用途：AGENTS.md「明细入 DB」原则下的逐次消耗凭证；支撑 GET /api/user/usage 与未来对账/管理后台。不做修改/删除接口。
 
 ### jd_profile
 - id (PK)

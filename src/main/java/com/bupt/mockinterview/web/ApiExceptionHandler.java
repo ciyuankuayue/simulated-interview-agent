@@ -2,6 +2,7 @@ package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.llm.LlmException;
+import com.bupt.mockinterview.security.ForbiddenException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -30,6 +31,18 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> notFound(IllegalArgumentException e) {
         return body(HttpStatus.NOT_FOUND, "NOT_FOUND", e.getMessage());
+    }
+
+    /** 按业务键找不到用户（R2 ADMIN 充值）→ 404 USER_NOT_FOUND（比 NOT_FOUND 更精确）。 */
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> userNotFound(UserNotFoundException e) {
+        return body(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", e.getMessage());
+    }
+
+    /** 已登录但权限不足（R2：非 ADMIN 调管理接口）→ 403 FORBIDDEN。 */
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<Map<String, Object>> forbidden(ForbiddenException e) {
+        return body(HttpStatus.FORBIDDEN, "FORBIDDEN", e.getMessage());
     }
 
     @ExceptionHandler(IllegalStateException.class)

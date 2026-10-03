@@ -24,6 +24,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -69,6 +70,9 @@ class WeakPointApiTest {
                         "那覆盖索引是怎么避免回表的？",
                         TOPIC));
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean()))
+                .thenReturn(new LlmReply("{\"keywords\":[\"MySQL\",\"Redis\"],\"jobType\":\"Java 后端\"}", null));
+        // JD 解析走带 scene 的 7 参重载
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt(), any()))
                 .thenReturn(new LlmReply("{\"keywords\":[\"MySQL\",\"Redis\"],\"jobType\":\"Java 后端\"}", null));
 
         long jdId = mapper.readTree(body(mvc.perform(post("/api/jd")

@@ -5,8 +5,8 @@ package com.bupt.mockinterview.rag;
  * 真实路径用 {@link DashscopeEmbedder}（通义 qwen3.7-text-embedding-flash）。
  */
 public interface Embedder {
-    /** 把一段文本转成定长向量；失败抛异常（如密钥缺失、网络错误）。 */
-    float[] embed(String text) throws Exception;
+    /** 把一段文本转成定长向量（含 token 用量）；失败抛异常（如密钥缺失、网络错误）。 */
+    Embedding embed(String text) throws Exception;
 
     /** 装配标识（供 /api/health/deps 观测当前用的是真通义还是 Fake 降级）。 */
     default String name() {

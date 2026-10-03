@@ -52,7 +52,7 @@ public class DashscopeEmbedder implements Embedder {
     }
 
     @Override
-    public float[] embed(String text) throws Exception {
+    public Embedding embed(String text) throws Exception {
         String apiKey = apiKeySupplier.get();
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("DashScope 平台密钥未配置：请设置环境变量 DASHSCOPE_API_KEY");
@@ -81,7 +81,12 @@ public class DashscopeEmbedder implements Embedder {
                 for (int i = 0; i < emb.size(); i++) {
                     v[i] = (float) emb.get(i).asDouble();
                 }
-                return v;
+                // 真实 usage.total_tokens（OpenAI 兼容格式）；厂商漏回则按入参字符 1:1 估算
+                long totalTokens = root.path("usage").path("total_tokens").asLong(0L);
+                if (totalTokens > 0L) {
+                    return new Embedding(v, totalTokens, false);
+                }
+                return new Embedding(v, Math.max(1L, text == null ? 1L : text.length()), true);
             }
             throw new RuntimeException("通义 embedding 返回格式异常: " + root);
         }

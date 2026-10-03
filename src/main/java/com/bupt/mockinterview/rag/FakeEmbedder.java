@@ -20,12 +20,13 @@ public class FakeEmbedder implements Embedder {
     }
 
     @Override
-    public float[] embed(String text) {
+    public Embedding embed(String text) {
         float[] v = new float[dim];
         for (String w : text.toLowerCase().split("\\s+")) {
             int h = Math.floorMod(w.hashCode(), dim);
             v[h] += 1.0f;
         }
-        return v;
+        // 离线假向量不计量（tokens=0、非估算 → RagService 跳过扣费）
+        return new Embedding(v, 0L, false);
     }
 }

@@ -10,11 +10,12 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
 
 /**
- * 用户服务点额度（R1-3 最小骨架，2026-10-02；R2 扩展 token 计量）。
+ * 用户 token 额度（R2，2026-10-02；替代 R1-3 的 points 模型）。
  * <p>
- * 注册即建：total_points = 赠送点数（app.quota.signup-bonus，默认 1000）。
- * R1-3 计量：PLATFORM 模式不扣点；BYOK 模式每次 DeepSeek 调用前扣 byok-charge-per-call（默认 1）点，
- * 条件更新 {@code used_points < total_points} 保证不超发，余额不足 → 402 QUOTA_EXHAUSTED。
+ * 注册即建：totalTokens = 注册赠送（app.quota.signup-bonus-tokens，默认 500000）。
+ * 计量：PLATFORM 对话/embedding 调用后按厂商 usage.total_tokens 实扣；BYOK 对话调用前
+ * 扣固定服务费（token 当量）。条件更新保证 used 不超 total；PLATFORM 最后一次可能透支，
+ * 由 clamp 更新归零到 total，之后预检拦死。
  */
 @Entity
 @Table(name = "quota",
@@ -32,11 +33,11 @@ public class Quota {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @Column(name = "total_points", nullable = false)
-    private long totalPoints;
+    @Column(name = "total_tokens", nullable = false)
+    private long totalTokens;
 
-    @Column(name = "used_points", nullable = false)
-    private long usedPoints;
+    @Column(name = "used_tokens", nullable = false)
+    private long usedTokens;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -46,14 +47,14 @@ public class Quota {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    public Quota(User user, long totalPoints) {
+    public Quota(User user, long totalTokens) {
         this.user = user;
-        this.totalPoints = totalPoints;
-        this.usedPoints = 0L;
+        this.totalTokens = totalTokens;
+        this.usedTokens = 0L;
     }
 
-    /** 剩余点数（不小于 0）。 */
+    /** 剩余 token（不小于 0）。 */
     public long remaining() {
-        return Math.max(0L, totalPoints - usedPoints);
+        return Math.max(0L, totalTokens - usedTokens);
     }
 }

@@ -28,7 +28,8 @@
         awaiting: false,
         reportRendered: false,
         rendered: new Set(),  // 事件去重：type + turnSeq
-        weakDetailLoaded: new Set()  // 错题本详情懒加载：已拉取过的 weakPointId
+        weakDetailLoaded: new Set(),  // 错题本详情懒加载：已拉取过的 weakPointId
+        quota: null  // R2：最近一次额度视图 {totalTokens,usedTokens,remainingTokens}，null=未加载（不前置拦截）
         // R1-3 起只有 JWT 一道门禁（旧保险箱 vaultToken 已删除）；token 只在内存，刷新必失
     };
 
@@ -57,7 +58,12 @@
                 forceLogout('登录已过期，请重新登录');
                 throw new Error('登录已过期，请重新登录');
             }
-            // 402：BYOK 服务点耗尽。服务端消息本身含「删除 Key 切回平台模式」的引导，直接透传
+            // 402：Token 额度耗尽。R2 起平台实扣/BYOK 服务费统一走此码——
+            // 全局兜底弹窗（各入口另有前置拦截），同时刷新额度数字，错误继续抛给调用方走各自 catch
+            if (res.status === 402 || (data && data.code === 'QUOTA_EXHAUSTED')) {
+                loadQuota();
+                showQuotaModal(msg);
+            }
             const err = new Error(msg);
             err.code = (data && data.code) ? data.code : null;
             err.status = res.status;
@@ -70,6 +76,8 @@
     function forceLogout(message) {
         state.token = null;
         state.username = null;
+        state.quota = null;  // 清掉上个账号的额度视图，防下个用户登录前误拦
+        hideQuotaModal();
         closeStream();
         $('appShell').hidden = true;
         $('userArea').hidden = true;
@@ -335,7 +343,7 @@
             if (!state.reportRendered) setState('已结束');
             loadWeak();     // 本场答崩的点已入错题本，顺手刷新
             loadHistory();  // 新一场进入历史列表
-            loadUserSettings();  // BYOK 本场扣的点同步到额度展示
+            loadQuota();    // 本场 token/服务费已实扣，同步额度（不重刷设置，避免动单选）
         });
     }
 
@@ -349,16 +357,24 @@
         bindAuth();          // R1-1.5：登录/注册/登出
         bindUserSettings();  // R1-3：PLATFORM/BYOK 模式切换、自带 key 管理、额度展示
 
+        // R2 额度耗尽弹窗：按钮关闭 / 点击遮罩空白处关闭
+        $('btnQuotaOk').onclick = hideQuotaModal;
+        $('quotaModal').addEventListener('click', (e) => {
+            if (e.target === $('quotaModal')) hideQuotaModal();
+        });
+
         // JD
         $('btnJd').onclick = async () => {
             const rawText = $('jdText').value.trim();
             if (!rawText) return tip('先粘贴 JD 正文', true);
+            if (quotaBlocked()) { showQuotaModal(); return; }
             try {
                 const arr = await api('/api/jd', 'POST', { rawText: rawText, sameTypeTag: $('jdTag').value.trim() || null });
                 state.jdId = arr[0].jdId;
                 $('jdSelect').value = String(state.jdId);
                 tip('JD 已上传，keywords=' + (arr[0].keywords || []).join('、'));
                 await refreshJd();
+                loadQuota();  // JD 解析 token 已实扣，轻量同步额度
             } catch (e) { tip(e.message, true); }
         };
         $('btnRefreshJd').onclick = refreshJd;
@@ -370,12 +386,14 @@
         $('btnResume').onclick = async () => {
             const content = $('resumeText').value.trim();
             if (!content) return tip('简历内容为空', true);
+            if (quotaBlocked()) { showQuotaModal(); return; }
             try {
                 const r = await api('/api/resume', 'POST', { content: content });
                 tip('简历新版本 #' + r.resumeId + ' 已上传并入 RAG 语料');
                 $('resumeText').value = '';
                 state.resumeId = r.resumeId;
                 await refreshResume();
+                loadQuota();  // 简历切块向量化 token 已实扣
             } catch (e) { tip(e.message, true); }
         };
         $('btnRefreshResume').onclick = refreshResume;
@@ -393,19 +411,22 @@
             const title = $('docTitle').value.trim();
             const content = $('docText').value.trim();
             if (!title || !content) return tip('项目文档需要标题 + 内容', true);
-            try { await api('/api/project-doc', 'POST', { title: title, content: content }); tip('项目文档已上传（质疑官弹药库 +1）'); }
+            if (quotaBlocked()) { showQuotaModal(); return; }
+            try { await api('/api/project-doc', 'POST', { title: title, content: content }); tip('项目文档已上传（质疑官弹药库 +1）'); loadQuota(); }
             catch (e) { tip(e.message, true); }
         };
         $('btnNote').onclick = async () => {
             const content = $('noteText').value.trim();
             if (!content) return tip('笔记内容为空', true);
-            try { await api('/api/note', 'POST', { content: content }); tip('笔记已存入 RAG 语料'); }
+            if (quotaBlocked()) { showQuotaModal(); return; }
+            try { await api('/api/note', 'POST', { content: content }); tip('笔记已存入 RAG 语料'); loadQuota(); }
             catch (e) { tip(e.message, true); }
         };
 
         // 开始
         $('btnStart').onclick = async () => {
             if (!state.jdId) return tip('先上传或选择一个 JD', true);
+            if (quotaBlocked()) { showQuotaModal(); return; }
             const roles = Array.from(document.querySelectorAll('.roleChk:checked')).map((c) => c.value);
             const maxQuestions = Number($('maxQuestions').value) || 8;
             tip('正在解析 JD + 检索资料，出首题…');
@@ -424,8 +445,9 @@
                 // 首题由 SSE 重放渲染（见文件头说明），这里不重复渲染 firstQuestion
                 openStream(r.sessionId);
                 tip('会话 #' + r.sessionId + ' 已开始');
+                loadQuota();  // 出题（含 RAG 检索 embedding）token 已实扣
             } catch (e) {
-                if (e.code === 'QUOTA_EXHAUSTED') loadUserSettings();
+                if (e.code === 'QUOTA_EXHAUSTED') loadQuota();
                 tip(e.message, true);
             }
         };
@@ -442,8 +464,9 @@
             setState('判分中…');
             try {
                 await api('/api/interview/' + state.sessionId + '/answer', 'POST', { answer: text });
+                loadQuota();  // 判分/追问 token 已实扣，轻量同步额度
             } catch (e) {
-                if (e.code === 'QUOTA_EXHAUSTED') loadUserSettings();
+                if (e.code === 'QUOTA_EXHAUSTED') loadQuota();
                 tip(e.message, true);
                 setState('作答失败，可重试');
                 $('answerText').disabled = false;
@@ -464,7 +487,7 @@
                 renderReport(r);   // 响应与 SSE 的 report 只渲染一次（flag 去重）
                 loadWeak();
                 loadHistory();     // 报告已出，历史条目变为可点开
-                loadUserSettings();  // 同步 BYOK 扣点后的额度
+                loadQuota();       // Critic token 已实扣，轻量同步额度
             } catch (e) { tip(e.message, true); }
         };
 
@@ -808,9 +831,7 @@
             badge.className = 'keybadge ok';
         }
 
-        $('quotaRemaining').textContent = quota.remaining;
-        $('quotaTotal').textContent = quota.total;
-        $('quotaUsed').textContent = quota.used;
+        renderQuota(quota);
 
         $('byokBox').hidden = (mode !== 'BYOK');
         $('btnByokDelete').hidden = !keyInfo.hasKey;
@@ -825,6 +846,52 @@
                 showKeyMsg('平台未配置 DEEPSEEK_API_KEY：请选「自带 Key」，或让运维配置环境变量', true);
             }
         } catch (e) { /* 探活接口失败不影响主流程 */ }
+    }
+
+    /** token 额度数字格式化：≥1 万显示 x.x 万，避免一行长整数。 */
+    function formatTokens(n) {
+        n = Number(n) || 0;
+        if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + ' 万';
+        return String(n);
+    }
+
+    /** 只重绘额度行（字段：R2 token 语义 totalTokens/usedTokens/remainingTokens）。 */
+    function renderQuota(quota) {
+        state.quota = quota;  // 缓存给前置拦截用；null/异常时不更新（避免误判耗尽放行）
+        $('quotaRemaining').textContent = formatTokens(quota.remainingTokens);
+        $('quotaTotal').textContent = formatTokens(quota.totalTokens);
+        $('quotaUsed').textContent = formatTokens(quota.usedTokens);
+    }
+
+    /**
+     * R2 前置拦截：额度视图已知且余额为 0 时，点击收费入口直接拦（不发请求）。
+     * state.quota 为 null（登录后 settings 尚未返回 / 查询失败）时不拦——
+     * 交给服务端 402 兜底弹窗，避免状态未知时误拦。
+     */
+    function quotaBlocked() {
+        return !!state.quota && Number(state.quota.remainingTokens) <= 0;
+    }
+
+    /** 弹出额度耗尽提示窗；serverMessage 为服务端 402 文案时原样展示，否则用默认引导。 */
+    function showQuotaModal(serverMessage) {
+        $('quotaModalUser').textContent = state.username || '—';
+        $('quotaModalRemain').textContent = state.quota ? formatTokens(state.quota.remainingTokens) : '0';
+        $('quotaModalMsg').textContent = serverMessage
+            || '上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗 Token。请联系管理员为账号充值后继续。';
+        $('quotaModal').hidden = false;
+    }
+
+    function hideQuotaModal() { $('quotaModal').hidden = true; }
+
+    /**
+     * 轻量刷额度：只打 /api/user/quota，不重拉 settings/key/deps。
+     * JD 上传/start/answer/end 后调用——面试中绝不能 loadUserSettings()，
+     * 那会按服务端状态重置 PLATFORM/BYOK 单选与输入框。
+     */
+    async function loadQuota() {
+        try {
+            renderQuota(await api('/api/user/quota'));
+        } catch (e) { /* 额度刷新失败不挡主流程 */ }
     }
 
     /** 登录后需要加载的业务数据。 */

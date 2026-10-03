@@ -28,6 +28,16 @@ public interface LlmPort {
                   List<Map<String, Object>> tools, boolean jsonMode, int maxTokens);
 
     /**
+     * R2：带计费场景的 chat（用量流水按 scene 归类）。默认实现委托无场景重载（离线 stub / 不计费），
+     * 生产实现 {@link LlmService} 覆盖它做预检与实扣。
+     */
+    default LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens,
+                          com.bupt.mockinterview.billing.UsageScene scene) {
+        return chat(model, thinking, messages, tools, jsonMode, maxTokens);
+    }
+
+    /**
      * 通用 chat（使用全局 {@code max-tokens}），供不需要自定义预算的场景。
      */
     LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,

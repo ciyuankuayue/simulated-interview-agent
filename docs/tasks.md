@@ -57,18 +57,25 @@
 
 目标：每个用户有独立账号，调用大模型按 token 计费、超限拒绝。
 
-- [ ] **R2-1 额度模型与配额表**
+- [x] **R2-1 额度模型与配额表**（2026-10-03 完成，实现口径见下方「R2 实现备注」）
   - 目标：新增 `Quota` 实体（user_id / total_tokens / used_tokens / reset_at / plan）；首次注册给赠送额度；DeepSeek 响应 `usage` 字段回写消耗。
   - 验收：每次 LLM 调用后 `used_tokens` 增加；`usage` 缺失时按输入+输出估算兜底。
   - 估时：2–3 天　依赖：R1-1　难度：中
-- [ ] **R2-2 并发安全的额度扣减**
+- [x] **R2-2 并发安全的额度扣减**（2026-10-03；条件 UPDATE 原子扣减，未用 @Version/Redis）
   - 目标：多请求同时扣减用 DB 行锁 / `@Version` 乐观锁 / Redis INCR；扣减失败整体回滚，不出现超发。
-  - 验收：并发压测下 `used_tokens` 不超 `total_tokens`，无负额度。
+  - 验收：并发压测下 `used_tokens` 不超 `total_tokens`，无负额度（QuotaServiceTest 20 线程×10/总额 100，used 恰为 100）。
   - 估时：2–3 天　依赖：R2-1　难度：中
-- [ ] **R2-3 超限优雅降级**
+- [x] **R2-3 超限优雅降级**（2026-10-03；402 穿透所有降级边界 + 前端 tip 引导；充值页面按用户决策不做，ADMIN 用 POST /api/admin/quota 充值）
   - 目标：额度耗尽返回友好提示（含充值 / 申请入口），不抛 500；前端弹窗引导。
-  - 验收：额度为 0 时调用 LLM → 返回 402 风格业务码 + 中文提示，非 500。
+  - 验收：额度为 0 时调用 LLM → 返回 402 风格业务码 + 中文提示，非 500（PLATFORM/BYOK 双文案，真机 E2E 实测）。
   - 估时：1–2 天　依赖：R2-2　难度：低
+
+> **R2 实现备注**（2026-10-03，替代任务书里的旧设想）：
+> - 计量单位直接用 token（无 reset_at/plan，月度套餐不做）；注册赠送 `app.quota.signup-bonus-tokens`（默认 50 万）。
+> - PLATFORM：DeepSeek 对话 + DashScope embedding 均预检 + 按厂商 `usage.total_tokens` 实扣（缺失按字符 1:1 估算，`app.quota.usage-estimate-enabled` 可关）；最后一次可透支并 clamp 到 total，之后 402。
+> - BYOK：API 费用户自付，每次对话只扣固定服务费 `app.quota.byok-charge-per-call`（默认 1 token 当量）；embedding 恒走平台 key 按 token 扣。
+> - 扣费 + `llm_usage_log` 流水走 REQUIRES_NEW 独立事务（业务回滚不退款）。
+> - 83 tests 绿（含并发压测、402 穿透、embedding 计量、403/404/400）；真机 E2E 实测 JD 181 token、embedding 58/24 token、BYOK 165 token 仅扣 1、充值恢复。
 
 ## R3 增加其他大模型（DeepSeek 之外）
 

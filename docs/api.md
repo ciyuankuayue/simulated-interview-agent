@@ -15,7 +15,7 @@
   - **auth 白名单**：`POST /api/auth/register`、`POST /api/auth/login` 不放令牌。
 - 时间：ISO-8601 字符串
 - 错误码：HTTP 状态码 + `{code, message}`
-  - 400 参数错误 / 401 未登录或 JWT 失效 / 402 服务点数耗尽（R1-3，BYOK 余额不足，见 §7）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
+  - 400 参数错误 / 401 未登录或 JWT 失效 / 402 token 额度耗尽（PLATFORM/BYOK 余额不足，见 §7）/ 403 非 ADMIN 调管理接口（R2）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
 - 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。
 
 ## 2. 认证（R1-1 新增，2026-09-28）
@@ -26,7 +26,7 @@
 - `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
 - `password`：≥6 字符，BCrypt 加密存储
 - resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
-- **R1-3 附带效果**：库中**第一个注册账号** role=ADMIN（其后均 USER）；同时为该用户创建 quota 并赠送服务点数（`app.quota.signup-bonus`，默认 1000）；新用户 key_mode=PLATFORM。
+- **R1-3/R2 附带效果**：库中**第一个注册账号** role=ADMIN（其后均 USER）；同时为该用户创建 quota 并赠送 token 额度（`app.quota.signup-bonus-tokens`，默认 500000）；新用户 key_mode=PLATFORM。
 - HTTP 201 Created
 
 ### POST /api/auth/login
@@ -149,12 +149,13 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 `{ ...列表字段, "resolved", "createdAt", "lastSessionId", "lastTurnSeq", "latest": { "sessionId", "turnSeq", "layer", "question", "answer", "score", "review": { "explanation", "correction", "knowledgeSupplement", "exemplarAnswer" } } | null }`
 - `latest=null`：旧数据/无法定位（前端降级为只显示状）；`review=null`：该场还没出 Critic 报告。
 
-## 7. 模型调用方式 / BYOK / 额度（R1-3，替代旧 /api/setup/** 保险箱接口）
+## 7. 模型调用方式 / BYOK / 额度（R2 token 计量；R1-3 保险箱接口已移除）
 
-> R1-3 起平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
+> 平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
 > 每个登录用户有两种对话模型（DeepSeek）调用方式，由 `app_user.key_mode` 决定：
-> - **PLATFORM**（默认）：走平台 key 调 DeepSeek，R1-3 不扣点（按 token 计费在 R2）；embedding 始终走平台 `DASHSCOPE_API_KEY`，与模式无关。
-> - **BYOK**：走用户自己加密存储的 DeepSeek key（模型直连用户账号），**每次 DeepSeek 调用前扣 1 点服务费**；余额不足 → **402** `{code:"QUOTA_EXHAUSTED"}`，不发起调用。
+> - **PLATFORM**（默认）：走平台 key，DeepSeek 对话与 DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
+> - **BYOK**：走用户自己加密存储的 DeepSeek key（API 费用户自付），每次 DeepSeek 对话调用前扣固定服务费（`app.quota.byok-charge-per-call` token 当量，默认 1），余额不足 → **402**；BYOK 的 embedding 仍走平台 key，按 token 实扣。
+> - 所有额度单位均为 **token**；注册赠送 `app.quota.signup-bonus-tokens`（默认 500000）。
 > - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
 
 ### GET /api/user/settings
@@ -178,18 +179,30 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 删除自带 key；若当前 key_mode=BYOK，**自动回退 PLATFORM**。resp: `{ "hasKey": false, "last4": null, "keyMode": "PLATFORM" }`
 
 ### GET /api/user/quota
-`{ "totalPoints": 1000, "usedPoints": 3, "remaining": 997 }`
-- R1-3 只有 BYOK 调用会增加 usedPoints（每次 +1）；PLATFORM 不增。
+`{ "totalTokens": 500000, "usedTokens": 1320, "remainingTokens": 498680 }`
+- PLATFORM 每次 DeepSeek/embedding 调用后按 usage 实增；BYOK 每次 DeepSeek 对话 +`byok-charge-per-call`（embedding 按 token）。
+
+### GET /api/user/usage?limit=50
+本人最近用量流水（limit 默认/上限 50），按时间倒序：
+`[{ "id", "scene", "keyMode", "model", "promptTokens", "completionTokens", "totalTokens", "chargedTokens", "createdAt" }]`
+- scene：`JD_PARSE` / `FOLLOWUP` / `SCORE` / `CRITIC` / `CHAT` / `EMBED_INGEST` / `EMBED_QUERY`。
+- BYOK 对话流水的 `totalTokens` 是厂商真实用量（仅展示），`chargedTokens` 才是实际扣减（=服务费）。
+
+### POST /api/admin/quota（R2 新增，仅 ADMIN）
+body: `{ "username": "alice", "grantTokens": 200000 }`（grantTokens 必须 > 0）
+- 非 ADMIN → **403** `{code:"FORBIDDEN"}`；用户不存在 → **404** `{code:"USER_NOT_FOUND"}`。
+- resp: 充值后该用户的 quota 视图（同 GET /api/user/quota）。
 
 ### 402 语义
-BYOK 模式调用任意业务接口触发 DeepSeek 且点数不足时：
-- 面试流程中的追问/判分：接口返回 **402** `{code:"QUOTA_EXHAUSTED",message:"服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值"}`；前端弹提示并引导切回 PLATFORM（已有平台 key 时）。
-- 扣减为条件更新（`used_points < total_points`），不超发；R2 替换为 token 级计量 + 乐观锁。
+任何触发计费调用（DeepSeek 对话 / embedding）的业务接口，预检发现额度为 0 时：
+- **PLATFORM** → **402** `{code:"QUOTA_EXHAUSTED",message:"Token 额度已用完，请联系管理员充值"}`
+- **BYOK** → **402** `{code:"QUOTA_EXHAUSTED",message:"服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值"}`
+- 402 穿透所有「LLM/检索瞬时失败降级」边界直达全局异常处理，前端收到后刷新额度并按模式引导；条件 UPDATE 保证不超发，PLATFORM 最后一次实扣最多把 used clamp 到 total。
 
 ## 8. 契约边界
 
-- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + BYOK 服务费点数 + 自带 key 加密存储（R1-3，2026-10-02）
-- **R1-3 不做**（留 R2）：PLATFORM 模式按 DeepSeek usage 的 token 计费、并发扣减强化（乐观锁/Redis INCR）、充值入口、配额套餐管理
+- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + 自带 key 加密存储（R1-3）；**token 计量（PLATFORM 对话+embedding 按 usage 实扣、BYOK 按次服务费）、用量流水、ADMIN 充值、402/403（R2，2026-10-02）**
+- **R2 不做**：月度重置/套餐（reset_at/plan）、充值/支付页面与申请入口（只提供 ADMIN API）、用量明细前端页面（只提供查询 API）
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）
 - 报告与明细分离：响应均为「表达精炼、抓核心」的版本（关键内容不省）；检索引用/判分过程细节/token 等内部明细只在 DB（interview_turn），不进响应

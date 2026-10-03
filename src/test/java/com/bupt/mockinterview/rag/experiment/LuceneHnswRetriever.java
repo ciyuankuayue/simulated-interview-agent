@@ -54,7 +54,7 @@ public class LuceneHnswRetriever implements Retriever {
     @Override
     public void ingest(String docId, String text) throws Exception {
         ids.add(docId);
-        vecs.add(normalize(embedder.embed(text)));
+        vecs.add(normalize(embedder.embed(text).vector()));
         built = false; // 语料变了，下次 search 重建索引
     }
 
@@ -66,7 +66,7 @@ public class LuceneHnswRetriever implements Retriever {
         if (!built) {
             build();
         }
-        float[] q = normalize(embedder.embed(query));
+        float[] q = normalize(embedder.embed(query).vector());
         int k = Math.min(topK, ids.size());
         TopDocs top = searcher.search(new KnnVectorQuery(FIELD_VEC, q, k), k);
         List<ScoredDoc> res = new ArrayList<>(top.scoreDocs.length);

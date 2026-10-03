@@ -2,6 +2,7 @@ package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.KeyMode;
+import com.bupt.mockinterview.domain.LlmUsageLog;
 import com.bupt.mockinterview.domain.Quota;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.UserApiKey;
@@ -19,7 +20,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -147,15 +150,39 @@ public class UserController {
 
     // ---------- 额度 ----------
 
-    /** 服务点余额：total/used/remaining（PLATFORM 不扣点；BYOK 每次调用扣 1）。 */
+    /** token 额度：total/used/remaining（PLATFORM 按真实 token 扣；BYOK 对话按次服务费）。 */
     @GetMapping("/quota")
     public Map<String, Object> getQuota() {
         Quota q = quotaService.getByUser(currentUser.currentUserId());
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("total", q.getTotalPoints());
-        body.put("used", q.getUsedPoints());
-        body.put("remaining", q.remaining());
+        body.put("totalTokens", q.getTotalTokens());
+        body.put("usedTokens", q.getUsedTokens());
+        body.put("remainingTokens", q.remaining());
         return body;
+    }
+
+    /**
+     * 本人最近用量流水（R2，api.md §7），按时间倒序。
+     * limit 收口到 1..50（默认 50），防止一次拖全表。
+     */
+    @GetMapping("/usage")
+    public List<Map<String, Object>> getUsage(@RequestParam(defaultValue = "50") int limit) {
+        int bounded = Math.max(1, Math.min(50, limit));
+        List<Map<String, Object>> resp = new ArrayList<>();
+        for (LlmUsageLog l : quotaService.recentUsage(currentUser.currentUserId(), bounded)) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", l.getId());
+            m.put("scene", l.getScene());
+            m.put("keyMode", l.getKeyMode());
+            m.put("model", l.getModel());
+            m.put("promptTokens", l.getPromptTokens());
+            m.put("completionTokens", l.getCompletionTokens());
+            m.put("totalTokens", l.getTotalTokens());
+            m.put("chargedTokens", l.getChargedTokens());
+            m.put("createdAt", l.getCreatedAt());
+            resp.add(m);
+        }
+        return resp;
     }
 
     // ---- 工具 ----

@@ -375,7 +375,7 @@ public class InterviewOrchestrator {
         return roles;
     }
 
-    /** 检索资料作为出题上下文；RAG 不可用（未 set key）时静默降级为空上下文。 */
+    /** 检索资料作为出题上下文；RAG 技术故障时静默降级为空上下文，402/409 必须透传打断面试。 */
     private String retrieveContext(String query, List<String> refs) {
         try {
             StringBuilder sb = new StringBuilder();
@@ -384,6 +384,8 @@ public class InterviewOrchestrator {
                 sb.append("- ").append(hit.chunk().content()).append("\n");
             }
             return sb.toString();
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
             return "";
         }
