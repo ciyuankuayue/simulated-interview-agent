@@ -39,6 +39,11 @@ public class User {
     @Column(nullable = false, name = "key_mode", length = 16)
     private KeyMode keyMode = KeyMode.PLATFORM;
 
+    /** 对话模型厂商（R3-2）：DeepSeek（默认）/ 通义千问。与 keyMode 解耦，设置即时生效。 */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, name = "chat_provider", length = 16)
+    private ChatProviderChoice chatProvider = ChatProviderChoice.DEEPSEEK;
+
     /** 角色：库中首个注册账号 = ADMIN，其余 USER（R1-3 持久化，管理接口后续迭代）。 */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)

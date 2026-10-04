@@ -81,16 +81,19 @@
 
 目标：用户可选多家厂商模型；第一个加通义千问。
 
-- [ ] **R3-1 抽象 ModelProvider + 模型路由**
+- [x] **R3-1 抽象 ModelProvider + 模型路由（2026-10-03 完成，分支 `feature/R3-multi-model`）**
   - 目标：`LlmProperties` 当前只绑 `deepseek.*`；抽 `ModelProvider` 接口（`chat` / `embed`），注册多个实现，按用户选择路由；`LlmPort` 已有雏形可复用。
+  - 落地：`llm/chat/`（ChatProvider/ChatRequest/ChatResponse/ModelRole/ModelRouter），DeepSeek HTTP 逻辑迁入 DeepSeekChatProvider；LlmPort 改 ModelRole，LlmService 只做路由/计费/解析；流水标识改 `provider:model`。
   - 验收：配置切换模型后，追问 / 判分走对应 provider；单测覆盖路由分支。
-  - 估时：3–4 天　依赖：R1-1　难度：中
-- [ ] **R3-2 接入通义千问（Qwen）**
+  - 实际：含在 R3 批 1–2，108 tests 全绿（见 R3-2 验收）。
+- [x] **R3-2 接入通义千问（Qwen）（2026-10-03 完成，分支 `feature/R3-multi-model`，未 commit 待人审）**
   - 目标：复用已打通的 DashScope embedding 通路，加 Qwen 文本生成；处理与 DeepSeek 的 prompt / 思考模式差异。
-  - 验收：Qwen 跑通一整场（start→answer→report），判分 JSON 可解析。
+  - 落地：QwenChatProvider（顶层布尔 `enable_thinking`、`reasoning_content`、显式 10/60/90s 超时、4xx 不重试）；用户级 `app_user.chat_provider`（DEEPSEEK/QWEN，与 keyMode 正交）；**QWEN 恒走平台 DASHSCOPE_API_KEY、PLATFORM 实扣（BYOK 选它也不扣服务费）**；settings 接口两字段部分更新 + 前端单选；V2 SQL。
+  - 验收：108 tests 全绿；真机 E2E 三场景通过——PLATFORM+QWEN 一整场（start→追问→report）流水全 `qwen:*` 实扣 4818 token；BYOK+QWEN 实扣 5291、0 行服务费；缺 key → 504 中文 JSON 不白页。reasoner=qwen3.7-plus（思考+JSON 实测 ~13s 可用）、fast=qwen3.8-flash（~1s）。
   - 估时：2–3 天　依赖：R3-1　难度：中
-- [ ] **R3-3 embedding 维度隔离 / 重算**
+- [ ] **R3-3 embedding 维度隔离 / 重算（用户拍板延后，2026-10-03）**
   - 目标：不同厂商 embedding 维度不同（如 qwen 1024 vs openai 1536）；向量按模型分桶或重算，避免混用导致召回错乱。
+  - 现状：Qwen 仅接对话，embedding 恒 DashScope 1024 维，暂无混用面；接入第二家 embedding 前必须先做本项。
   - 验收：换 embedding 模型后检索 top-k 仍正确（回归 `L3ComparisonRealEmbeddingTest` 思路）。
   - 估时：2–3 天　依赖：R4-1　难度：中
 

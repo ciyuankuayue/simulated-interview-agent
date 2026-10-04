@@ -84,6 +84,13 @@
                 <label class="modeopt"><input type="radio" name="keyMode" value="BYOK"> <span>自带 Key</span></label>
             </div>
 
+            <!-- R3-2 对话模型：与调用方式解耦；Qwen 恒走平台 DashScope key、按平台 token 扣，BYOK 选它也不扣服务费 -->
+            <div style="margin-top:10px"><span class="lb">对话模型</span></div>
+            <div class="modeswitch" role="radiogroup" aria-label="对话模型">
+                <label class="modeopt"><input type="radio" name="chatProvider" value="DEEPSEEK"> <span>DeepSeek</span></label>
+                <label class="modeopt"><input type="radio" name="chatProvider" value="QWEN"> <span>通义千问</span></label>
+            </div>
+
             <div id="quotaLine" class="quotaLine">
                 Token 额度：<b id="quotaRemaining">—</b> / <span id="quotaTotal">—</span>
                 <small>（已用 <span id="quotaUsed">—</span>；平台模式对话与向量化按真实 token 扣，自带 Key 每次对话另扣 1 token 服务费）</small>

@@ -60,3 +60,7 @@ scripts/deepseek-fc-demo/
 # ===== R4 向量索引落盘目录（Lucene FSDirectory，运行时数据，不入库） =====
 # 生产 Docker 部署时该目录必须挂载持久卷，否则容器重启向量即丢。
 data/
+
+# ===== TRAE/WorkBuddy 本地工作目录（计划文档、会话记忆，不入库） =====
+.trae/
+.workbuddy/

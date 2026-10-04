@@ -37,10 +37,17 @@ public class DeepSeekVerifyTest {
         LlmProperties props = new LlmProperties();
         props.setApiKey(key); // baseUrl / model 用默认值（deepseek-flash）
 
-        KeyResolver resolver = new KeyResolver(props, mock(UserApiKeyRepository.class),
+        KeyResolver resolver = new KeyResolver(props,
+                new com.bupt.mockinterview.rag.DashscopeProperties(),
+                mock(UserApiKeyRepository.class),
                 new UserKeyCipher(Base64.getEncoder().encodeToString(new byte[32])));
         CurrentUserService currentUser = new CurrentUserService(mock(UserRepository.class));
-        LlmService llm = new LlmService(new OkHttpClient(), new ObjectMapper(), props,
+        OkHttpClient http = new OkHttpClient();
+        com.bupt.mockinterview.llm.chat.DeepSeekChatProvider deepSeek =
+                new com.bupt.mockinterview.llm.chat.DeepSeekChatProvider(http, new ObjectMapper(), props);
+        com.bupt.mockinterview.llm.chat.ModelRouter router =
+                new com.bupt.mockinterview.llm.chat.ModelRouter(java.util.List.of(deepSeek), props);
+        LlmService llm = new LlmService(http, new ObjectMapper(), props, router,
                 resolver, currentUser, mock(QuotaService.class),
                 new com.bupt.mockinterview.billing.QuotaProperties());
 

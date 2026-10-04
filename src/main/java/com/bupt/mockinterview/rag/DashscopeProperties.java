@@ -22,6 +22,14 @@ public class DashscopeProperties {
 
     private String embedModel = "qwen3.7-text-embedding-flash";
 
+    /**
+     * R3-2 通义千问对话模型（compatible-mode 与 embedding 共用 base-url / key）。
+     * 模型名迭代快，以百炼控制台实测为准；判分/Critic 用的 reasoner 必须经实测
+     * 支持「enable_thinking=true + response_format=json_object」组合。
+     */
+    private String chatModelFast = "qwen3.8-flash";
+    private String chatModelReasoner = "qwen3.7-plus";
+
     public boolean enabled() {
         return apiKey != null && !apiKey.isBlank();
     }

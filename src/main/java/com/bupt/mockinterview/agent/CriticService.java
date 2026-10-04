@@ -4,6 +4,7 @@ import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.llm.LlmException;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmProperties;
+import com.bupt.mockinterview.llm.chat.ModelRole;
 import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -79,7 +80,7 @@ public class CriticService {
         }
         String user = buildUserPrompt(jdText, turns);
         try {
-            String content = llm.chat(props.getModelReasoner(), true,
+            String content = llm.chat(ModelRole.REASONER, true,
                     List.of(msg("system", SYSTEM), msg("user", user)),
                     null, true, props.getCriticMaxTokens(),
                     com.bupt.mockinterview.billing.UsageScene.CRITIC).content();

@@ -6,6 +6,7 @@ import com.bupt.mockinterview.domain.repository.*;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmProperties;
 import com.bupt.mockinterview.llm.LlmReply;
+import com.bupt.mockinterview.llm.chat.ModelRole;
 import com.bupt.mockinterview.rag.RagService;
 import com.bupt.mockinterview.security.CurrentUserService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -270,7 +271,7 @@ public class MaterialController {
                 只输出 JSON，不要 markdown 代码块。格式：{"keywords":["..."],"jobType":"..."}
                 """;
         try {
-            LlmReply reply = llm.chat(props.getModelFlash(), false,
+            LlmReply reply = llm.chat(ModelRole.FAST, false,
                     List.of(Map.of("role", "system", "content", system),
                             Map.of("role", "user", "content", rawText)),
                     null, true, props.getMaxTokens(),

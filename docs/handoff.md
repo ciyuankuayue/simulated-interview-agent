@@ -21,6 +21,7 @@
 | **R1-3** | **双密钥模式：平台额度 / BYOK 自带 Key** | **✅ 完成（2026-10-02，62 tests 全绿 + 真机/浏览器 E2E，未 commit 待人审）** | **用户拍板双形态：PLATFORM 走平台 env key（R1-3 不扣点，R2 做 token 计费）；BYOK 走用户自带 DeepSeek key（AES-GCM 入库），每次调用扣 1 服务点，不足 402 QUOTA_EXHAUSTED。embedding 永远平台 key。首个注册者 ADMIN，注册赠 1000 点。已删 T11/T12 保险箱+密码门禁全套。402/409 已穿透 6 处 LLM 降级边界。详见 §3 R1-3 小节。** |
 | **R2** | **按真实 token 计量计费（R2-1/2/3）** | **✅ 已提交（2026-10-03 commit 49529b2 在 feature/R2-token-quota，83 tests 全绿 + 真机 API/浏览器 E2E + 用户弹窗验收通过；未 push/merge）** | **PLATFORM 对话+embedding 按厂商 usage.total_tokens 实扣（缺失字符估算兜底，最后一次可透支 clamp）；BYOK 每次对话扣固定服务费（默认 1）；预检在 HTTP 调用前，扣费+流水 REQUIRES_NEW；llm_usage_log 流水；GET /api/user/usage；POST /api/admin/quota（403/404/400）。真机实测：JD 150/181 token、embedding 24/58 token、BYOK 165 token 仅扣 1、402 双文案、充值恢复。详见 §3 R2 小节。** |
 | **R4-1** | **向量持久化（Lucene FSDirectory + 用户隔离）** | **✅ 完成（2026-10-03，分支 `feature/R4-vector-persistence` 从 49529b2 切出，92 tests 全绿 + 真机 FS 三验证；未 commit 待人审）** | **InMemoryVectorStore 换 Lucene 9.12.3 FSDirectory（`data/rag-index`，CREATE_OR_APPEND，dim 1024 校验）；VectorStore 抽象 + KnowledgeChunk 加 userId；KNN 4 参 pre-filter（candidateK=max(topK*3,30)）；AND 删除 + beginReplace/commit/rollback 批次事务；StartupIndexCleaner dev 空库清孤儿（mysql 关）。真机：重启 doc=2 不丢、PUT 两次存活数不翻倍（0→1→2→2→2）、空库启动 WARN 清空。R4-2 已评估不引 LangChain4j。详见 §3 R4 小节。** |
+| **R3** | **多模型接入：Provider 抽象 + 通义千问（R3-1/R3-2；R3-3 延后）** | **✅ 完成（2026-10-03，分支 `feature/R3-multi-model` 从 R4 commit edeaa10 切出，108 tests 全绿 + 真机 E2E 三场景 + 浏览器验收；未 commit 待人审）** | **`llm/chat/`（ChatProvider/ModelRouter/DeepSeek+Qwen 双实现）；`app_user.chat_provider` 用户级厂商（DEEPSEEK/QWEN，与 keyMode 正交）；Qwen 恒平台 DASHSCOPE_API_KEY、PLATFORM 实扣（BYOK 选它也不收服务费）；settings 契约两字段部分更新、前端单选；V2 SQL。真机：qwen3.8-flash 非思考 ~1s、qwen3.7-plus 思考+JSON ~13s；PLATFORM+QWEN 整场实扣 4818、BYOK+QWEN 实扣 5291 零服务费行、缺 key 504 中文 JSON。详见本文件 §3 R3 小节与 docs/domain.md §8。** |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -317,3 +318,25 @@
 - 测试：48 用例（46 run 2 skip），缺集成 / E2E / 弹性测试。
 
 **我对需求的改进建议（排序逻辑）**：先 R1+R2 地基（含 R4 向量库迁移依附部署），同步 R5 织测试网；R7 低成本高回报可穿插；R3 非阻塞后做；R6 最高难度最后做。R4 明确不建议引 LangChain，保留手写检索、只换存储后端。
+
+## 7. R3 多模型接入（2026-10-03 实施记录）
+
+> 分支 `feature/R3-multi-model`（从 R4 commit edeaa10 切）。按 `.trae/documents/R3_multi_model_plan.md` v2 三批推进，**未 commit**，待人审。计划文件在 stash 之外（工作区内）。
+
+**用户拍板**：①厂商选择=用户级；②BYOK 用户选 Qwen 自动走平台 `DASHSCOPE_API_KEY`、按 PLATFORM 实扣 token（不收每次服务费）；③R3-3 embedding 维度隔离延后。
+
+- **批 1（94 tests 绿）**：`llm/chat/` 落 ChatProvider/ChatRequest/ChatResponse/ModelRole，DeepSeek HTTP/重试从 LlmService 原样迁入 DeepSeekChatProvider；LlmPort 全部 chat 重载首参改 `ModelRole`；ModelRouter（批 1 仅 deepseek）；KeyResolver 加两参 `resolveForChat(user, providerId)`；流水 label 改 `provider:model`。
+- **批 2（108 tests 绿）**：QwenChatProvider（顶层布尔 `enable_thinking`、reasoning_content、connect/read/call=10/60/90s、4xx 不重试/5xx+IO×3）；`ChatProperties(app.llm.default-provider)`；`ChatProviderChoice` 枚举 + `User.chatProvider` 列（VARCHAR(16) NOT NULL DEFAULT DEEPSEEK，V2 SQL）；ModelRouter 四参 @Autowired 全参构造（**两构造器必须显式标 @Autowired，否则 Spring 找默认构造器启动失败**）；KeyResolver qwen 恒平台 key；settings GET/PUT 契约扩两字段可分别部分更新（INVALID_CHAT_PROVIDER/INVALID_SETTINGS）；前端 index.html 单选组 + app.js change 监听/回显；yml dashscope 加 chat-model-fast/reasoner、app.llm 合并进既有顶层 app 块（**避免重复 YAML 键**）。测试：QwenChatProviderTest（含 JDK HttpServer 验 4xx 不重试，context 路径要带 `/v1` 前缀）、ModelRouterTest 扩 4 例、KeyResolverTest/ByokRoutingTest 各加 QWEN 平台 key 用例、UserSettingsApiTest +2、QwenVerifyTest（真机，env 有 key 时随全量跑）。
+- **批 3（真机验收全过）**：
+  - QwenVerifyTest：qwen3.8-flash 非思考 ~1s；qwen3.7-plus enable_thinking+json_object ~13s 返合法判分 JSON、usage.total_tokens 完整。
+  - PLATFORM+QWEN 一整场 start→answer(触发追问)→end：5 条流水（JD_PARSE/FOLLOWUP qwen3.8-flash，SCORE/CRITIC qwen3.7-plus，EMBED_QUERY dashscope:*）对话行全 `qwen:*` keyMode=PLATFORM charged=total，实扣 4818。
+  - BYOK+QWEN：4/4 对话行 qwen+PLATFORM、charged=total，delta=5291，服务费行 0。
+  - 缺 DASHSCOPE_API_KEY（第二实例 8081 + 独立 `APP_RAG_INDEX_DIR` 避开 Lucene 写锁）：JD 解析降级 200 空 keywords；interview/start → 504 `{code:LLM_UNAVAILABLE, message:"通义千问密钥未配置：请让运维设置环境变量 DASHSCOPE_API_KEY…"}`，不白页。
+  - 浏览器：设置区两组单选渲染正常，切换提示「已切换为通义千问（走平台 key，按真实 token 扣）」，刷新/重登回显正确，控制台 0 报错。
+
+**本机踩坑备忘**：
+- 多实例同机：Lucene FSDirectory 写锁互斥 → 第二实例必须设 `APP_RAG_INDEX_DIR` 指独立目录；换端口用 `-Dspring-boot.run.jvmArguments=-Dserver.port=8081`，裸 `-Dserver.port` 不进 fork 的应用 JVM。
+- PowerShell 置空 `$env:DASHSCOPE_API_KEY=''` 对子进程≈删除变量；curl.exe 在 PowerShell 里吞 JSON 双引号，复杂 body 一律写临时文件 `-d "@file"`。
+- 模型名是占位实测产物：`qwen3.8-flash`/`qwen3.7-plus` 当前有效，百炼代际迭代后只需改 yml，不动代码。
+
+**下一步（待人审后）**：建议 commit message `feat(R3): ModelProvider 抽象 + 通义千问用户级路由`（显式 add，禁用 git add -A；`.workbuddy/` 与 stash 不带入）。R3-3 在接入第二家 embedding 前启动。

@@ -760,6 +760,24 @@
             });
         });
 
+        // R3-2 对话模型单选：DEEPSEEK / QWEN，与 keyMode 解耦。
+        // Qwen 恒走平台 key（BYOK 选它也按平台 token 扣）；失败时回滚单选到服务端真实状态。
+        document.querySelectorAll('input[name="chatProvider"]').forEach((radio) => {
+            radio.addEventListener('change', async () => {
+                if (!radio.checked) return;
+                try {
+                    await api('/api/user/settings', 'PUT', { chatProvider: radio.value });
+                    showKeyMsg(radio.value === 'QWEN'
+                        ? '已切换为通义千问（走平台 key，按真实 token 扣）'
+                        : '已切换为 DeepSeek');
+                    await loadUserSettings();
+                } catch (e) {
+                    showKeyMsg(e.message, true);
+                    await loadUserSettings();
+                }
+            });
+        });
+
         // 保存（并切换）：先验活加密落库，成功后显式切 BYOK
         $('btnByokSave').onclick = async () => {
             const key = $('byokKey').value.trim();
@@ -820,6 +838,12 @@
         // 单选与服务端状态对齐（切模式失败时也靠它回滚）
         document.querySelectorAll('input[name="keyMode"]').forEach((radio) => {
             radio.checked = (radio.value === mode);
+        });
+
+        // R3-2 对话模型单选回显（服务端缺字段/异常值时安全回退 DEEPSEEK）
+        const chatProvider = settings.chatProvider === 'QWEN' ? 'QWEN' : 'DEEPSEEK';
+        document.querySelectorAll('input[name="chatProvider"]').forEach((radio) => {
+            radio.checked = (radio.value === chatProvider);
         });
 
         const badge = $('keyBadge');

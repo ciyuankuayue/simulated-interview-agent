@@ -152,19 +152,23 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 ## 7. 模型调用方式 / BYOK / 额度（R2 token 计量；R1-3 保险箱接口已移除）
 
 > 平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
-> 每个登录用户有两种对话模型（DeepSeek）调用方式，由 `app_user.key_mode` 决定：
-> - **PLATFORM**（默认）：走平台 key，DeepSeek 对话与 DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
-> - **BYOK**：走用户自己加密存储的 DeepSeek key（API 费用户自付），每次 DeepSeek 对话调用前扣固定服务费（`app.quota.byok-charge-per-call` token 当量，默认 1），余额不足 → **402**；BYOK 的 embedding 仍走平台 key，按 token 实扣。
+> 每个登录用户有两个相互**独立**的设置维度：
+> - **调用方式 `keyMode`**：`PLATFORM`（默认，走平台 key）/ `BYOK`（走用户自己加密存储的 DeepSeek key，每次对话扣固定服务费，默认 1 token 当量，余额不足→**402**）。
+> - **对话模型厂商 `chatProvider`（R3-2 新增）**：`DEEPSEEK`（默认）/ `QWEN`（通义千问，DashScope OpenAI 兼容模式）。
+> - 两维正交，共 4 种组合。**QWEN 恒走平台 `DASHSCOPE_API_KEY` 并按 PLATFORM 实扣 token**——即使 keyMode=BYOK：BYOK 自带 key 体系只支持 DeepSeek，选 QWEN 时不读用户 key、不扣每次服务费（API 费由平台额度承担）。
+> - PLATFORM 下 DeepSeek 对话、Qwen 对话、DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
 > - 所有额度单位均为 **token**；注册赠送 `app.quota.signup-bonus-tokens`（默认 500000）。
 > - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
 
 ### GET /api/user/settings
-`{ "keyMode": "PLATFORM|BYOK" }`
+`{ "keyMode": "PLATFORM|BYOK", "chatProvider": "DEEPSEEK|QWEN" }`
 
 ### PUT /api/user/settings
-切换调用方式。body: `{ "keyMode": "BYOK" }`
+更新设置。body 两个字段都**可选**、各自独立更新（前端单选各自只 PUT 自己那项），但至少传一个：
+`{ "keyMode": "BYOK" }` 或 `{ "chatProvider": "QWEN" }`，也可同传。
 - 切到 `BYOK` 但该用户未保存 key → **409** `{code:"KEY_NOT_CONFIGURED",message:"请先保存你的 API Key"}`。
-- 成功 resp: 同 GET。
+- 非法 `keyMode` → **400** `{code:"INVALID_KEY_MODE"}`；非法 `chatProvider` → **400** `{code:"INVALID_CHAT_PROVIDER"}`；两字段都空/缺失 → **400** `{code:"INVALID_SETTINGS"}`。
+- 成功 resp: 同 GET（返回两个字段的最新值）。
 
 ### GET /api/user/api-key
 `{ "hasKey": bool, "last4": "abcd"|null }`——仅末 4 位，永不回显完整明文。
@@ -180,13 +184,15 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 
 ### GET /api/user/quota
 `{ "totalTokens": 500000, "usedTokens": 1320, "remainingTokens": 498680 }`
-- PLATFORM 每次 DeepSeek/embedding 调用后按 usage 实增；BYOK 每次 DeepSeek 对话 +`byok-charge-per-call`（embedding 按 token）。
+- PLATFORM 每次 DeepSeek/Qwen 对话与 embedding 调用后按 usage 实增；BYOK 每次 **DeepSeek** 对话 +`byok-charge-per-call`（embedding 与 Qwen 对话按真实 token）。
 
 ### GET /api/user/usage?limit=50
 本人最近用量流水（limit 默认/上限 50），按时间倒序：
 `[{ "id", "scene", "keyMode", "model", "promptTokens", "completionTokens", "totalTokens", "chargedTokens", "createdAt" }]`
 - scene：`JD_PARSE` / `FOLLOWUP` / `SCORE` / `CRITIC` / `CHAT` / `EMBED_INGEST` / `EMBED_QUERY`。
-- BYOK 对话流水的 `totalTokens` 是厂商真实用量（仅展示），`chargedTokens` 才是实际扣减（=服务费）。
+- `model` 为「厂商:模型名」流水标识（R3-1 起）：DeepSeek = `deepseek:<model>`（如 `deepseek:deepseek-flash`），Qwen = `qwen:<model>`（如 `qwen:qwen3.8-flash` / `qwen:qwen3.7-plus`），embedding = `dashscope:<model>`。**历史数据兼容**：R3-1 前写入的 DeepSeek 行无 `deepseek:` 前缀（裸模型名如 `deepseek-flash`），读取端原样回显、不做解析聚合，前端/统计方需容忍两种形态。
+- `keyMode` 记录本次调用实际计费方式：BYOK 用户选 QWEN 时，对话流水也是 `keyMode=PLATFORM`（恒平台 key）。
+- BYOK + DeepSeek 对话流水的 `totalTokens` 是厂商真实用量（仅展示），`chargedTokens` 才是实际扣减（=服务费）；PLATFORM/Qwen/embedding 行 `chargedTokens=totalTokens`。
 
 ### POST /api/admin/quota（R2 新增，仅 ADMIN）
 body: `{ "username": "alice", "grantTokens": 200000 }`（grantTokens 必须 > 0）

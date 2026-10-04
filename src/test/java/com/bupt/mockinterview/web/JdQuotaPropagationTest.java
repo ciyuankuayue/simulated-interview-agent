@@ -19,7 +19,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
@@ -44,7 +43,7 @@ class JdQuotaPropagationTest {
     @Test
     void quotaExhaustedDuringJdParse_returns402_insteadOfEmptyKeywords() throws Exception {
         // MaterialController 走带 scene 的 7 参重载（Mockito mock 不会走 interface default 委托，必须桩这个签名）
-        when(llm.chat(anyString(), anyBoolean(), anyList(), any(), anyBoolean(),
+        when(llm.chat(any(), anyBoolean(), anyList(), any(), anyBoolean(),
                 org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(com.bupt.mockinterview.billing.UsageScene.class)))
                 .thenThrow(new QuotaExhaustedException(

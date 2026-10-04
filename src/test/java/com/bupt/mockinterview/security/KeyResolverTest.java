@@ -5,6 +5,7 @@ import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.UserApiKey;
 import com.bupt.mockinterview.domain.repository.UserApiKeyRepository;
 import com.bupt.mockinterview.llm.LlmProperties;
+import com.bupt.mockinterview.rag.DashscopeProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -24,6 +25,7 @@ import static org.mockito.Mockito.when;
 class KeyResolverTest {
 
     private LlmProperties props;
+    private DashscopeProperties dashProps;
     private UserApiKeyRepository repo;
     private UserKeyCipher cipher;
     private KeyResolver resolver;
@@ -32,10 +34,12 @@ class KeyResolverTest {
     void setUp() {
         props = new LlmProperties();
         props.setApiKey("sk-platform-env");
+        dashProps = new DashscopeProperties();
+        dashProps.setApiKey("sk-dash-env");
         repo = mock(UserApiKeyRepository.class);
         cipher = new UserKeyCipher(Base64.getEncoder().encodeToString(new byte[32]));
         cipher.init();
-        resolver = new KeyResolver(props, repo, cipher);
+        resolver = new KeyResolver(props, dashProps, repo, cipher);
     }
 
     private User user(KeyMode mode) {
@@ -76,5 +80,15 @@ class KeyResolverTest {
         assertThatThrownBy(() -> resolver.resolveForChat(user(KeyMode.BYOK)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("BYOK");
+    }
+
+    @Test
+    void qwen_alwaysUsesPlatformDashscopeKey_evenForByokUser() {
+        // R3-2：Qwen 恒平台 key + PLATFORM 模式；BYOK 用户选它也不读用户 key 表。
+        KeyResolver.ResolvedKey rk = resolver.resolveForChat(user(KeyMode.BYOK), "qwen");
+        assertThat(rk.apiKey()).isEqualTo("sk-dash-env");
+        assertThat(rk.mode()).isEqualTo(KeyMode.PLATFORM);
+        assertThat(rk.byok()).isFalse();
+        org.mockito.Mockito.verifyNoInteractions(repo);
     }
 }

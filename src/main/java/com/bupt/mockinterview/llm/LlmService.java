@@ -6,14 +6,17 @@ import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.billing.UsageEstimates;
 import com.bupt.mockinterview.billing.UsageScene;
 import com.bupt.mockinterview.domain.User;
+import com.bupt.mockinterview.llm.chat.ChatRequest;
+import com.bupt.mockinterview.llm.chat.ChatResponse;
+import com.bupt.mockinterview.llm.chat.DeepSeekChatProvider;
+import com.bupt.mockinterview.llm.chat.ModelRole;
+import com.bupt.mockinterview.llm.chat.ModelRouter;
 import com.bupt.mockinterview.security.CurrentUserService;
 import com.bupt.mockinterview.security.KeyResolver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
-import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,21 +30,30 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * DeepSeek 调用封装（T5）：单例 OkHttp + 超时重试 + 两个入口。
+ * 对话统一门面（T5 起，R3-1 瘦身后）：{@link LlmPort} 唯一生产实现。
+ *
+ * <p>本类只保留与厂商无关的职责：
+ * <ul>
+ *   <li>模型路由：用户 + {@link ModelRole} → 厂商 provider + 具体模型（{@link ModelRouter}）；</li>
+ *   <li>key 路由：PLATFORM env / BYOK 解密（{@link KeyResolver}）；</li>
+ *   <li>计费收口：调用前预检（0 余额 402 不发请求）、调用后按 usage 实扣 + 流水；</li>
+ *   <li>判分 JSON 解析校验；DeepSeek key 验活（GET /models）。</li>
+ * </ul>
+ *
+ * 厂商 HTTP 协议差异（请求体/重试/响应解析）在各 {@code ChatProvider} 内：
+ * DeepSeek 见 {@link DeepSeekChatProvider}（R3-2 增加 QwenChatProvider）。
  *
  * 两个入口对应 domain.md §4.1 的分工：
- * - {@link #followUp}：追问 —— Flash **非思考模式**（快，实时交互），只产出一句追问/纠正。
- * - {@link #score}：判分 —— Flash **思考模式**（默认即开，故显式传 enabled）+ JSON 输出，
+ * - {@link #followUp}：追问 —— FAST 档**非思考模式**（快，实时交互），只产出一句追问/纠正。
+ * - {@link #score}：判分 —— REASONER 档**思考模式** + JSON 输出，
  *   产出 {@code {score, breakdown, missed_points, followup}} 并校验非空/越界。
  *
- * 失败语义：重试耗尽后抛 {@link LlmException}，**降级策略交给 T6 agent 层**
+ * 失败语义：provider 重试耗尽后抛 {@link LlmException}，**降级策略交给 agent 层**
  * （如追问失败就跳过追问直接下一题，不让整场面试中断）。
  */
 @Service
 public class LlmService implements LlmPort {
 
-    private static final MediaType JSON = MediaType.get("application/json");
-    private static final int MAX_RETRY = 3;
     private static final Logger log = LoggerFactory.getLogger(LlmService.class);
 
     /** 判分 system prompt：4 维 × 0-2 = 0-8（domain.md §4），强制纯 JSON 输出。 */
@@ -59,21 +71,23 @@ public class LlmService implements LlmPort {
     private final OkHttpClient client;
     private final ObjectMapper mapper;
     private final LlmProperties props;
+    private final ModelRouter router;
     private final KeyResolver keyResolver;
     private final CurrentUserService currentUser;
     private final QuotaService quotaService;
     private final QuotaProperties quotaProps;
 
     public LlmService(OkHttpClient okHttpClient, ObjectMapper mapper, LlmProperties props,
-                      KeyResolver keyResolver, CurrentUserService currentUser,
+                      ModelRouter router, KeyResolver keyResolver, CurrentUserService currentUser,
                       QuotaService quotaService, QuotaProperties quotaProps) {
         this.mapper = mapper;
         this.props = props;
+        this.router = router;
         this.keyResolver = keyResolver;
         this.currentUser = currentUser;
         this.quotaService = quotaService;
         this.quotaProps = quotaProps;
-        // 由全局单例派生：共享连接池与线程池，仅覆盖超时
+        // verifyApiKey 专用：共享全局连接池，仅覆盖超时（对话 HTTP 已下沉到各 ChatProvider）
         this.client = okHttpClient.newBuilder()
                 .callTimeout(props.getTimeoutMs(), TimeUnit.MILLISECONDS)
                 .build();
@@ -81,50 +95,52 @@ public class LlmService implements LlmPort {
 
     // ---------- 两个入口 ----------
 
-    /** 追问/实时交互：非思考模式，返回一句追问或纠正。 */
+    /** 追问/实时交互：FAST 档非思考模式，返回一句追问或纠正。 */
     public LlmReply followUp(String system, String user) {
-        return chat(props.getModelFlash(), false, List.of(sys(system), userMsg(user)),
+        return chat(ModelRole.FAST, false, List.of(sys(system), userMsg(user)),
                 null, false, props.getMaxTokens(), UsageScene.FOLLOWUP);
     }
 
-    /** 判分：思考模式 + JSON 输出，解析并校验后返回结构化结果。 */
+    /** 判分：REASONER 档思考模式 + JSON 输出，解析并校验后返回结构化结果。 */
     public ScoreResult score(String question, String answer) {
         String user = "题目：\n" + question + "\n\n候选人的回答：\n" + answer;
-        LlmReply reply = chat(props.getModelReasoner(), true, List.of(sys(SCORE_SYSTEM), userMsg(user)),
+        LlmReply reply = chat(ModelRole.REASONER, true, List.of(sys(SCORE_SYSTEM), userMsg(user)),
                 null, true, props.getMaxTokens(), UsageScene.SCORE);
         return parseScore(reply.content());
     }
 
     // ---------- 通用 chat ----------
 
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools) {
-        return chat(model, thinking, messages, tools, false, props.getMaxTokens(), UsageScene.CHAT);
+        return chat(role, thinking, messages, tools, false, props.getMaxTokens(), UsageScene.CHAT);
     }
 
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode) {
-        return chat(model, thinking, messages, tools, jsonMode, props.getMaxTokens(), UsageScene.CHAT);
+        return chat(role, thinking, messages, tools, jsonMode, props.getMaxTokens(), UsageScene.CHAT);
     }
 
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
-        return chat(model, thinking, messages, tools, jsonMode, maxTokens, UsageScene.CHAT);
+        return chat(role, thinking, messages, tools, jsonMode, maxTokens, UsageScene.CHAT);
     }
 
     /**
-     * @param thinking 思考开关。官方默认开启，故两侧都显式传：非思考必须写 disabled。
-     * @param jsonMode 是否强制 JSON 输出（判分用）。
-     * @param tools    function calling 工具定义；非空时后续轮次须回传 reasoning_content，否则 400。
-     * @param maxTokens 生成 token 上限（思考模式下限制 reasoning+content 总预算）。
-     * @param scene    计费场景（R2 用量流水归类）。
+     * @param role     FAST / REASONER，由 router 解析为用户所选厂商的具体模型
+     * @param thinking 思考开关（各家协议差异由 provider 消化）
+     * @param jsonMode 是否强制 JSON 输出（判分用）
+     * @param tools    function calling 工具定义；非空时后续轮次须回传 reasoning_content，否则 400
+     * @param maxTokens 生成 token 上限（思考模式下限制 reasoning+content 总预算）
+     * @param scene    计费场景（R2 用量流水归类）
      */
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens,
                          UsageScene scene) {
-        // 统一在此解析 key 并计费：followUp/score/Critic/JD 解析等所有 DeepSeek 调用的唯一收口。
+        // 统一在此做模型/key 路由与计费：followUp/score/Critic/JD 解析等所有对话调用的唯一收口。
         User user = currentUser.currentUser();
-        KeyResolver.ResolvedKey resolved = keyResolver.resolveForChat(user);
+        ModelRouter.Route route = router.route(user, role);
+        KeyResolver.ResolvedKey resolved = keyResolver.resolveForChat(user, route.providerId());
         boolean billable = user != null;
         if (billable) {
             if (resolved.byok()) {
@@ -137,51 +153,35 @@ public class LlmService implements LlmPort {
                 quotaService.ensureAvailable(user.getId(), resolved.mode());
             }
         }
-        requireApiKey(resolved.apiKey());
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", model);
-        body.put("messages", messages);
-        body.put("max_tokens", maxTokens);
-        body.put("thinking", Map.of("type", thinking ? "enabled" : "disabled"));
-        if (jsonMode) {
-            body.put("response_format", Map.of("type", "json_object"));
-        }
-        if (tools != null && !tools.isEmpty()) {
-            body.put("tools", tools);
-        }
-        // 思考模式不支持 temperature / presence_penalty / frequency_penalty，一律不传
-
-        JsonNode root = callWithRetry(body, resolved.apiKey());
-        JsonNode msg = root.path("choices").path(0).path("message");
-        if (msg.isMissingNode()) {
-            throw new LlmException("DeepSeek 响应缺少 choices[0].message: " + root);
-        }
-        String content = msg.path("content").asText("");
-        String reasoning = msg.path("reasoning_content").asText(null);
+        ChatResponse response = route.provider().chat(
+                new ChatRequest(route.model(), messages, thinking, jsonMode, tools, maxTokens),
+                resolved.apiKey());
 
         if (billable) {
-            settleUsage(user.getId(), resolved.byok(), scene, model, messages, content, root.path("usage"));
+            settleUsage(user.getId(), resolved.byok(), scene, route.label(),
+                    messages, response.content(), response.usage());
         }
-        return new LlmReply(content, reasoning, parseUsage(root.path("usage"), messages, content));
+        return new LlmReply(response.content(), response.reasoning(),
+                parseUsage(response.usage(), messages, response.content()));
     }
 
     /** 用后计费：PLATFORM 按 usage 实扣；BYOK 只落流水（服务费已在调用前扣）。计费失败不吞掉用户已拿到的回复。 */
-    private void settleUsage(Long userId, boolean byok, UsageScene scene, String model,
+    private void settleUsage(Long userId, boolean byok, UsageScene scene, String modelLabel,
                              List<Map<String, Object>> messages, String content, JsonNode usageNode) {
         TokenUsage usage = parseUsage(usageNode, messages, content);
         if (usage == null) {
             // 厂商没回 usage 且关闭了估算兜底：无法准确计费，只告警不扣（宁可漏不可错停服务）
-            log.warn("DeepSeek 响应缺 usage 且 app.quota.usage-estimate-enabled=false，本次未扣 token：scene={}", scene);
+            log.warn("对话响应缺 usage 且 app.quota.usage-estimate-enabled=false，本次未扣 token：scene={}", scene);
             return;
         }
         try {
             if (byok) {
-                quotaService.recordByokChat(userId, scene, model,
+                quotaService.recordByokChat(userId, scene, modelLabel,
                         usage.promptTokens(), usage.completionTokens(),
                         usage.totalTokens(), usage.estimated());
             } else {
-                quotaService.settlePlatformCall(userId, scene, model,
+                quotaService.settlePlatformCall(userId, scene, modelLabel,
                         usage.promptTokens(), usage.completionTokens(),
                         usage.totalTokens(), usage.estimated());
             }
@@ -193,7 +193,7 @@ public class LlmService implements LlmPort {
     }
 
     /**
-     * 解析 DeepSeek usage；缺失/异常时按字符估算兜底（受 app.quota.usage-estimate-enabled 控制）。
+     * 解析厂商 usage；缺失/异常时按字符估算兜底（受 app.quota.usage-estimate-enabled 控制）。
      * 返回 null = 无 usage 且不允许估算（调用方不扣费）。
      */
     private TokenUsage parseUsage(JsonNode usage, List<Map<String, Object>> messages, String content) {
@@ -215,7 +215,7 @@ public class LlmService implements LlmPort {
         return new TokenUsage(0L, 0L, UsageEstimates.estimateChars(texts.toArray(new CharSequence[0])), true);
     }
 
-    // ---------- HTTP + 重试 ----------
+    // ---------- DeepSeek key 验活 ----------
 
     /**
      * 校验一个「待保存」的 DeepSeek key 是否可用：GET {baseUrl}/models 最轻量
@@ -236,43 +236,6 @@ public class LlmService implements LlmPort {
             return (resp.code() == 401 || resp.code() == 403) ? ApiKeyStatus.INVALID : ApiKeyStatus.UNREACHABLE;
         } catch (IOException e) {
             return ApiKeyStatus.UNREACHABLE;
-        }
-    }
-
-    private JsonNode callWithRetry(Map<String, Object> body, String apiKey) {
-        LlmException last = null;
-        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
-            try {
-                return callOnce(body, apiKey);
-            } catch (HttpStatusException e) {
-                // 4xx 属请求本身有问题，重试无意义
-                if (e.code < 500) {
-                    throw new LlmException("DeepSeek 调用失败（不可重试）: HTTP " + e.code + " | " + e.body, e);
-                }
-                last = new LlmException("DeepSeek 服务端错误（第 " + attempt + " 次）: HTTP " + e.code + " | " + e.body, e);
-            } catch (IOException e) {
-                last = new LlmException("DeepSeek 调用网络异常（第 " + attempt + " 次）: " + e.getMessage(), e);
-            }
-            if (attempt < MAX_RETRY) {
-                sleepQuietly(500L * attempt);
-            }
-        }
-        throw last;
-    }
-
-    private JsonNode callOnce(Map<String, Object> body, String apiKey) throws IOException {
-        String json = mapper.writeValueAsString(body);
-        Request req = new Request.Builder()
-                .url(props.getBaseUrl() + "/chat/completions")
-                .addHeader("Authorization", "Bearer " + apiKey)
-                .post(RequestBody.create(json, JSON))
-                .build();
-        try (Response resp = client.newCall(req).execute()) {
-            String respBody = resp.body() == null ? "" : resp.body().string();
-            if (!resp.isSuccessful()) {
-                throw new HttpStatusException(resp.code(), respBody);
-            }
-            return mapper.readTree(respBody);
         }
     }
 
@@ -338,31 +301,5 @@ public class LlmService implements LlmPort {
         m.put("role", role);
         m.put("content", text);
         return m;
-    }
-
-    private void requireApiKey(String apiKey) {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new LlmException("DeepSeek 密钥未配置：平台模式请让运维设置 DEEPSEEK_API_KEY，或在「模型调用方式」中填写你自己的 API Key");
-        }
-    }
-
-    private static void sleepQuietly(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    /** 仅用于在重试逻辑里区分「可重试的 5xx」与「不可重试的 4xx」。 */
-    private static class HttpStatusException extends RuntimeException {
-        private final int code;
-        private final String body;
-
-        HttpStatusException(int code, String body) {
-            super("HTTP " + code);
-            this.code = code;
-            this.body = body;
-        }
     }
 }

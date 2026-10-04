@@ -65,6 +65,10 @@ dashscope:
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api-key: ${DASHSCOPE_API_KEY:}         # 空默认：T2 不向量化，启动不报错；T4 之前必须 set
   embed-model: qwen3.7-text-embedding-flash
+  # R3-2 通义千问对话（与 embedding 共用 base-url/key）。模型名迭代快，以百炼控制台实测为准；
+  # chat-model-reasoner 必须实测支持 enable_thinking=true + response_format=json_object 组合。
+  chat-model-fast: qwen3.8-flash          # 追问/JD 解析：非思考档
+  chat-model-reasoner: qwen3.7-plus       # 判分/Critic：思考档
 
 # ---- R1-1 JWT 配置 ----
 # 生产必须显式设 jwt.secret（至少 32 字节）。空值时应用首次启动自动生成并打印到控制台，
@@ -75,6 +79,9 @@ jwt:
 
 # ---- R2 token 额度（PLATFORM 按 usage 实扣；BYOK 对话按次服务费；embedding 也计量） ----
 app:
+  # ---- R3-2 对话模型路由 ----
+  llm:
+    default-provider: deepseek            # 无用户上下文（测试/内部调用）时的默认对话厂商；登录用户按其 settings 走
   # ---- R4 向量索引（Lucene FSDirectory 持久化） ----
   rag:
     # 索引目录：相对路径基于进程工作目录解析为绝对路径；也可填绝对路径。

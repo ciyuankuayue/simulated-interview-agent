@@ -24,11 +24,12 @@
 
 ## 2. 字段定义
 
-### app_user（R1-1 新增；R1-3 扩 key_mode / role）
+### app_user（R1-1 新增；R1-3 扩 key_mode / role；R3-2 扩 chat_provider）
 - id (PK)
 - username         # 唯一用户名，4-32 字符
 - password_hash    # BCrypt 加密（10 轮）
 - key_mode         # PLATFORM（平台 key，默认）/ BYOK（用户自带 DeepSeek key）
+- chat_provider    # DEEPSEEK（默认）/ QWEN（通义千问）；R3-2 新增，VARCHAR(16) NOT NULL DEFAULT 'DEEPSEEK'，与 key_mode 正交
 - role             # ADMIN（库中首个注册账号）/ USER（其后注册者）；R1-3 仅持久化，管理接口 R 后续迭代用
 - created_at
 
@@ -60,8 +61,8 @@
 - id (PK)
 - user_id (FK NOT NULL, 索引)
 - scene            # JD_PARSE / FOLLOWUP / SCORE / CRITIC / CHAT / EMBED_INGEST / EMBED_QUERY
-- key_mode         # PLATFORM / BYOK（embedding 恒 PLATFORM）
-- model            # 实际模型名（deepseek-flash / deepseek-reasoner / text-embedding-v?）
+- key_mode         # PLATFORM / BYOK（embedding 恒 PLATFORM；R3-2 起 BYOK 用户选 QWEN 时对话也记 PLATFORM）
+- model            # 「厂商:模型名」标识（R3-1 起）：deepseek:<m> / qwen:<m> / dashscope:<embed-m>；历史行可能是裸 deepseek-flash（无前缀），原样保留不回填
 - prompt_tokens / completion_tokens / total_tokens   # 厂商 usage 原值；embedding 只 total；估算兜底时三者可为 0 而 total=估算值并记 estimated=true 的来源（实现上以 total_tokens>0 为准）
 - charged_tokens   # 实际从 quota 扣减的 token 当量（BYOK 对话时为服务费 1，不等于 total_tokens）
 - created_at
@@ -231,3 +232,25 @@
 - `StartupIndexCleaner`（ApplicationRunner）：开关 `app.rag.clean-on-empty-sources`（默认 **true**，mysql profile 显式 **false**）打开时，启动统计四张源表（`resume_version/note/project_doc/real_interview_record`）行数之和，=0 则 `deleteAll()` 并打 WARN，>0 不动；任何异常只告警不阻断启动。生产 mysql 资料持久，不存在该问题。
 
 **监控语义**：`GET /api/health/deps` 的 `embedder.vectorChunks` = 全局**存活** Lucene doc 总数（`reader.numDocs()`，跨用户、不含已逻辑删除待合并的旧 replace 版本），仅作粗监控，**不是**当前用户块数。
+
+## 8. R3 多模型路由（2026-10-03）
+
+> 目标：对话 LLM 从「DeepSeek 单厂焊死」重构为「Provider 抽象 + 用户级厂商路由」，首批接入通义千问（DashScope OpenAI 兼容模式）。embedding 不动（仍 DashScope 恒平台 key）。
+
+**分层**
+- `llm/chat/`：`ChatProvider`（`id()` + `chat(ChatRequest, apiKey)`）、`ChatRequest(model, messages, thinking, jsonMode, tools, maxTokens)` / `ChatResponse(content, reasoning, usage)`、`ModelRole(FAST/REASONER)`。
+- 两个实现：`DeepSeekChatProvider`（id=`deepseek`，思考开关 `thinking:{type:enabled/disabled}` 对象）与 `QwenChatProvider`（id=`qwen`，思考开关为**顶层布尔** `enable_thinking`，思维链回 `reasoning_content`；`response_format/messages/max_tokens/tools/usage` 同 OpenAI 形状）。差异在 provider 内部消化，不泄漏到编排层。
+- `ModelRouter`（Spring 收集 `List<ChatProvider>` 成 id→provider map）：登录用户按 `app_user.chat_provider` 路由；user=null（测试 profile/内部）走 `app.llm.default-provider`（默认 deepseek）。角色→模型名：DeepSeek 取 LlmProperties 的 model-flash/model-reasoner；Qwen 取 DashscopeProperties 的 `chat-model-fast`（默认 qwen3.8-flash）/`chat-model-reasoner`（默认 qwen3.7-plus，**以百炼控制台实测为准**）。
+- `KeyResolver.resolveForChat(user, providerId)` 决定 key 与计费模式：`qwen` 恒返回平台 `DASHSCOPE_API_KEY` + PLATFORM（不看 user.keyMode、不读 user_api_key）；`deepseek` 维持 PLATFORM env / BYOK 解密两路。
+- 唯一对话收口仍是 `LlmService.chat`：route → resolve key → 计费预检 → provider.chat → settle（流水 model 写 `route.label()`=`providerId:model`）。
+
+**已验证的 Qwen 协议要点（真机）**
+- FAST `qwen3.8-flash` 非思考约 1s；REASONER `qwen3.7-plus` 思考+`response_format:json_object` 组合可用（实测 ~13s，返回合法判分 JSON，usage 带 `completion_tokens_details.reasoning_tokens`，total_tokens 完整可供实扣）。
+- 思考期首字节静默可超 10s：QwenChatProvider 显式 connect 10s / read 60s / call 90s，不依赖注入客户端默认值。
+- 缺 key → 中文 `LlmException`（点名 DASHSCOPE_API_KEY）→ 504 `LLM_UNAVAILABLE`；4xx 不重试，5xx/IO 重试 3 次。
+
+**设置与流水**
+- 前端设置区「对话模型」单选即时生效（无会话锁定）；PUT /api/user/settings 两字段可分别部分更新。
+- BYOK 用户 + QWEN：流水 `keyMode=PLATFORM`、`model=qwen:<m>`、charged=total（真机 E2E 实测全程 5k+ token 实扣、0 行服务费 1）。
+- R3-3（embedding 维度按厂商隔离）拍板延后：当前 Qwen 仅对话，embedding 继续恒 DashScope 1024 维。
+

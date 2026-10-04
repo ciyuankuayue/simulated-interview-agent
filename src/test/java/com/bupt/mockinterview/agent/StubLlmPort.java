@@ -3,6 +3,7 @@ package com.bupt.mockinterview.agent;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmReply;
 import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.llm.chat.ModelRole;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -82,13 +83,13 @@ public class StubLlmPort implements LlmPort {
     }
 
     @Override
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode) {
-        return chat(model, thinking, messages, tools, jsonMode, 0);
+        return chat(role, thinking, messages, tools, jsonMode, 0);
     }
 
     @Override
-    public LlmReply chat(String model, boolean thinking, List<Map<String, Object>> messages,
+    public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens) {
         if (chatError != null) {
             throw chatError;

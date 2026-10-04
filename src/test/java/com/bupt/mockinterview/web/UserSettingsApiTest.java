@@ -128,4 +128,51 @@ class UserSettingsApiTest {
         assertThat(json(mvc.perform(get("/api/user/settings"))).get("keyMode").asText()).isEqualTo("PLATFORM");
         assertThat(json(mvc.perform(get("/api/user/api-key"))).get("hasKey").asBoolean()).isFalse();
     }
+
+    @Test
+    void chatProvider_independentFromKeyMode_persistsAndEchoes() throws Exception {
+        // ---- 默认 DEEPSEEK ----
+        JsonNode initial = json(mvc.perform(get("/api/user/settings")));
+        assertThat(initial.get("keyMode").asText()).isEqualTo("PLATFORM");
+        assertThat(initial.get("chatProvider").asText()).isEqualTo("DEEPSEEK");
+
+        // ---- 只传 chatProvider 即可切换，不要求 BYOK key；keyMode 保持不变 ----
+        var switched = putJson("/api/user/settings", "{\"chatProvider\":\"QWEN\"}");
+        assertThat(switched.andReturn().getResponse().getStatus()).isEqualTo(200);
+        JsonNode body = json(switched);
+        assertThat(body.get("chatProvider").asText()).isEqualTo("QWEN");
+        assertThat(body.get("keyMode").asText()).isEqualTo("PLATFORM");
+
+        JsonNode persisted = json(mvc.perform(get("/api/user/settings")));
+        assertThat(persisted.get("chatProvider").asText()).isEqualTo("QWEN");
+        assertThat(persisted.get("keyMode").asText()).isEqualTo("PLATFORM");
+
+        // ---- 切回 DEEPSEEK ----
+        assertThat(json(putJson("/api/user/settings", "{\"chatProvider\":\"DEEPSEEK\"}"))
+                .get("chatProvider").asText()).isEqualTo("DEEPSEEK");
+
+        // ---- 非法值 → 400 INVALID_CHAT_PROVIDER，且不改原值 ----
+        var bad = putJson("/api/user/settings", "{\"chatProvider\":\"GROK\"}");
+        assertThat(bad.andReturn().getResponse().getStatus()).isEqualTo(400);
+        assertThat(json(bad).get("code").asText()).isEqualTo("INVALID_CHAT_PROVIDER");
+        assertThat(json(mvc.perform(get("/api/user/settings")))
+                .get("chatProvider").asText()).isEqualTo("DEEPSEEK");
+
+        // ---- 两个字段都不传 → 400 INVALID_SETTINGS ----
+        var empty = putJson("/api/user/settings", "{}");
+        assertThat(empty.andReturn().getResponse().getStatus()).isEqualTo(400);
+        assertThat(json(empty).get("code").asText()).isEqualTo("INVALID_SETTINGS");
+    }
+
+    @Test
+    void chatProvider_canBeSwitchedUnderByokMode_qwenUsesPlatformKeyByDesign() throws Exception {
+        // BYOK 用户也能选 QWEN（KeyResolver 对 qwen 恒返回平台 key）；两个字段分两次 PUT 互不阻塞。
+        when(llm.verifyApiKey(anyString())).thenReturn(ApiKeyStatus.VALID);
+        putJson("/api/user/api-key", "{\"apiKey\":\"" + SECRET + "\"}");
+        putJson("/api/user/settings", "{\"keyMode\":\"BYOK\"}");
+
+        JsonNode qwen = json(putJson("/api/user/settings", "{\"chatProvider\":\"QWEN\"}"));
+        assertThat(qwen.get("keyMode").asText()).isEqualTo("BYOK");
+        assertThat(qwen.get("chatProvider").asText()).isEqualTo("QWEN");
+    }
 }

@@ -1,6 +1,7 @@
 package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
+import com.bupt.mockinterview.domain.ChatProviderChoice;
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.LlmUsageLog;
 import com.bupt.mockinterview.domain.Quota;
@@ -57,34 +58,64 @@ public class UserController {
 
     // ---------- 调用方式 ----------
 
-    /** 当前模式：PLATFORM / BYOK。 */
+    /** 当前设置：keyMode（PLATFORM / BYOK）+ chatProvider（DEEPSEEK / QWEN）。 */
     @GetMapping("/settings")
     public Map<String, Object> getSettings() {
         User user = currentUser.currentUser();
-        return Map.of("keyMode", user.getKeyMode().name());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("keyMode", user.getKeyMode().name());
+        body.put("chatProvider", user.getChatProvider().name());
+        return body;
     }
 
     /**
-     * 切换模式。PLATFORM 总是允许；切 BYOK 前必须已保存有效 key，否则 409 KEY_NOT_CONFIGURED。
+     * 切换设置。两个字段均可选、各自独立更新（前端单选各自只 PUT 自己那项），
+     * 但至少传一个，否则 400。PLATFORM 总是允许；切 BYOK 前必须已保存有效 key，否则 409 KEY_NOT_CONFIGURED。
+     * chatProvider 与 keyMode 解耦：任何调用方式下都可选 QWEN（Qwen 恒走平台 key）。
      */
     @PutMapping("/settings")
     @Transactional
-    public ResponseEntity<?> putSettings(@Valid @RequestBody SettingsRequest req) {
-        KeyMode mode;
-        try {
-            mode = KeyMode.valueOf(req.keyMode());
-        } catch (IllegalArgumentException e) {
-            return error(HttpStatus.BAD_REQUEST, "INVALID_KEY_MODE",
-                    "keyMode 只能是 PLATFORM 或 BYOK");
+    public ResponseEntity<?> putSettings(@RequestBody SettingsRequest req) {
+        boolean hasKeyMode = req.keyMode() != null && !req.keyMode().isBlank();
+        boolean hasChatProvider = req.chatProvider() != null && !req.chatProvider().isBlank();
+        if (!hasKeyMode && !hasChatProvider) {
+            return error(HttpStatus.BAD_REQUEST, "INVALID_SETTINGS",
+                    "至少传 keyMode 或 chatProvider 之一");
         }
+
         User user = currentUser.currentUser();
-        if (mode == KeyMode.BYOK && !apiKeyRepo.existsByUserId(user.getId())) {
-            return error(HttpStatus.CONFLICT, "KEY_NOT_CONFIGURED",
-                    "请先保存你的 DeepSeek API Key，再切换到 BYOK 模式");
+
+        if (hasKeyMode) {
+            KeyMode mode;
+            try {
+                mode = KeyMode.valueOf(req.keyMode().trim());
+            } catch (IllegalArgumentException e) {
+                return error(HttpStatus.BAD_REQUEST, "INVALID_KEY_MODE",
+                        "keyMode 只能是 PLATFORM 或 BYOK");
+            }
+            if (mode == KeyMode.BYOK && !apiKeyRepo.existsByUserId(user.getId())) {
+                return error(HttpStatus.CONFLICT, "KEY_NOT_CONFIGURED",
+                        "请先保存你的 DeepSeek API Key，再切换到 BYOK 模式");
+            }
+            user.setKeyMode(mode);
         }
-        user.setKeyMode(mode);
+
+        if (hasChatProvider) {
+            ChatProviderChoice provider;
+            try {
+                provider = ChatProviderChoice.valueOf(req.chatProvider().trim());
+            } catch (IllegalArgumentException e) {
+                return error(HttpStatus.BAD_REQUEST, "INVALID_CHAT_PROVIDER",
+                        "chatProvider 只能是 DEEPSEEK 或 QWEN");
+            }
+            user.setChatProvider(provider);
+        }
+
         userRepo.save(user);
-        return ResponseEntity.ok(Map.of("keyMode", mode.name()));
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("keyMode", user.getKeyMode().name());
+        resp.put("chatProvider", user.getChatProvider().name());
+        return ResponseEntity.ok(resp);
     }
 
     // ---------- BYOK key ----------
@@ -196,7 +227,7 @@ public class UserController {
 
     // ---- 请求 DTO ----
 
-    public record SettingsRequest(@NotBlank String keyMode) {}
+    public record SettingsRequest(String keyMode, String chatProvider) {}
 
     public record ApiKeyRequest(
             @NotBlank @Size(min = 8, max = 200) String apiKey) {}
