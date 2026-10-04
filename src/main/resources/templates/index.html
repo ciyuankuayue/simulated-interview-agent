@@ -84,12 +84,7 @@
                 <label class="modeopt"><input type="radio" name="keyMode" value="BYOK"> <span>自带 Key</span></label>
             </div>
 
-            <!-- R3-2 对话模型：与调用方式解耦；Qwen 恒走平台 DashScope key、按平台 token 扣，BYOK 选它也不扣服务费 -->
-            <div style="margin-top:10px"><span class="lb">对话模型</span></div>
-            <div class="modeswitch" role="radiogroup" aria-label="对话模型">
-                <label class="modeopt"><input type="radio" name="chatProvider" value="DEEPSEEK"> <span>DeepSeek</span></label>
-                <label class="modeopt"><input type="radio" name="chatProvider" value="QWEN"> <span>通义千问</span></label>
-            </div>
+            <!-- R3-2 对话模型入口已移至面试区回答输入框右下角（chatProviderMenu），设置区不再重复展示 -->
 
             <div id="quotaLine" class="quotaLine">
                 Token 额度：<b id="quotaRemaining">—</b> / <span id="quotaTotal">—</span>
@@ -184,6 +179,25 @@
                 <button id="btnAnswer" class="primary" disabled>提交回答</button>
                 <button id="btnEnd" class="warn" disabled>结束并出报告</button>
                 <span id="stateText" class="state">未开始</span>
+                <span style="flex:1 1 auto"></span>
+                <div id="chatProviderMenu" style="position:relative;display:inline-block">
+                    <button type="button" id="chatProviderBtn" aria-haspopup="listbox" aria-expanded="false"
+                            style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;font-size:13px;border-radius:6px">
+                        <span id="chatProviderLabel">DeepSeek</span>
+                        <span aria-hidden="true" style="font-size:10px;color:var(--accent2)">▾</span>
+                    </button>
+                    <div id="chatProviderList" role="listbox" aria-label="对话模型" hidden
+                         style="position:absolute;right:0;bottom:calc(100% + 4px);z-index:30;min-width:168px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.14);padding:4px">
+                        <button type="button" role="option" class="chatProviderOpt" data-provider="DEEPSEEK" aria-selected="true"
+                                style="display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer">
+                            <span class="chatProviderName">DeepSeek</span><span class="chatProviderTick" aria-hidden="true" hidden style="color:var(--accent);font-weight:700">✓</span>
+                        </button>
+                        <button type="button" role="option" class="chatProviderOpt" data-provider="QWEN" aria-selected="false"
+                                style="display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer">
+                            <span class="chatProviderName">通义千问</span><span class="chatProviderTick" aria-hidden="true" hidden style="color:var(--accent);font-weight:700">✓</span>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </section>

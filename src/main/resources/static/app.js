@@ -782,20 +782,34 @@
             });
         });
 
-        // R3-2 对话模型单选：DEEPSEEK / QWEN，与 keyMode 解耦。
-        // Qwen 恒走平台 key（BYOK 选它也按平台 token 扣）；失败时回滚单选到服务端真实状态。
-        document.querySelectorAll('input[name="chatProvider"]').forEach((radio) => {
-            radio.addEventListener('change', async () => {
-                if (!radio.checked) return;
+        // R3-2 对话模型唯一入口：回答输入框右下角紧凑下拉（chatProvider: DEEPSEEK / QWEN）。
+        // 切换成功后 loadUserSettings() → renderChatProvider() 回显；失败回滚到服务端状态。
+        $('chatProviderBtn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const list = $('chatProviderList');
+            list.hidden = false;
+            $('chatProviderBtn').setAttribute('aria-expanded', 'true');
+        });
+        document.addEventListener('click', (e) => {
+            if (!$('chatProviderList').hidden && !$('chatProviderMenu').contains(e.target)) closeProviderMenu();
+        });
+        document.querySelectorAll('.chatProviderOpt').forEach((opt) => {
+            opt.addEventListener('mouseenter', () => {
+                if (opt.getAttribute('aria-selected') !== 'true') opt.style.background = 'var(--panel2)';
+            });
+            opt.addEventListener('mouseleave', () => {
+                if (opt.getAttribute('aria-selected') !== 'true') opt.style.background = 'transparent';
+            });
+            opt.addEventListener('click', async () => {
+                const value = opt.dataset.provider;
+                closeProviderMenu();
                 try {
-                    await api('/api/user/settings', 'PUT', { chatProvider: radio.value });
-                    showKeyMsg(radio.value === 'QWEN'
-                        ? '已切换为通义千问（走平台 key，按真实 token 扣）'
-                        : '已切换为 DeepSeek');
+                    await api('/api/user/settings', 'PUT', { chatProvider: value });
+                    tip(value === 'QWEN' ? '已切换为通义千问（走平台 key，按真实 token 扣）' : '已切换为 DeepSeek');
                     await loadUserSettings();
-                } catch (e) {
-                    showKeyMsg(e.message, true);
-                    await loadUserSettings();
+                } catch (err) {
+                    tip(err.message, true);
+                    await loadUserSettings();   // 回滚到服务端真实状态
                 }
             });
         });
@@ -839,6 +853,23 @@
         };
     }
 
+    // R3-2 对话模型回显：右下角下拉触发文案 + 选中项高亮/✓（唯一入口）
+    function renderChatProvider(value) {
+        const v = value === 'QWEN' ? 'QWEN' : 'DEEPSEEK';
+        $('chatProviderLabel').textContent = v === 'QWEN' ? '通义千问' : 'DeepSeek';
+        document.querySelectorAll('.chatProviderOpt').forEach((opt) => {
+            const sel = opt.dataset.provider === v;
+            opt.setAttribute('aria-selected', sel ? 'true' : 'false');
+            opt.style.background = sel ? 'var(--panel2)' : 'transparent';
+            opt.style.fontWeight = sel ? '600' : '400';
+            opt.querySelector('.chatProviderTick').hidden = !sel;
+        });
+    }
+    function closeProviderMenu() {
+        $('chatProviderList').hidden = true;
+        $('chatProviderBtn').setAttribute('aria-expanded', 'false');
+    }
+
     /** 拉取模式 / key 状态 / 额度 / 平台 env 就绪情况，重绘卡片（登录后、每次切换、402 后都调）。 */
     async function loadUserSettings() {
         let settings, keyInfo, quota;
@@ -862,11 +893,8 @@
             radio.checked = (radio.value === mode);
         });
 
-        // R3-2 对话模型单选回显（服务端缺字段/异常值时安全回退 DEEPSEEK）
-        const chatProvider = settings.chatProvider === 'QWEN' ? 'QWEN' : 'DEEPSEEK';
-        document.querySelectorAll('input[name="chatProvider"]').forEach((radio) => {
-            radio.checked = (radio.value === chatProvider);
-        });
+        // R3-2 对话模型回显：右下角下拉对齐服务端状态（缺字段/异常值安全回退 DEEPSEEK）
+        renderChatProvider(settings.chatProvider);
 
         const badge = $('keyBadge');
         if (mode === 'BYOK') {
