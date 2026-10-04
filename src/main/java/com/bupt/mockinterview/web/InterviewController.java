@@ -222,8 +222,22 @@ public class InterviewController {
         body.put("expressionIssues", parseJson(r.getExpressionIssues(), new TypeReference<List<Map<String, Object>>>() {}));
         body.put("overallNotes", r.getOverallNotes());
         body.put("reminders", parseJson(r.getReminders(), new TypeReference<List<String>>() {}));
+        // R7：行为维度（纯技术场/老报告列为 NULL → null，前端整卡不渲染；解析失败同样给 null）
+        body.put("behaviorReview", parseJsonObjectOrNull(r.getBehaviorReview()));
         body.put("createdAt", r.getCreatedAt() == null ? null : r.getCreatedAt().toString());
         return body;
+    }
+
+    /** R7：TEXT JSON → Map；空/NULL/解析失败一律 null（行为维度卡整体缺省，不影响其余报告字段）。 */
+    private Map<String, Object> parseJsonObjectOrNull(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return mapper.readValue(text, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private <T> Object parseJson(String text, TypeReference<T> type) {

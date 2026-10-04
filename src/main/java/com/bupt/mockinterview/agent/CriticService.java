@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,19 +32,29 @@ public class CriticService {
             要求：
             1. 逐轮给出：讲解（这个知识点到底怎么回事）、纠正（答错/答偏在哪）、
                知识补充（该展开但没展开的）、示范回答（一段可直接背的回答，精炼不省关键）。
-            2. 汇总答崩点（score<=3 的知识点）、表述问题（含精简答案指导）、整体注意事项、必要提醒。
-            3. 给 JD 匹配度 matchScore（0-100 整数）。
-            4. 只输出 JSON，不要 markdown 代码块，不要任何额外文字。格式：
+               轮次标题标了「行为题」的：不做技术知识点讲解，改按 STAR 法复盘（情境/任务是否清楚、
+               本人行动是否具体、结果是否量化、有无反思、表达与抗压表现），示范回答写成「STAR 骨架示范」，
+               该轮 score 回填为行为四维总分；并在该轮对象里回填 "track":"behavior"（技术轮回填 "track":"tech"）。
+            2. 汇总答崩点（score<=3 的知识点；行为题答崩写行为能力缺口）、表述问题（含精简答案指导）、
+               整体注意事项、必要提醒。
+            3. 给 JD 匹配度 matchScore（0-100 整数）；本场含行为轮时，把沟通协作/抗压等软素质表现纳入综合判断。
+            4. 只要本场存在「行为题」轮次，就额外输出 behaviorReview（没有行为题时输出 null）：
+               汇总所有行为轮的表现，结构为
+               {"dimensions":{"STAR结构":0到2,"行动细节":0到2,"结果与反思":0到2,"表达与抗压":0到2},
+                "summary":"行为表现总评","suggestions":["可执行改进点"]}。
+            5. 只输出 JSON，不要 markdown 代码块，不要任何额外文字。格式：
             {"matchScore": 0到100,
-             "perTurnReview": [{"turnSeq":1,"question":"","score":0到8,
+             "perTurnReview": [{"turnSeq":1,"question":"","score":0到8,"track":"tech或behavior",
                                 "explanation":"","correction":"",
                                 "knowledgeSupplement":"","exemplarAnswer":""}],
              "collapsedPoints": ["答崩的知识点"],
              "expressionIssues": [{"issue":"表述问题","guide":"怎么改"}],
              "overallNotes": "整体注意事项",
-             "reminders": ["必要提醒"]}
+             "reminders": ["必要提醒"],
+             "behaviorReview": null}
             长度约束（务必遵守，否则 JSON 会被截断）：每轮 explanation≤100字、correction≤80字、
             knowledgeSupplement≤80字、exemplarAnswer≤120字；overallNotes≤200字；
+            behaviorReview.summary≤120字、suggestions 最多 4 条且每条≤40字；
             每轮 question 原样回填，不要改写或扩写。
             """;
 
@@ -60,8 +72,13 @@ public class CriticService {
 
     // ---------- 对外 ----------
 
-    /** 一轮的输入摘要（避免 Critic 直接依赖 JPA 实体）。 */
-    public record TurnBrief(Integer turnSeq, String question, String answer, Integer score) {}
+    /**
+     * 一轮的输入摘要（避免 Critic 直接依赖 JPA 实体）。
+     *
+     * @param track R7：判分赛道标签（"tech" / "behavior"），来自 interview_turn.score_json，
+     *              决定该轮按技术四维还是 STAR+表达四维复盘
+     */
+    public record TurnBrief(Integer turnSeq, String question, String answer, Integer score, String track) {}
 
     /** Critic 报告结构，对齐 api.md §3 report 响应与 critic_report 表字段。 */
     public record Payload(
@@ -70,8 +87,17 @@ public class CriticService {
             List<String> collapsedPoints,
             List<Map<String, Object>> expressionIssues,
             String overallNotes,
-            List<String> reminders
-    ) {}
+            List<String> reminders,
+            /** R7：行为维度汇总（dimensions/summary/suggestions）；本场无行为轮时为 null。 */
+            Map<String, Object> behaviorReview
+    ) {
+        /** R7 之前的六参构造（测试/兜底用）：无行为维度。 */
+        public Payload(Integer matchScore, List<Map<String, Object>> perTurnReview,
+                       List<String> collapsedPoints, List<Map<String, Object>> expressionIssues,
+                       String overallNotes, List<String> reminders) {
+            this(matchScore, perTurnReview, collapsedPoints, expressionIssues, overallNotes, reminders, null);
+        }
+    }
 
     /** 生成报告；LLM 失败时返回占位报告，不抛。 */
     public Payload generate(Long sessionId, String jdText, List<TurnBrief> turns) {
@@ -84,7 +110,8 @@ public class CriticService {
                     List.of(msg("system", SYSTEM), msg("user", user)),
                     null, true, props.getCriticMaxTokens(),
                     com.bupt.mockinterview.billing.UsageScene.CRITIC).content();
-            return parse(content);
+            // R7：逐轮 track 以编排器落库的权威值为准（真机发现模型会按题面自行猜测误标）
+            return applyAuthoritativeTracks(parse(content), turns);
         } catch (QuotaExhaustedException | IllegalStateException e) {
             // 402 点数耗尽 / 409 BYOK 未配 key：业务决策，必须透传（end 接口映射 402/409），不许降级成占位报告
             throw e;
@@ -99,11 +126,46 @@ public class CriticService {
 
     // ---------- 内部 ----------
 
+    /**
+     * R7：用编排器传入的权威 track（来自 interview_turn.score_json，按 turnSeq 对齐）
+     * 覆盖模型自报的 perTurnReview.track。真机发现：技术官可能模仿已问列表出行为味的题，
+     * 模型会按题面把它误标成 behavior；赛道归属只取决于出题角色，不取决于题面内容。
+     * 同时：本场没有任何行为轮时，behaviorReview 强制为 null（防模型在纯技术场脑补行为块）。
+     * 模型输出了但 brief 里没有的 turnSeq（理论上不该有）保留解析值（缺省 tech）。
+     */
+    Payload applyAuthoritativeTracks(Payload p, List<TurnBrief> turns) {
+        Map<Integer, String> trackBySeq = new HashMap<>();
+        boolean anyBehavior = false;
+        for (TurnBrief t : turns) {
+            String label = "behavior".equals(t.track()) ? "behavior" : "tech";
+            trackBySeq.put(t.turnSeq(), label);
+            anyBehavior |= "behavior".equals(label);
+        }
+        List<Map<String, Object>> perTurn = new ArrayList<>();
+        for (Map<String, Object> m : p.perTurnReview()) {
+            Map<String, Object> copy = new LinkedHashMap<>(m);
+            Object seq = copy.get("turnSeq");
+            if (seq instanceof Number n) {
+                String authoritative = trackBySeq.get(n.intValue());
+                if (authoritative != null) {
+                    copy.put("track", authoritative);
+                }
+            }
+            perTurn.add(copy);
+        }
+        return new Payload(p.matchScore(), perTurn, p.collapsedPoints(), p.expressionIssues(),
+                p.overallNotes(), p.reminders(), anyBehavior ? p.behaviorReview() : null);
+    }
+
     private String buildUserPrompt(String jdText, List<TurnBrief> turns) {
         StringBuilder sb = new StringBuilder();
         sb.append("岗位 JD：\n").append(jdText == null ? "(无)" : jdText).append("\n\n全部问答：\n");
         for (TurnBrief t : turns) {
-            sb.append("[turn ").append(t.turnSeq()).append(" | 得分 ").append(t.score()).append("]\n");
+            sb.append("[turn ").append(t.turnSeq()).append(" | 得分 ").append(t.score());
+            if ("behavior".equals(t.track())) {
+                sb.append(" | 行为题");
+            }
+            sb.append("]\n");
             sb.append("问：").append(t.question()).append("\n");
             sb.append("答：").append(t.answer() == null ? "(未作答)" : t.answer()).append("\n\n");
         }
@@ -142,6 +204,8 @@ public class CriticService {
                 m.put("turnSeq", n.path("turnSeq").asInt(0));
                 m.put("question", n.path("question").asText(""));
                 m.put("score", n.path("score").asInt(0));
+                // R7：模型漏回填 track 时按 tech 兜底（老 prompt 风格的报告也不会炸）
+                m.put("track", "behavior".equals(n.path("track").asText("")) ? "behavior" : "tech");
                 m.put("explanation", n.path("explanation").asText(""));
                 m.put("correction", n.path("correction").asText(""));
                 m.put("knowledgeSupplement", n.path("knowledgeSupplement").asText(""));
@@ -163,8 +227,16 @@ public class CriticService {
             }
         }
 
+        // R7：behaviorReview 为对象时整体透传（dimensions/summary/suggestions），null/缺失/其他类型 → null
+        Map<String, Object> behaviorReview = null;
+        JsonNode br = root.path("behaviorReview");
+        if (br.isObject()) {
+            behaviorReview = mapper.convertValue(br,
+                    new com.fasterxml.jackson.core.type.TypeReference<LinkedHashMap<String, Object>>() {});
+        }
+
         return new Payload(matchScore, perTurn, collapsed, issues,
-                root.path("overallNotes").asText(""), textList(root.path("reminders")));
+                root.path("overallNotes").asText(""), textList(root.path("reminders")), behaviorReview);
     }
 
     /** 组装一条 chat 消息（role + content）。 */

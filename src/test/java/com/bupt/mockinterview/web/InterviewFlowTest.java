@@ -98,6 +98,8 @@ class InterviewFlowTest {
         assertThat(report.get("matchScore").asInt()).isEqualTo(42);
         assertThat(report.get("perTurnReview")).hasSize(1);
         assertThat(report.get("reminders")).hasSize(1);
+        // R7：纯技术场（老 prompt 风格 critic JSON 无 behaviorReview）→ null，不报错
+        assertThat(report.get("behaviorReview").isNull()).isTrue();
 
         // 6) status：DONE + turnCount
         String statusResp = body(mvc.perform(get("/api/interview/" + sessionId + "/status")));
@@ -108,10 +110,11 @@ class InterviewFlowTest {
         assertThat(status.get("roles").get(0).asText()).isEqualTo("技术深挖官");
         assertThat(status.get("matchScore").asInt()).isEqualTo(42);
 
-        // 7) report 可重复拉取
+        // 7) report 可重复拉取（R7：老报告 behavior_review 列 NULL，回看 body 给 null 不报 500）
         String againResp = body(mvc.perform(get("/api/interview/" + sessionId + "/report")));
-        assertThat(mapper.readTree(againResp).get("reportId").asLong())
-                .isEqualTo(report.get("reportId").asLong());
+        JsonNode again = mapper.readTree(againResp);
+        assertThat(again.get("reportId").asLong()).isEqualTo(report.get("reportId").asLong());
+        assertThat(again.get("behaviorReview").isNull()).isTrue();
 
         // 8) end 后新订阅者仍能重放到 report + done（历史事件不丢）
         String streamAfterEnd = body(mvc.perform(get("/api/interview/" + sessionId + "/events")));
@@ -125,6 +128,52 @@ class InterviewFlowTest {
                         .content("{\"answer\":\"再答一次\"}"))
                 .andReturn().getResponse().getStatus();
         assertThat(conflict).isEqualTo(409);
+    }
+
+    /**
+     * R7：行为面试官整场——start 首题角色=行为面试官，score 事件带 track=behavior，
+     * end 报告含 behaviorReview 与逐轮 track，报告回看（GET）同样可解析。
+     */
+    @Test
+    void behaviorRole_flowAndReportContainsBehaviorReview() throws Exception {
+        stubBehaviorLlm();
+
+        String jdResp = body(mvc.perform(post("/api/jd")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rawText\":\"招聘高级 Java 后端：沟通协作强，能跨团队推进，抗压好\"}")));
+        long jdId = mapper.readTree(jdResp).get(0).get("jdId").asLong();
+
+        String startResp = body(mvc.perform(post("/api/interview/start")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"jdId\":" + jdId + ",\"roles\":[\"行为面试官\"]}")));
+        long sessionId = mapper.readTree(startResp).get("sessionId").asLong();
+
+        // 首题重放事件的角色是行为面试官
+        assertThat(body(mvc.perform(get("/api/interview/" + sessionId + "/events"))))
+                .contains("event:question")
+                .contains("行为面试官");
+
+        body(mvc.perform(post("/api/interview/" + sessionId + "/answer")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"answer\":\"上次跨团队冲突，我先对齐诉求，再出兼容方案，两周上线\"}")));
+
+        // 判分事件带 behavior 赛道
+        String stream = body(mvc.perform(get("/api/interview/" + sessionId + "/events")));
+        assertThat(stream).contains("event:score").contains("\"track\":\"behavior\"");
+
+        String endResp = body(mvc.perform(post("/api/interview/" + sessionId + "/end")));
+        JsonNode report = mapper.readTree(endResp);
+        assertThat(report.get("perTurnReview").get(0).get("track").asText()).isEqualTo("behavior");
+        JsonNode br = report.get("behaviorReview");
+        assertThat(br.isNull()).isFalse();
+        assertThat(br.get("dimensions").has("STAR结构")).isTrue();
+        assertThat(br.get("summary").asText()).isNotBlank();
+        assertThat(br.get("suggestions")).isNotEmpty();
+
+        // 落库后回看仍可解析（reportView 走 behavior_review TEXT 列）
+        JsonNode again = mapper.readTree(
+                body(mvc.perform(get("/api/interview/" + sessionId + "/report"))));
+        assertThat(again.get("behaviorReview").get("dimensions").has("表达与抗压")).isTrue();
     }
 
     @Test
@@ -186,7 +235,7 @@ class InterviewFlowTest {
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("第一道题：说说 InnoDB 回表是什么？", null));
         // 判分：4 分（0-8），触发 1 层追问
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(4,
                         Map.of("正确性", 2, "完整性", 1, "深度", 1, "实证", 0),
                         List.of("回表本质是聚簇索引查找"),
@@ -211,6 +260,41 @@ class InterviewFlowTest {
                     """, null);
         };
         // CriticService 现在调用带 scene 的 7 参重载，各重载都要桩上
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(chatAnswer);
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt())).thenAnswer(chatAnswer);
+        when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt(), any())).thenAnswer(chatAnswer);
+    }
+
+    /** R7 行为场 stub：出题行为题、判分走 STAR 四维、Critic 返回带 behaviorReview 的报告。 */
+    private void stubBehaviorLlm() {
+        when(llm.followUp(anyString(), anyString()))
+                .thenReturn(new LlmReply("请讲一次你和同事意见不一致、最终推动落地的经历。", null));
+        when(llm.score(any(), anyString(), anyString()))
+                .thenReturn(new ScoreResult(5,
+                        Map.of("STAR结构", 1, "行动细节", 2, "结果与反思", 1, "表达与抗压", 1),
+                        List.of("结果没有量化"),
+                        "这个方案最后带来了什么可量化的变化？"));
+        org.mockito.stubbing.Answer<LlmReply> chatAnswer = inv -> {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> messages = inv.getArgument(2);
+            String system = String.valueOf(messages.get(0).get("content"));
+            if (system.contains("招聘 JD 分析助手")) {
+                return new LlmReply("{\"keywords\":[\"沟通协作\",\"抗压\",\"跨团队推进\"],\"jobType\":\"高级 Java 后端\"}", null);
+            }
+            return new LlmReply("""
+                    {"matchScore":66,
+                     "perTurnReview":[{"turnSeq":1,"question":"讲一次冲突经历","score":5,"track":"behavior",
+                        "explanation":"STAR 骨架完整，结果缺数字","correction":"结果先量化再讲感受",
+                        "knowledgeSupplement":"","exemplarAnswer":"S：跨团队接口分歧…T：…A：对齐诉求出兼容方案…R：两周上线，返工降 30%"}],
+                     "collapsedPoints":[],
+                     "expressionIssues":[{"issue":"结论后置","guide":"先说结果"}],
+                     "overallNotes":"软素质不错，注意量化",
+                     "reminders":["准备 3 个 STAR 故事"],
+                     "behaviorReview":{"dimensions":{"STAR结构":1,"行动细节":2,"结果与反思":1,"表达与抗压":2},
+                       "summary":"协作与抗压在线，结果缺量化、反思略浅",
+                       "suggestions":["每个故事先给数字结果","反思补一句下次会怎么做"]}}
+                    """, null);
+        };
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean())).thenAnswer(chatAnswer);
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt())).thenAnswer(chatAnswer);
         when(llm.chat(any(), anyBoolean(), any(), any(), anyBoolean(), anyInt(), any())).thenAnswer(chatAnswer);

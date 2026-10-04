@@ -65,7 +65,7 @@ public class DeepSeekVerifyTest {
         // ---------- 链路 2：判分（思考模式 + JSON 输出） ----------
         String question = "MySQL InnoDB 的回表是什么？如何避免？";
         String answer = "回表就是查完索引再查主键索引，可以用覆盖索引避免。";
-        ScoreResult r = llm.score(question, answer);
+        ScoreResult r = llm.score(ScoreTrack.TECH, question, answer);
 
         System.out.println("[verify] 判分 score = " + r.score());
         System.out.println("[verify] breakdown   = " + r.breakdown());

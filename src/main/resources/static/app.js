@@ -131,11 +131,13 @@
     function renderScore(ev) {
         const s = ev.score == null ? '—' : ev.score;
         const pct = Math.max(0, Math.min(100, (Number(s) / 8) * 100));
+        // R7：行为轮角标（STAR 四维评分，赛道与技术轮区分）
+        const badge = ev.track === 'behavior' ? '<span class="trackBadge">行为评分</span>' : '';
         const html =
             '<div class="scoreRow"><span class="scoreNum">' + esc(s) + '</span><span class="scoreDen">/ 8</span>' +
             '<span class="bar"><i style="width:' + pct + '%"></i></span></div>' +
             (ev.oneLineCorrection ? '<div class="correction">一句纠正：' + esc(ev.oneLineCorrection) + '</div>' : '');
-        bubble('score', '本轮评分（第 ' + ev.turnSeq + ' 轮）', html);
+        bubble('score', '本轮评分（第 ' + ev.turnSeq + ' 轮）' + badge, html);
     }
 
     function renderAnswer(text) {
@@ -155,6 +157,7 @@
 
         const turnHtml = turns.map((t) =>
             '<details class="turn"><summary>第 ' + esc(t.turnSeq) + ' 轮 · ' + esc(t.score) + '/8 · ' +
+            (t.track === 'behavior' ? '<span class="trackBadge">行为</span> ' : '') +
             esc(String(t.question || '').slice(0, 40)) + '</summary>' +
             row('讲解', t.explanation) + row('纠正', t.correction) +
             row('知识补充', t.knowledgeSupplement) + row('示范回答', t.exemplarAnswer) +
@@ -162,6 +165,7 @@
 
         $('report').innerHTML =
             '<div class="match">匹配度 <b>' + esc(r.matchScore == null ? '—' : r.matchScore) + '</b> / 100</div>' +
+            behaviorCard(r.behaviorReview) +
             (turnHtml ? '<h3>逐轮讲解</h3>' + turnHtml : '') +
             list('答崩点', collapsed) +
             (issues.length ? '<h3>表述问题</h3>' + issues.map((i) =>
@@ -170,6 +174,24 @@
             list('必要提醒', reminders);
 
         setState('已完成，报告已出');
+    }
+
+    /**
+     * R7 行为维度卡：behaviorReview 为 null（纯技术场 / 老报告回看）或缺关键字段时整卡不渲染。
+     * dimensions：STAR结构 / 行动细节 / 结果与反思 / 表达与抗压，各 0-2 分。
+     */
+    function behaviorCard(br) {
+        if (!br || typeof br !== 'object') return '';
+        const dims = br.dimensions && typeof br.dimensions === 'object' ? br.dimensions : null;
+        const suggestions = Array.isArray(br.suggestions) ? br.suggestions : [];
+        if (!dims && !br.summary && !suggestions.length) return '';
+        const dimHtml = dims ? '<div class="behDims">' + Object.entries(dims).map(([k, v]) =>
+            '<span class="behDim">' + esc(k) + ' <b>' + esc(v) + '</b>/2</span>').join('') + '</div>' : '';
+        const sugHtml = suggestions.length
+            ? '<ul class="lst">' + suggestions.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+        return '<h3>行为面试评估</h3><div class="behCard">' + dimHtml +
+            (br.summary ? '<p class="notes">' + esc(br.summary) + '</p>' : '') +
+            sugHtml + '</div>';
     }
 
     function row(label, value) {

@@ -4,7 +4,7 @@
 
 ## Context（背景与目标）
 
-本地运行的 AI 模拟面试官：贴 JD → 自动解析考点 → 两个 Agent 角色轮番追问你（技术深挖 / 项目质疑）→ Critic 出报告 + 错题本（间隔重复）。你的资料（简历多版本 / 笔记 / 项目文档 / 真实面试记录）全部入库，越用越懂你。
+本地运行的 AI 模拟面试官：贴 JD → 自动解析考点 → Agent 角色轮番追问你（技术深挖 / 项目质疑 / R7 起行为面试官走 STAR 软素质题）→ Critic 出报告（含行为维度）+ 错题本（间隔重复）。你的资料（简历多版本 / 笔记 / 项目文档 / 真实面试记录）全部入库，越用越懂你。
 
 **文件原则**：给你看的东西（报告、状态）精简；系统内部明细（检索引用、判分过程、每轮耗时 token）详细存 DB，不摊成长文件。
 
@@ -53,7 +53,7 @@
   - **静态资源 `Cache-Control: no-cache`**（application.yml `spring.web.resources`，T12）：前端更新后不靠用户手动 Ctrl+F5；配 Last-Modified 协商，未变走 304
 - 包结构（分层；**领域逻辑不准直接调 LLM**，统一走 llm 层）：
   - `web/`       controller，SSE 流式推送
-  - `agent/`     角色编排（技术深挖官 / 项目质疑官 / Critic）
+  - `agent/`     角色编排（技术深挖官 / 项目质疑官 / 行为面试官（R7：STAR 行为题，ScoreTrack.BEHAVIOR 四维判分）/ Critic）。**逐轮赛道 track 以出题角色为准（落 score_json），Critic 报告的 per-turn track 用 TurnBrief 权威值覆盖模型自报**
   - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）。**VectorStore 抽象 + LuceneVectorStore（FSDirectory 落盘，唯一生产实现）+ InMemoryVectorStore（离线/实验）；向量检索按 userId pre-filter，删除必须 BooleanQuery AND（严禁 deleteDocuments(Term...) 的 OR 语义）**
   - `llm/`       LlmService（路由/计费收口 + parseScore/verifyApiKey；发 `tools` 字段做 function calling）+ `llm/chat/`（R3：ChatProvider 接口、ModelRole/ChatRequest/ChatResponse、ModelRouter、DeepSeekChatProvider/QwenChatProvider——HTTP 调用都在 provider 内）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool，provider 以 newBuilder 派生只覆盖超时），不混用 JDK HttpClient**（决策 2026-09-17）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度

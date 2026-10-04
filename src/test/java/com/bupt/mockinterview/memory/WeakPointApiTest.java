@@ -63,7 +63,7 @@ class WeakPointApiTest {
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("MySQL 索引失效有哪些典型场景？", null));
         // 2 分（0-8）→ 记错题本，且带知识点标签
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(2,
                         Map.of("正确性", 1, "完整性", 0, "深度", 1, "实证", 0),
                         List.of("没提覆盖索引", "没提最左前缀"),

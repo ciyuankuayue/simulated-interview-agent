@@ -15,6 +15,7 @@ import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.llm.ScoreTrack;
 import com.bupt.mockinterview.memory.WeakPointMemoryService;
 import com.bupt.mockinterview.rag.RagService;
 import com.bupt.mockinterview.security.CurrentUserService;
@@ -121,10 +122,12 @@ public class InterviewOrchestrator {
         List<String> refs = new ArrayList<>();
         String context = retrieveContext(jd.getRawText(), refs);
 
+        // R7：出题祈使句唯一来源是当前角色的 questionTask()（行为角色不得出现「紧扣 JD 考点」），
+        // JD/资料片段只作上下文框架，禁止在角色任务句之外再叠加写死的出题指令。
         String firstQuestion = llm.followUp(roles.get(0).systemPrompt(),
                 "岗位 JD：\n" + nullToEmpty(jd.getRawText())
                         + "\n\n候选人的资料片段（可能为空）：\n" + context
-                        + "\n\n请出第一道面试题。要求：紧扣 JD 考点，一句话，只输出题目本身。").content();
+                        + "\n\n" + roles.get(0).questionTask()).content();
 
         InterviewTurn first = newTurn(session, 1, 0, firstQuestion, toJson(refs));
 
@@ -157,10 +160,14 @@ public class InterviewOrchestrator {
         List<AgentEvent> events = new ArrayList<>();
         long t0 = System.currentTimeMillis();
 
+        // R7：按当前轮所属角色选判分赛道（追问轮继承主问题角色，公式与出题侧保持一致）。
+        ScoreTrack track = trackOf(currentRole(session, turns));
+        String trackLabel = track.name().toLowerCase();
+
         ScoreResult sr = null;
         try {
-            sr = llm.score(current.getQuestion(), answer);
-            current.setScoreJson(mapper.writeValueAsString(scoreJsonOf(sr)));
+            sr = llm.score(track, current.getQuestion(), answer);
+            current.setScoreJson(mapper.writeValueAsString(scoreJsonOf(sr, trackLabel)));
         } catch (QuotaExhaustedException | IllegalStateException e) {
             // 402 点数耗尽 / 409 BYOK 未配 key：业务决策，直接打断面试透传给前端，不许降级吞掉
             throw e;
@@ -175,6 +182,7 @@ public class InterviewOrchestrator {
 
         events.add(AgentEvent.of(AgentEvent.SCORE, "turnSeq", current.getSeq(),
                 "score", sr == null ? null : sr.score(),
+                "track", trackLabel,
                 "oneLineCorrection", oneLineCorrection(sr)));
 
         // T8 memory：判分结果入错题本（≤3 记/升阶，≥6 出队）。写失败只告警，不让面试中断
@@ -244,11 +252,12 @@ public class InterviewOrchestrator {
         }
         String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
 
+        // R7：后续主问题同样用角色自己的任务句（已问列表承担「不要重复」语义）。
         String question;
         try {
             question = llm.followUp(nextRole.systemPrompt(),
                     "岗位 JD：\n" + jdText + "\n\n已经问过的问题（不要重复）：\n" + asked
-                            + "\n\n请出一道新的面试题，一句话，只输出题目本身。").content();
+                            + "\n\n" + nextRole.questionTask()).content();
         } catch (QuotaExhaustedException | IllegalStateException e) {
             // 402/409：不降级为 QUESTION_FAILED，直接打断（start/answer HTTP 由全局 handler 映射 402/409）
             throw e;
@@ -292,6 +301,7 @@ public class InterviewOrchestrator {
         Object collapsedPoints;
         Object expressionIssues;
         Object reminders;
+        Object behaviorReview;
 
         CriticReport existing = reportRepo.findBySessionIdAndUser(session.getId(), currentUser.currentUser()).orElse(null);
         if (existing != null) {
@@ -303,11 +313,14 @@ public class InterviewOrchestrator {
             collapsedPoints = readJsonArray(existing.getCollapsedPoints());
             expressionIssues = readJsonArray(existing.getExpressionIssues());
             reminders = readJsonArray(existing.getReminders());
+            // R7：老报告 / 纯技术场 behavior_review 为 NULL → null（前端整卡不渲染）
+            behaviorReview = readJsonObject(existing.getBehaviorReview());
         } else {
             List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(session.getId());
             List<TurnBrief> briefs = new ArrayList<>();
             for (InterviewTurn t : turns) {
-                briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson())));
+                briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson()),
+                        extractTrack(t.getScoreJson())));
             }
             String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
             Payload payload = critic.generate(session.getId(), jdText, briefs);
@@ -320,6 +333,7 @@ public class InterviewOrchestrator {
             report.setExpressionIssues(toJson(payload.expressionIssues()));
             report.setOverallNotes(payload.overallNotes());
             report.setReminders(toJson(payload.reminders()));
+            report.setBehaviorReview(payload.behaviorReview() == null ? null : toJson(payload.behaviorReview()));
             report.setMatchScore(payload.matchScore());
             CriticReport saved = reportRepo.save(report);
 
@@ -334,6 +348,7 @@ public class InterviewOrchestrator {
             collapsedPoints = payload.collapsedPoints();
             expressionIssues = payload.expressionIssues();
             reminders = payload.reminders();
+            behaviorReview = payload.behaviorReview();
         }
 
         AgentEvent reportEvent = AgentEvent.of(AgentEvent.REPORT, "reportId", reportId,
@@ -342,7 +357,8 @@ public class InterviewOrchestrator {
                 "collapsedPoints", collapsedPoints,
                 "expressionIssues", expressionIssues,
                 "overallNotes", overallNotes,
-                "reminders", reminders);
+                "reminders", reminders,
+                "behaviorReview", behaviorReview);
         AgentEvent doneEvent = doneReason == null
                 ? AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId())
                 : AgentEvent.of(AgentEvent.DONE, "sessionId", session.getId(), "reason", doneReason);
@@ -402,13 +418,19 @@ public class InterviewOrchestrator {
         return turnRepo.save(t);
     }
 
-    private static Map<String, Object> scoreJsonOf(ScoreResult sr) {
+    private static Map<String, Object> scoreJsonOf(ScoreResult sr, String trackLabel) {
         Map<String, Object> m = new LinkedHashMap<>();
+        m.put("track", trackLabel);
         m.put("score", sr.score());
         m.put("breakdown", sr.breakdown());
         m.put("missed_points", sr.missedPoints());
         m.put("followup", sr.followup());
         return m;
+    }
+
+    /** R7：角色 → 判分赛道（只有行为面试官走 BEHAVIOR，其余含未来新角色默认 TECH）。 */
+    private static ScoreTrack trackOf(Role role) {
+        return role == Role.BEHAVIOR_INTERVIEWER ? ScoreTrack.BEHAVIOR : ScoreTrack.TECH;
     }
 
     /** 错题本的知识点标签：优先用判分模型给的，没给就用题目前 30 字兜底（防整条链路静默失效）。 */
@@ -450,6 +472,23 @@ public class InterviewOrchestrator {
         }
     }
 
+    /**
+     * R7：从 score_json 取判分赛道标签给 Critic；老数据/判分失败 JSON 无该键时兜底 "tech"
+     * （行为轮判分失败本就降级跳过追问，Critic 少一个行为标可接受）。
+     */
+    private String extractTrack(String scoreJson) {
+        if (scoreJson == null || scoreJson.isBlank()) {
+            return "tech";
+        }
+        try {
+            JsonNode n = mapper.readTree(scoreJson);
+            String t = n.path("track").asText("");
+            return "behavior".equals(t) ? "behavior" : "tech";
+        } catch (Exception e) {
+            return "tech";
+        }
+    }
+
     private String toJson(Object obj) {
         try {
             return mapper.writeValueAsString(obj);
@@ -467,6 +506,18 @@ public class InterviewOrchestrator {
             return mapper.readValue(json, Object.class);
         } catch (Exception e) {
             return List.of();
+        }
+    }
+
+    /** R7：重放既有报告时把 behavior_review TEXT 还原成结构化对象；NULL/空/解析失败 → null（前端不渲染该卡）。 */
+    private Object readJsonObject(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return mapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            return null;
         }
     }
 

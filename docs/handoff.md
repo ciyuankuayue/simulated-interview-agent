@@ -3,7 +3,7 @@
 > 每轮续对话先读本文件。记录：当前进度 / 已锁决策 / 任务拆解 / 卡点 / 下一步。
 > 配套：`./domain.md`（领域模型）、`./api.md`（契约）、`../AGENTS.md`（规则）。
 
-## 1. 当前进度（截至 2026-10-03）
+## 1. 当前进度（截至 2026-10-04）
 
 | 阶段 | 产物 | 状态 | 备注 |
 |---|---|---|---|
@@ -21,7 +21,8 @@
 | **R1-3** | **双密钥模式：平台额度 / BYOK 自带 Key** | **✅ 完成（2026-10-02，62 tests 全绿 + 真机/浏览器 E2E，未 commit 待人审）** | **用户拍板双形态：PLATFORM 走平台 env key（R1-3 不扣点，R2 做 token 计费）；BYOK 走用户自带 DeepSeek key（AES-GCM 入库），每次调用扣 1 服务点，不足 402 QUOTA_EXHAUSTED。embedding 永远平台 key。首个注册者 ADMIN，注册赠 1000 点。已删 T11/T12 保险箱+密码门禁全套。402/409 已穿透 6 处 LLM 降级边界。详见 §3 R1-3 小节。** |
 | **R2** | **按真实 token 计量计费（R2-1/2/3）** | **✅ 已提交（2026-10-03 commit 49529b2 在 feature/R2-token-quota，83 tests 全绿 + 真机 API/浏览器 E2E + 用户弹窗验收通过；未 push/merge）** | **PLATFORM 对话+embedding 按厂商 usage.total_tokens 实扣（缺失字符估算兜底，最后一次可透支 clamp）；BYOK 每次对话扣固定服务费（默认 1）；预检在 HTTP 调用前，扣费+流水 REQUIRES_NEW；llm_usage_log 流水；GET /api/user/usage；POST /api/admin/quota（403/404/400）。真机实测：JD 150/181 token、embedding 24/58 token、BYOK 165 token 仅扣 1、402 双文案、充值恢复。详见 §3 R2 小节。** |
 | **R4-1** | **向量持久化（Lucene FSDirectory + 用户隔离）** | **✅ 完成（2026-10-03，分支 `feature/R4-vector-persistence` 从 49529b2 切出，92 tests 全绿 + 真机 FS 三验证；未 commit 待人审）** | **InMemoryVectorStore 换 Lucene 9.12.3 FSDirectory（`data/rag-index`，CREATE_OR_APPEND，dim 1024 校验）；VectorStore 抽象 + KnowledgeChunk 加 userId；KNN 4 参 pre-filter（candidateK=max(topK*3,30)）；AND 删除 + beginReplace/commit/rollback 批次事务；StartupIndexCleaner dev 空库清孤儿（mysql 关）。真机：重启 doc=2 不丢、PUT 两次存活数不翻倍（0→1→2→2→2）、空库启动 WARN 清空。R4-2 已评估不引 LangChain4j。详见 §3 R4 小节。** |
-| **R3** | **多模型接入：Provider 抽象 + 通义千问（R3-1/R3-2；R3-3 延后）** | **✅ 完成（2026-10-03，分支 `feature/R3-multi-model` 从 R4 commit edeaa10 切出，108 tests 全绿 + 真机 E2E 三场景 + 浏览器验收；未 commit 待人审）** | **`llm/chat/`（ChatProvider/ModelRouter/DeepSeek+Qwen 双实现）；`app_user.chat_provider` 用户级厂商（DEEPSEEK/QWEN，与 keyMode 正交）；Qwen 恒平台 DASHSCOPE_API_KEY、PLATFORM 实扣（BYOK 选它也不收服务费）；settings 契约两字段部分更新、前端单选；V2 SQL。真机：qwen3.8-flash 非思考 ~1s、qwen3.7-plus 思考+JSON ~13s；PLATFORM+QWEN 整场实扣 4818、BYOK+QWEN 实扣 5291 零服务费行、缺 key 504 中文 JSON。详见本文件 §3 R3 小节与 docs/domain.md §8。** |
+| **R3** | **多模型接入：Provider 抽象 + 通义千问（R3-1/R3-2；R3-3 延后）** | **✅ 完成（2026-10-03，分支 `feature/R3-multi-model` 从 R4 commit edeaa10 切出，108 tests 全绿 + 真机 E2E 三场景 + 浏览器验收；未 commit 待人审）** | **`llm/chat/`（ChatProvider/ModelRouter/DeepSeek+Qwen 双实现）；`app_user.chat_provider` 用户级厂商（DEEPSEEK/QWEN，与 keyMode 正交）；Qwen 恒平台 DASHSCOPE_API_KEY、PLATFORM 实扣（BYOK 选它也不收服务费）；settings 契约两字段部分更新、前端单选；V2 SQL。真机：qwen3.8-flash 非思考 ~1s、qwen3.7-plus 思考+JSON ~13s；PLATFORM+QWEN 整场实扣 4818、BYOK+QWEN 实扣 5291 零服务费行、缺 key 504。详见本文件 §3 R3 小节与 docs/domain.md §8。** |
+| **R7** | **软性面试官（行为面试官 + Critic 行为维度）** | **✅ 完成（2026-10-04，分支 `feature/R7-soft-interviewer` 从 R3 commit 43e9980 切出；离线 122 用例全绿 + 真机 E2E（DeepSeek/Qwen 两通道）；未 commit 待人审）** | **Role.BEHAVIOR_INTERVIEWER + `questionTask()` 出题句（start 首题整体替换）；ScoreTrack 双赛道 + STAR 四维 rubric（track 落 score_json，不加列）；Critic `behavior_review` 列（V3 SQL，可空）+ 逐轮 track，track 以编排器权威值覆盖模型自报；行为薄弱点入错题本不扩表；前端第三复选 + 行为角标 + 行为评估卡。详见 §8。** |
 
 **未 commit 文件（截至 2026-09-17，遵守 NEVER 自动 commit，你审完再提）**：
 - 文档：`AGENTS.md`、`docs/domain.md`、`docs/api.md`、`docs/handoff.md`（含本次 H2 默认 / MySQL profile 修正）
@@ -340,3 +341,19 @@
 - 模型名是占位实测产物：`qwen3.8-flash`/`qwen3.7-plus` 当前有效，百炼代际迭代后只需改 yml，不动代码。
 
 **下一步（待人审后）**：建议 commit message `feat(R3): ModelProvider 抽象 + 通义千问用户级路由`（显式 add，禁用 git add -A；`.workbuddy/` 与 stash 不带入）。R3-3 在接入第二家 embedding 前启动。
+
+## 8. R7 软性面试官（2026-10-04 实施记录）
+
+> 分支 `feature/R7-soft-interviewer`（基点 R3 commit `43e9980`）。按 `.trae/documents/R7_soft_interviewer_plan.md` v2 三批推进，**未 commit**，待人审。`.trae/` 已在 .gitignore 覆盖，计划文件不入库。
+
+**用户拍板**：①行为轮薄弱点入现有 weak_point 表，不扩表，靠知识点标签语义区分；②行为 rubric = STAR+表达四维（STAR结构/行动细节/结果与反思/表达与抗压）× 0-2 = 0-8；③start 出题硬编码句**整体替换**禁追加；两个角色轮转公式（追问继承 `(mainCount-1)%size` / 下一主问题 `mainCount%size`）**禁止统一**；④测试数字以实际 build 为准，不锚定 108/94。
+
+- **批 1**：`Role.BEHAVIOR_INTERVIEWER`（三类题池/STAR 压细节/礼貌施压/不考八股/禁讲解）+ `questionTask()` 按角色产出出题祈使句；start() 与 nextMainQuestion() 原硬编码句整体替换；两个轮转公式原样保留。
+- **批 2**：`llm/ScoreTrack`（TECH/BEHAVIOR），`LlmPort.score(ScoreTrack,String,String)` 唯一抽象方法，LlmService 双 SCORE prompt 分派；orchestrator answer() 按 `trackOf(currentRole)` 选赛道，track 落 `score_json`（interview_turn 不加 role 列），SSE score 事件加 `track`；Critic `TurnBrief` 扩 track；6 处 Mockito stub + 1 处直调 + StubLlmPort 全跟进；RoleTest 9 例、OrchestratorTest +2、真机 R7BehaviorVerifyTest。
+- **批 3**：Critic SYSTEM prompt 加行为轮规则 + `behaviorReview`（无行为轮 null）；`critic_report.behavior_review` TEXT 可空 + `V3__add_critic_report_behavior_review.sql`（**部署备忘：H2 不读脚本；MySQL ddl-auto:update 自动加列；生产 ddl-auto:none 必须手动执行 V3**）；报告回看 reportView 加 behaviorReview（null/解析失败→null）；前端第三个角色复选、score「行为评分」角标、报告行为评估卡（四维分/总评/建议，缺字段整卡不渲染）+逐轮行为角标；CriticParseTest +6（含截断修复）、InterviewFlowTest +1（行为整场 API）并给纯技术场补 null 兼容断言。
+- **真机 E2E**：DeepSeek 通道三角色 maxQ=3 场——首题行为面试官出行为题、SSE track 行为轮 behavior/技术轮 tech、Critic behaviorReview 四维结构完整可解析、行为薄弱点入错题本（「跨团队协作与共识推进」等行为标签）；纯行为 maxQ=2 场首题为行为题、错题本全行为标签。**Qwen 通道（用户级 QWEN 提供商，账号 r7qwen1791111493/Passw0rd!23，H2 重启即失效）补验通过**：双角色 maxQ=2 场逐轮 SSE tracks 为 behavior/tech 交替；纯行为单轮场（sid=2）Qwen 判分 8（好 STAR 不触发追问直接 DONE）、Critic behaviorReview 四维全 2 + 总评齐全、报告回看可解析。注：Qwen reasoner（qwen3.7-plus）在 4 轮大 prompt 场曾三次重试超 90s call 超时走占位报告——R3 已记录的 Qwen 慢思考特性（AGENTS.md 90s 超时），非 R7 缺陷；缩短输入后正常。
+- **真机发现并修复的缺陷**：技术深挖官会模仿「已问列表」里的行为题，出成行为味题面 → ①技术角色 questionTask 显式锁定「只考技术/项目硬考点，不出行为类题目」；②更关键：Critic 模型按题面自报 track 会把这种轮次误标 behavior，已在 `CriticService.applyAuthoritativeTracks` 用 TurnBrief 权威 track（来自 score_json，即出题角色）按 turnSeq 强制覆盖；且无行为轮时 behaviorReview 强制 null（防纯技术场脑补）。
+- **测试现状（2026-10-04）**：离线 **122 用例全绿**（113 离线类 + UserIsolationTest 9 个不依赖 start 的方法）。另有 5 个用例因 **DeepSeek 平台账户余额耗尽（HTTP 402 Insufficient Balance）** 失败：DeepSeekVerifyTest、T6RealRoundTripTest、R7BehaviorVerifyTest 各 1 + UserIsolationTest.sameUser_fullFlow/crossUser_sessionAccess 2（start 真调 LLM；JD 解析有降级故其余 9 个不受影响）。**均为环境问题非代码回归**（同一批代码在余额耗尽前的 18:29 全量 124 全绿）；平台充值后重跑 `.\mvnw.cmd -B test` 即可全绿。
+- **浏览器验收（2026-10-04 子代理实跑通过）**：①角色区三复选齐全；②历史 sid=2 报告「行为面试评估」卡四维全 2 + 总评 + 建议、逐轮「行为」角标正常；③sid=1 占位报告不渲染空白行为卡、无 JS 报错；④实时新面试（先在下拉选 JD → 只勾行为面试官）首题为行为题原文「请描述一次你在跨团队协作中因资源或优先级冲突导致项目受阻的经历…」；⑤该轮 SSE score 事件实测 `{"turnSeq":1,"score":8,"track":"behavior",...}`（Qwen 判分约 4 分钟才推回，浏览器等待先放弃，但重放数据正确，renderScore 角标分支与报告同款 .trackBadge 已目视验证）；⑥刷新后重登点开 sid=2 行为卡仍在（持久化回看）；全程 console 0 报错、0 失败请求。
+
+**下一步（待人审后）**：建议 commit message `feat(R7): 行为面试官 + STAR 行为评分与 Critic 行为维度`。显式 `git add` 指定文件，**禁用 git add -A**，排除工作树噪音 `docs/l3-comparison.md`、`.workbuddy/memory/2026-10-02.md`（`.trae/` 已被 .gitignore 忽略）。另：请给 DeepSeek 平台账户充值后再跑一次全量 `.\mvnw.cmd -B test` 确认 5 个真机用例恢复。

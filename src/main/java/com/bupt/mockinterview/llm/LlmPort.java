@@ -19,8 +19,13 @@ public interface LlmPort {
     /** 实时侧：非思考模式，返回一句追问 / 纠正 / 新题。 */
     LlmReply followUp(String system, String user);
 
-    /** 判分：思考模式 + JSON 输出，返回结构化结果（4 维 × 0-2 = 0-8）。 */
-    ScoreResult score(String question, String answer);
+    /**
+     * 判分：思考模式 + JSON 输出，返回结构化结果（4 维 × 0-2 = 0-8）。
+     *
+     * @param track    判分赛道（R7）：TECH 用技术四维 rubric，BEHAVIOR 用 STAR+表达四维 rubric；
+     *                 两套量纲一致，追问/错题本阈值共用
+     */
+    ScoreResult score(ScoreTrack track, String question, String answer);
 
     /**
      * 通用 chat，供 Critic 报告等需要自定义 prompt 的场景。

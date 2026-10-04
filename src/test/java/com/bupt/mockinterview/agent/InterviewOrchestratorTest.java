@@ -9,6 +9,7 @@ import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.domain.repository.JdProfileRepository;
 import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.llm.ScoreTrack;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -194,5 +196,88 @@ class InterviewOrchestratorTest {
         stub.chatError = new QuotaExhaustedException("服务点数已用完");
 
         assertThrows(QuotaExhaustedException.class, () -> orchestrator.end(started.sessionId()));
+    }
+
+    // ---------- R7：行为面试官赛道 ----------
+
+    private static ScoreResult behaviorScore(int score, String followup) {
+        return new ScoreResult(score,
+                Map.of("STAR结构", 2, "行动细节", 2, "结果与反思", 2, "表达与抗压", 2),
+                List.of("结果没有量化"), followup, "失败经历的结果与反思");
+    }
+
+    /**
+     * R7-1/R7-2：纯行为场——首题 user prompt 必须来自行为 questionTask（不含「紧扣 JD 考点」），
+     * 判分走 BEHAVIOR 赛道，SSE score 事件与 score_json 都带 track=behavior。
+     */
+    @Test
+    void pureBehaviorRole_usesBehaviorPromptAndScoreTrack() {
+        stub.questions.clear();
+        stub.questions.addAll(List.of("请做一个自我介绍", "讲一次你和同事意见不一致的经历"));
+        stub.scores.clear();
+        stub.scores.add(behaviorScore(8, ""));
+
+        InterviewOrchestrator.StartResult started = orchestrator.start(newJd(), List.of("行为面试官"));
+
+        // 首题事件角色 + 出题 prompt 不含技术考点指令（锁定项：整句替换而非追加）
+        assertEquals("行为面试官", started.events().get(0).get("role"));
+        String firstPrompt = stub.userPrompts.get(0);
+        assertTrue(firstPrompt.contains("行为面试题"), "首题 prompt 应使用行为任务句: " + firstPrompt);
+        assertFalse(firstPrompt.contains("紧扣 JD 考点"), "纯行为场 prompt 不得残留技术考点指令: " + firstPrompt);
+
+        // 满分 → 不追问，直接出第二道行为主问题
+        List<AgentEvent> ev = orchestrator.answer(started.sessionId(),
+                "我叫张三，做 Java 后端三年，最有成就感的是主导了订单系统重构。");
+        assertEquals(List.of(AgentEvent.SCORE, AgentEvent.QUESTION, AgentEvent.AWAIT_ANSWER),
+                ev.stream().map(AgentEvent::type).toList());
+        assertEquals("behavior", ev.get(0).get("track"), "score 事件应带 behavior 赛道");
+        assertEquals("行为面试官", ev.get(1).get("role"));
+        assertEquals(List.of(ScoreTrack.BEHAVIOR), stub.scoreTracks, "判分应走 BEHAVIOR rubric");
+
+        String secondPrompt = stub.userPrompts.get(1);
+        assertTrue(secondPrompt.contains("行为面试题"));
+        assertFalse(secondPrompt.contains("紧扣 JD 考点"));
+
+        // score_json 落 track，供 Critic 按赛道复盘
+        List<InterviewTurn> turns = turnRepo.findBySessionIdOrderBySeqAsc(started.sessionId());
+        assertTrue(turns.get(0).getScoreJson().contains("\"track\":\"behavior\""));
+    }
+
+    /**
+     * R7：混合场轮转——技术/行为主问题判分赛道按轮转角色交替；
+     * 两个轮转公式（currentRole 与 nextMainQuestion）行为角色同样成立。
+     */
+    @Test
+    void mixedRoles_alternateScoreTracksByRotation() {
+        stub.questions.clear();
+        stub.questions.addAll(List.of("技术题一", "行为题一", "技术题二"));
+        stub.scores.clear();
+        for (int i = 0; i < 3; i++) {
+            stub.scores.add(i == 1 ? behaviorScore(8, "")
+                    : new ScoreResult(8, Map.of("正确性", 2, "完整性", 2, "深度", 2, "实证", 2), List.of(), ""));
+        }
+
+        // maxQuestions=3：答完第三道主问题自然结束出报告
+        InterviewOrchestrator.StartResult started =
+                orchestrator.start(newJd(), List.of("技术深挖官", "行为面试官"), 3);
+
+        assertEquals("技术深挖官", started.events().get(0).get("role"));
+        assertTrue(stub.userPrompts.get(0).contains("紧扣 JD 考点"), "技术首题仍须紧扣 JD 考点");
+
+        Long sid = started.sessionId();
+        List<AgentEvent> a1 = orchestrator.answer(sid, "技术回答一（满分）");
+        List<AgentEvent> a2 = orchestrator.answer(sid, "行为回答一（满分）");
+        List<AgentEvent> a3 = orchestrator.answer(sid, "技术回答二（满分）");
+
+        assertEquals("tech", a1.get(0).get("track"));
+        assertEquals("行为面试官", a1.get(1).get("role"), "第二道主问题应轮转到行为面试官");
+        assertEquals("behavior", a2.get(0).get("track"));
+        assertEquals("技术深挖官", a2.get(1).get("role"), "第三道主问题应轮转回技术深挖官");
+        assertEquals("tech", a3.get(0).get("track"));
+        assertEquals(List.of(ScoreTrack.TECH, ScoreTrack.BEHAVIOR, ScoreTrack.TECH), stub.scoreTracks);
+
+        // 第三道答完自然结束：report + done
+        assertEquals(List.of(AgentEvent.REPORT, AgentEvent.DONE),
+                a3.subList(a3.size() - 2, a3.size()).stream().map(AgentEvent::type).toList());
     }
 }

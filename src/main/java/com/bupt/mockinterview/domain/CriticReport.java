@@ -42,6 +42,9 @@ public class CriticReport {
     @Column(columnDefinition = "TEXT") // 必要提醒面试者
     private String reminders;
 
+    @Column(columnDefinition = "TEXT") // R7：行为维度汇总 JSON（dimensions/summary/suggestions），纯技术场为 null
+    private String behaviorReview;
+
     private Integer matchScore;
 
     @CreationTimestamp

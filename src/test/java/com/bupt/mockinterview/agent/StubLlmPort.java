@@ -3,6 +3,7 @@ package com.bupt.mockinterview.agent;
 import com.bupt.mockinterview.llm.LlmPort;
 import com.bupt.mockinterview.llm.LlmReply;
 import com.bupt.mockinterview.llm.ScoreResult;
+import com.bupt.mockinterview.llm.ScoreTrack;
 import com.bupt.mockinterview.llm.chat.ModelRole;
 
 import java.util.ArrayList;
@@ -21,6 +22,8 @@ public class StubLlmPort implements LlmPort {
     public final List<String> questions = new ArrayList<>();
     /** score 依次返回的结果。 */
     public final List<ScoreResult> scores = new ArrayList<>();
+    /** R7：记录每次 score 收到的判分赛道，供断言 TECH/BEHAVIOR 路由。 */
+    public final List<ScoreTrack> scoreTracks = new ArrayList<>();
     /** chat 返回的原文（Critic 报告 JSON）。 */
     public String criticJson = "{}";
 
@@ -52,6 +55,7 @@ public class StubLlmPort implements LlmPort {
         scores.addAll(initialScores);
         criticJson = initialCriticJson;
         userPrompts.clear();
+        scoreTracks.clear();
         followUpError = null;
         scoreError = null;
         chatError = null;
@@ -72,7 +76,8 @@ public class StubLlmPort implements LlmPort {
     }
 
     @Override
-    public ScoreResult score(String question, String answer) {
+    public ScoreResult score(ScoreTrack track, String question, String answer) {
+        scoreTracks.add(track);
         if (scoreError != null) {
             throw scoreError;
         }

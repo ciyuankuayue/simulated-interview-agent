@@ -79,9 +79,10 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### POST /api/interview/start
 开始一次模拟。
 - body: `{ "jdId": "...", "roles": ["技术深挖官"] , "resumeId": 12(可选，下拉选中的简历版本 id；仅落库留痕，RAG 当前检索全局语料不按版本隔离), "maxQuestions": 8(可选，主问题数，1-8，默认 8；不含追问) }`
+  - `roles` 取值：`技术深挖官` / `项目质疑官` / `行为面试官`（R7 新增；至少勾一个，按勾选顺序轮转，行为面试官出 STAR 行为题、不考技术知识点）。
 - resumeId 指向不存在的简历 → 404。
 - resp: `{ "sessionId", "firstQuestion": "..." , "status": "QUESTIONING" }`
-- 副作用：系统解析 JD + 检索你的资料，产出首题（技术深挖官先出）
+- 副作用：系统解析 JD + 检索你的资料，由勾选顺序的第一个角色产出首题（技术角色紧扣 JD 考点，行为面试官出行为面试题）
 
 ### GET /api/interview/sessions
 历史会话（最近 20 场倒序，精简卡片，报告回看入口）：
@@ -102,11 +103,15 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### POST /api/interview/{sessionId}/end
 主动结束（中途打断/放弃；自然结束已不需要调它）。与自然结束共用同一出报告逻辑。
 - **幂等**：已有 Critic 报告（含自然结束刚生成的）直接重放同一份，不重复调 LLM。
-- resp: `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints":[...], "expressionIssues":[...], "overallNotes", "reminders" }`
+- resp: `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","track","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints":[...], "expressionIssues":[...], "overallNotes", "reminders", "behaviorReview" }`
+  - `track`（R7）：`"tech"` / `"behavior"`，本轮判分赛道；老数据缺省按 `"tech"`。
+  - `behaviorReview`（R7）：本场含行为轮时为行为维度对象（形状见下），纯技术场/老报告为 `null`。
 
 ### GET /api/interview/{sessionId}/report
 拉取 Critic 报告（精简版，给用户看）。
-- resp: `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints":[...], "expressionIssues":[{"issue","guide"}], "overallNotes", "reminders", "createdAt" }`
+- resp: `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","track","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints":[...], "expressionIssues":[{"issue","guide"}], "overallNotes", "reminders", "behaviorReview", "createdAt" }`
+- `behaviorReview` 形状（R7；逐轮四维 rubric 见 domain.md §4）：
+  `{ "dimensions": {"STAR结构":0-2,"行动细节":0-2,"结果与反思":0-2,"表达与抗压":0-2}, "summary": "≤120字总评", "suggestions": ["≤4 条，每条≤40字"] }`；列值为 `null` 时整卡不渲染。
 
 ### GET /api/interview/{sessionId}/status
 会话状态：`{ "sessionId", "status", "roles", "turnCount", "matchScore" }`
@@ -117,11 +122,11 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 
 | event | data | 含义 | 前端动作 |
 |---|---|---|---|
-| `question` | `{ "turnSeq", "question", "role" }` | 新一题（技术深挖官/项目质疑官） | 展示，等用户作答 |
-| `score` | `{ "turnSeq", "score", "oneLineCorrection" }` | 本轮评分（仅概要 + 一句纠正，不展示 breakdown 全量；讲解归报告） | 展示评分与一句纠正 |
-| `followup` | `{ "turnSeq", "question", "layer" }` | 追问（layer 1/2，封顶 2） | 展示，等作答 |
+| `question` | `{ "turnSeq", "question", "role" }` | 新一题（技术深挖官/项目质疑官/行为面试官） | 展示，等用户作答 |
+| `score` | `{ "turnSeq", "score", "track"?: "tech"\|"behavior", "oneLineCorrection" }` | 本轮评分（R7：`track=behavior` 为 STAR 四维行为分；仅概要 + 一句纠正，不展示 breakdown 全量；讲解归报告） | 展示评分与一句纠正（行为轮加角标） |
+| `followup` | `{ "turnSeq", "question", "layer" }` | 追问（layer 1/2，封顶 2；追问继承所属主问题角色与赛道） | 展示，等作答 |
 | `await_answer` | `{ "turnSeq" }` | 等待本轮回答 | 调 answer 接口 |
-| `report` | `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints", "expressionIssues", "overallNotes", "reminders" }` | Critic 报告（精炼不省关键） | 展示报告 |
+| `report` | `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","track","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints", "expressionIssues", "overallNotes", "reminders", "behaviorReview" }` | Critic 报告（R7：含行为轮时多一个 behaviorReview 行为维度块） | 展示报告 |
 | `done` | `{ "sessionId", "reason"?: "MAX_QUESTIONS_REACHED" }` | 结束。自然结束（答满题量）带 `reason`；手动 `/end` 不带。`report` 事件保证先于 `done` | 关闭流（前端兜底：若收到 done 时还没渲染 report，补调一次幂等 `/end`） |
 | `error` | `{ "code", "message" }` | 异常（含 LLM 降级） | 提示 |
 

@@ -58,7 +58,7 @@ class T10FeaturesTest {
         stubChat();
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("说说你最熟的一个技术点？", null));
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(8, Map.of(), List.of(), ""));
 
         long jdId = createJd();
@@ -84,7 +84,7 @@ class T10FeaturesTest {
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("覆盖索引是什么？", null));
         // 首答 0 分 → 记错题本（带现场）；追问层留着不作答，直接 end
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(0,
                         Map.of("正确性", 0, "完整性", 0, "深度", 0, "实证", 0),
                         List.of("没说覆盖索引免回表"), "那联合索引呢？", TOPIC));
@@ -127,7 +127,7 @@ class T10FeaturesTest {
         stubChat();
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("只问一道：谈谈 GC。", null));
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(0,
                         Map.of("正确性", 0, "完整性", 0, "深度", 0, "实证", 0),
                         List.of("没答到点"), "再追一句？", TOPIC))
@@ -176,7 +176,7 @@ class T10FeaturesTest {
         stubChat();
         when(llm.followUp(anyString(), anyString()))
                 .thenReturn(new LlmReply("简历版本选中了吗？", null));
-        when(llm.score(anyString(), anyString()))
+        when(llm.score(any(), anyString(), anyString()))
                 .thenReturn(new ScoreResult(8, Map.of(), List.of(), ""));
 
         long jdId = createJd();

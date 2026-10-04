@@ -56,7 +56,7 @@ public class LlmService implements LlmPort {
 
     private static final Logger log = LoggerFactory.getLogger(LlmService.class);
 
-    /** 判分 system prompt：4 维 × 0-2 = 0-8（domain.md §4），强制纯 JSON 输出。 */
+    /** 判分 system prompt：4 维 × 0-2 分 = 0-8（domain.md §4），强制纯 JSON 输出。 */
     private static final String SCORE_SYSTEM = """
             你是资深 Java 后端面试官，负责为候选人对一道面试题的回答打分。
             评分共 4 个维度，每维 0-2 分，总分 0-8：正确性、完整性、深度、实证。
@@ -66,6 +66,23 @@ public class LlmService implements LlmPort {
              "missed_points": ["回答漏掉的关键点"],
              "knowledge_point": "本题考察的核心知识点，10-20 字短标签，措辞要稳定可复用（如「MySQL 索引失效场景」「synchronized 锁升级」）",
              "followup": "下一句追问（一句话）；若 score>=8 则填空字符串"}
+            """;
+
+    /**
+     * 行为题判分 system prompt（R7）：STAR+表达四维 × 0-2 = 0-8。
+     * 量纲与技术四维一致，故追问层数 / 错题本阈值不用分叉；只换维度语义与标签风格。
+     */
+    private static final String SCORE_SYSTEM_BEHAVIOR = """
+            你是资深综合行为面试官，负责为候选人对一道行为面试题的回答打分。
+            评分共 4 个维度，每维 0-2 分，总分 0-8：
+            STAR结构（情境与任务是否讲清楚）、行动细节（本人具体动作与贡献是否真实可感，不能是「我们」式空话）、
+            结果与反思（结果能否量化、有无复盘反思）、表达与抗压（追问下逻辑是否清晰、情绪是否稳定）。
+            只输出 JSON，不要任何多余文字，不要 markdown 代码块。格式：
+            {"score": 0到8的整数,
+             "breakdown": {"STAR结构":0到2,"行动细节":0到2,"结果与反思":0到2,"表达与抗压":0到2},
+             "missed_points": ["回答缺失的行为要素，如未交代情境、未量化结果、把团队成果说成个人贡献"],
+             "knowledge_point": "本题考察的行为能力短标签，10-20 字，措辞要稳定可复用（如「跨部门冲突中的具体行动」「失败经历的结果与反思」）",
+             "followup": "下一句 STAR 细节追问（一句话，压情境/本人动作/量化结果）；若 score>=8 则填空字符串"}
             """;
 
     private final OkHttpClient client;
@@ -101,10 +118,14 @@ public class LlmService implements LlmPort {
                 null, false, props.getMaxTokens(), UsageScene.FOLLOWUP);
     }
 
-    /** 判分：REASONER 档思考模式 + JSON 输出，解析并校验后返回结构化结果。 */
-    public ScoreResult score(String question, String answer) {
+    /**
+     * 判分：REASONER 档思考模式 + JSON 输出，解析并校验后返回结构化结果。
+     * R7：按 {@link ScoreTrack} 选技术/行为 rubric（JSON 形状一致，parseScore 复用）。
+     */
+    public ScoreResult score(ScoreTrack track, String question, String answer) {
+        String system = track == ScoreTrack.BEHAVIOR ? SCORE_SYSTEM_BEHAVIOR : SCORE_SYSTEM;
         String user = "题目：\n" + question + "\n\n候选人的回答：\n" + answer;
-        LlmReply reply = chat(ModelRole.REASONER, true, List.of(sys(SCORE_SYSTEM), userMsg(user)),
+        LlmReply reply = chat(ModelRole.REASONER, true, List.of(sys(system), userMsg(user)),
                 null, true, props.getMaxTokens(), UsageScene.SCORE);
         return parseScore(reply.content());
     }

@@ -109,6 +109,11 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 .bar i { display: block; height: 100%; background: #a78bfa; }
 .correction { margin-top: 6px; font-size: 13px; color: #ffe0a3; }
 
+/* R7：行为轮角标（评分标题 / 逐轮 summary 复用） */
+.trackBadge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
+    font-size: 11px; font-weight: 600; line-height: 16px; vertical-align: 1px;
+    background: #1f3a34; color: #7ee6c2; border: 1px solid #2f5c50; }
+
 .answer { margin-top: 12px; }
 .state { font-size: 12px; color: var(--muted); margin-left: 6px; }
 
@@ -126,6 +131,14 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 .lst li { margin-bottom: 3px; }
 .issue { background: var(--panel2); border-left: 3px solid var(--warn); padding: 7px 9px; border-radius: 6px; margin-bottom: 6px; }
 .notes { white-space: pre-wrap; color: #d8e0f0; }
+
+/* R7：行为面试评估卡（STAR 四维） */
+.behCard { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid #34d399;
+    border-radius: 6px; padding: 8px 10px; }
+.behDims { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.behDim { background: #1f2a28; border: 1px solid #2f5c50; border-radius: 6px; padding: 2px 8px;
+    font-size: 12px; color: #cfe8df; }
+.behDim b { color: #7ee6c2; }
 
 /* ---------- 错题本 ---------- */
 .weak { max-height: 34vh; overflow-y: auto; margin-top: 8px; }
