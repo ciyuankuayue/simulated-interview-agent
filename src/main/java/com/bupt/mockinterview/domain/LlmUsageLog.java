@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.domain;
+﻿package com.bupt.mockinterview.domain;
 
 import com.bupt.mockinterview.billing.UsageScene;
 import jakarta.persistence.*;
@@ -10,7 +10,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.Instant;
 
 /**
- * LLM / embedding 调用用量流水（R2，2026-10-02）。
+ * LLM / embedding 调用用量流水（R2）。
  * <p>
  * 每次触发计费的调用成功后落一条：厂商 usage 原值 + 实际扣减 token 当量。
  * BYOK 对话时 totalTokens 是真实烧在用户 key 上的量（仅展示），chargedTokens 才是服务费扣减。

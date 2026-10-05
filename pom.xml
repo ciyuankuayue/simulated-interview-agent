@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -21,7 +21,7 @@
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- ⚠️ 必须显式覆盖：Spring Boot 3.3.5 管理的 Lombok 1.18.34 在 JDK 24 下注解处理器
-             静默失效（domain 实体的 getter/setter 全部不生成，编译不报错、极隐蔽，2026-09-18 踩坑）。
+             静默失效（domain 实体的 getter/setter 全部不生成，编译不报错、极隐蔽，踩坑）。
              三道保险：① Lombok 升 1.18.48（支持 JDK 17/21/24，IDE 用高版本 JDK 也不会失效）；
              ② 命令行构建用 JDK 21 跑 Maven——mvnw.cmd 在未显式设置 JAVA_HOME 时自动选
              %USERPROFILE%\jdk-21，无需每次手动 set；③ maven-enforcer-plugin 显式拒绝 JDK 24+，
@@ -89,7 +89,7 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- T5 调 LLM 统一用 OkHttp：单例 OkHttpClient + 单 ConnectionPool；不引 JDK HttpClient（决策 2026-09-17） -->
+        <!-- T5 调 LLM 统一用 OkHttp：单例 OkHttpClient + 单 ConnectionPool；不引 JDK HttpClient -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
             <artifactId>okhttp</artifactId>
@@ -129,7 +129,7 @@
         </dependency>
 
         <!-- R4：向量持久化（Lucene FSDirectory + HNSW）+ L3 对比实验共用。
-             选型 2026-09-18：FAISS 的 Java 绑定不在 Maven Central（bytedeco 无 faiss 预设；
+             选型：FAISS 的 Java 绑定不在 Maven Central（bytedeco 无 faiss 预设；
              karellen/faiss-java、jelmerk/faiss4j 均 404），只能走 JitPack 且实测 401 拒绝。
              改用 Lucene HNSW：同属 ANN 算法族，纯 Java / 零原生库 / 零 JitPack，
              是 OpenSearch / Elasticsearch 使用的同一套向量检索实现。 -->
@@ -165,10 +165,10 @@
                                 <requireJavaVersion>
                                     <version>[17,24)</version>
                                     <message>
-BUILD JDK NOT ALLOWED: this project requires JDK 17-23 to build Maven (fixed JDK 21 on this machine: C:\Users\19284\jdk-21).
+BUILD JDK NOT ALLOWED: this project requires JDK 17-23 to build Maven (fixed JDK 21 locally; set JAVA_HOME to your JDK 21 if needed).
 JDK 24+ is rejected because Lombok annotation processing silently failed there (getters/setters not generated, no compile error).
 Fix: open a NEW PowerShell and run mvnw.cmd directly (it auto-picks %USERPROFILE%\jdk-21 when JAVA_HOME is unset),
-or set $env:JAVA_HOME="C:\Users\19284\jdk-21" explicitly.
+or set $env:JAVA_HOME="<your-jdk-21-path>" explicitly.
 Note: java.version=17 is the bytecode TARGET (major version 61); you do NOT need to install JDK 17.</message>
                                 </requireJavaVersion>
                             </rules>

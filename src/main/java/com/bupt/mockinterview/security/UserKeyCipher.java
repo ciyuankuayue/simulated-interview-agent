@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.security;
+﻿package com.bupt.mockinterview.security;
 
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -13,7 +13,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
- * 用户自带 API Key 的对称加密器（R1-3，2026-10-02）。
+ * 用户自带 API Key 的对称加密器（R1-3）。
  *
  * <h3>密钥来源</h3>
  * KEK 取环境变量 {@code APP_DATA_KEY}（也可用配置 app.security.data-key）：

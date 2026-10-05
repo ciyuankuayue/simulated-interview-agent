@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 未 set {@code DEEPSEEK_API_KEY} 时整类跳过，不污染 CI。
  * 跑法（repo 根目录，用 JDK 21）：
  * <pre>
- *   JAVA_HOME="C:\\Users\\19284\\jdk-21" DEEPSEEK_API_KEY=sk-xxx ./mvnw.cmd test -Dtest=T6RealRoundTripTest
+ *   JAVA_HOME="<your-jdk-21-path>" DEEPSEEK_API_KEY=sk-xxx ./mvnw.cmd test -Dtest=T6RealRoundTripTest
  * </pre>
  */
 @SpringBootTest

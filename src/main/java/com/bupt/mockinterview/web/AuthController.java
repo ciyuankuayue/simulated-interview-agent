@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.web;
+﻿package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.User;
@@ -18,7 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 认证接口（R1-1，2026-09-28）。
+ * 认证接口（R1-1）。
  * <p>
  * register / login 返回 JWT；logout 保留接口（无状态，客户端扔掉 token 即可）。
  */

@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.domain;
+﻿package com.bupt.mockinterview.domain;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -10,7 +10,7 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
 
 /**
- * 用户自带 DeepSeek API Key（BYOK，R1-3，2026-10-02）。
+ * 用户自带 DeepSeek API Key（BYOK，R1-3）。
  * <p>
  * 一用户至多一条（user_id 唯一）。明文<b>永不落库、永不回传</b>：
  * 入库前由 {@code security.UserKeyCipher} 做 AES-256-GCM 加密（KEK 来自 env APP_DATA_KEY），

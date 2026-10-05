@@ -1,4 +1,4 @@
-server:
+﻿server:
   port: 8080
 
 spring:
@@ -31,7 +31,7 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
-  # ---- 静态资源缓存策略（2026-09-19 T12） ----
+  # ---- 静态资源缓存策略（T12） ----
   # no-cache 不是「不缓存」，而是「每次使用前必须回源验证」：浏览器带 If-Modified-Since，
   # 文件没变返 304（零传输），文件变了（如发布新版 app.js）立即拿到新内容。
   # 不配时浏览器走启发式强缓存，前端更新后用户不 Ctrl+F5 就一直跑旧 JS（门禁/报告修复都会被缓存吞掉）。
@@ -43,10 +43,10 @@ spring:
 
 # ---- LLM 密钥（NEVER 写死；统一从环境变量读，AGENTS.md Restrictions） ----
 # 代码侧用 @ConfigurationProperties 绑定以下前缀（T5 建 LlmConfig）；本文件只放配置。
-# 模型名 2026-09-18 已核实（官方 api-docs.deepseek.com 定价页）：
+# 模型名已核实（官方 api-docs.deepseek.com 定价页）：
 #   - 推荐 deepseek-flash（= DeepSeek-V4.1-Flash）；旧名 deepseek-v4-flash 已下线，
 #     仍可调用但会被静默映射到 V4.1-Flash，故一律用 deepseek-flash
-#   - deepseek-v4-pro 仍为旗舰推理档（2026-09-14 后继续提供）
+#   - deepseek-v4-pro 仍为旗舰推理档
 # 思考模式开关（OpenAI 格式，默认开启）：请求体加 {"thinking":{"type":"enabled|disabled"}}，
 #   强度用 reasoning_effort: low|high|max（默认 high）。
 # ⚠️ 坑：请求一旦携带 tools，后续每轮必须完整回传上一轮 reasoning_content，否则 API 返 400。

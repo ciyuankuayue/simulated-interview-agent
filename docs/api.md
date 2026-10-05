@@ -1,4 +1,4 @@
-# API 契约（api.md）
+﻿# API 契约（api.md）
 
 > 对外契约唯一事实源。S4 契约优先产出。NEVER 未经确认修改本文件（改前先与用户确认）。
 > 传输：JSON；流式用 SSE（text/event-stream）。本地默认 http://localhost:8080。
@@ -18,7 +18,7 @@
   - 400 参数错误 / 401 未登录或 JWT 失效 / 402 token 额度耗尽（PLATFORM/BYOK 余额不足，见 §7）/ 403 非 ADMIN 调管理接口（R2）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
 - 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。R4 起 `vectorChunks` 是 **Lucene 落盘索引的全局存活 doc 总数（跨用户、不含已逻辑删除待合并的旧 replace 版本，仅作粗监控，不是当前用户块数）**。
 
-## 2. 认证（R1-1 新增，2026-09-28）
+## 2. 认证（R1-1 新增）
 
 ### POST /api/auth/register
 注册新用户。
@@ -94,7 +94,7 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 - body: `{ "answer": "..." }`
 - 结果经 SSE 推送（见 §5）；本接口仅返回受理 `{ "accepted": true }`
 - 冲突：session 非 QUESTIONING → 409
-- **自然结束（2026-09-19 T12）**：当本轮回答后主问题计数达到 `maxQuestions`（含本轮追问链走完），同批 SSE 直接推送 `report` + `done(reason=MAX_QUESTIONS_REACHED)`，会话置 DONE 且 Critic 报告落库——前端无需再调 `/end`。
+- **自然结束（T12）**：当本轮回答后主问题计数达到 `maxQuestions`（含本轮追问链走完），同批 SSE 直接推送 `report` + `done(reason=MAX_QUESTIONS_REACHED)`，会话置 DONE 且 Critic 报告落库——前端无需再调 `/end`。
 
 ### GET /api/interview/{sessionId}/events  （SSE）
 订阅流式事件。事件类型见 §5。前端连上后等待 question/score/followup/report/done。
@@ -212,7 +212,7 @@ body: `{ "username": "alice", "grantTokens": 200000 }`（grantTokens 必须 > 0�
 
 ## 8. 契约边界
 
-- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + 自带 key 加密存储（R1-3）；**token 计量（PLATFORM 对话+embedding 按 usage 实扣、BYOK 按次服务费）、用量流水、ADMIN 充值、402/403（R2，2026-10-02）**
+- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + 自带 key 加密存储（R1-3）；**token 计量（PLATFORM 对话+embedding 按 usage 实扣、BYOK 按次服务费）、用量流水、ADMIN 充值、402/403（R2）**
 - **R2 不做**：月度重置/套餐（reset_at/plan）、充值/支付页面与申请入口（只提供 ADMIN API）、用量明细前端页面（只提供查询 API）
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）

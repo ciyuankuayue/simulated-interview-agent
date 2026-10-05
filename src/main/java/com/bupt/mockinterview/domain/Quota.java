@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.domain;
+﻿package com.bupt.mockinterview.domain;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -10,7 +10,7 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
 
 /**
- * 用户 token 额度（R2，2026-10-02；替代 R1-3 的 points 模型）。
+ * 用户 token 额度（R2，；替代 R1-3 的 points 模型）。
  * <p>
  * 注册即建：totalTokens = 注册赠送（app.quota.signup-bonus-tokens，默认 500000）。
  * 计量：PLATFORM 对话/embedding 调用后按厂商 usage.total_tokens 实扣；BYOK 对话调用前

@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.billing;
+﻿package com.bupt.mockinterview.billing;
 
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.LlmUsageLog;
@@ -14,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * Token 额度服务（R2，2026-10-02）。
+ * Token 额度服务（R2）。
  * <ul>
  *   <li>PLATFORM 对话/embedding：调用前 {@link #ensureAvailable}，调用成功后 {@link #settlePlatformCall}
  *       按真实 usage 实扣；tryCharge 不足（最后一次透支）→ clamp 到 total。</li>

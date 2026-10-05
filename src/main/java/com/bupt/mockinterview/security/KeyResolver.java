@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.security;
+﻿package com.bupt.mockinterview.security;
 
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.User;
@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * DeepSeek 调用 key 路由（R1-3，2026-10-02，替代旧 KeyVault 的取 key 职责）。
+ * DeepSeek 调用 key 路由（R1-3，，替代旧 KeyVault 的取 key 职责）。
  * <ul>
  *   <li>无用户上下文（userId=null，测试 profile / 系统内部调用）→ 平台 env key；</li>
  *   <li>DeepSeek + PLATFORM 用户 → 平台 env key（{@code DEEPSEEK_API_KEY}）；</li>

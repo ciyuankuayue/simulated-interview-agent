@@ -1,7 +1,7 @@
-package com.bupt.mockinterview.domain;
+﻿package com.bupt.mockinterview.domain;
 
 /**
- * 用户对话模型（DeepSeek）调用方式（R1-3，2026-10-02）。
+ * 用户对话模型（DeepSeek）调用方式（R1-3）。
  * <ul>
  *   <li>{@link #PLATFORM}：平台持有 key（env 配置），R1-3 不扣用户点，R2 起按 token 计费。</li>
  *   <li>{@link #BYOK}：Bring Your Own Key，走用户自己加密存储的 DeepSeek key，

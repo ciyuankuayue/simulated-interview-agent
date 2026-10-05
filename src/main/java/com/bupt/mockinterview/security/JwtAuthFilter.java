@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.security;
+﻿package com.bupt.mockinterview.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
@@ -17,7 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * JWT 鉴权过滤器（R1-1，2026-09-28）。
+ * JWT 鉴权过滤器（R1-1）。
  * <p>
  * 默认启用。可通过配置 {@code app.auth.jwt-enabled=false} 禁用（测试 profile 用）。
  * 其余行为见类注释历史（auth 白名单、SSE query fallback 等）。

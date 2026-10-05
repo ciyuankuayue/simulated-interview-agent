@@ -8,8 +8,12 @@ import xml.etree.ElementTree as ET
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 
-DOCX = r"C:\Users\19284\Desktop\Java后端AI面试知识框架.docx"
-OUT = r"C:\Users\19284\WorkBuddy\2026-08-25-17-57-13\simulated-interview-agent\src\test\resources\corpus\java-backend-knowledge.md"
+# 项目根目录（本脚本位于 <root>/scripts/，父目录即项目根）
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 输出：相对项目根，队友 clone 后可直接生成语料，无需改路径
+OUT = os.path.join(ROOT, "src", "test", "resources", "corpus", "java-backend-knowledge.md")
+# 输入 .docx 由命令行参数指定：python convert_docx_to_md.py <路径.docx>
+DOCX = None
 
 
 def get_text(p):
@@ -67,6 +71,10 @@ def cell_text(tc):
 
 
 def main():
+    if len(sys.argv) < 2:
+        print("用法: python convert_docx_to_md.py <输入.docx 路径>")
+        sys.exit(1)
+    DOCX = sys.argv[1]
     if not os.path.exists(DOCX):
         print("ERROR: docx 不存在:", DOCX)
         sys.exit(1)

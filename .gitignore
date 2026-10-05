@@ -45,6 +45,7 @@ venv/
 # ===== 环境 / 密钥 =====
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 application-secret.yml
@@ -64,3 +65,9 @@ data/
 # ===== TRAE/WorkBuddy 本地工作目录（计划文档、会话记忆，不入库） =====
 .trae/
 .workbuddy/
+
+# ===== docs 内部文档（会话交接/任务清单/对比/验收清单，不对外，勿入库） =====
+docs/handoff.md
+docs/tasks.md
+docs/l3-comparison.md
+docs/test-acceptance-checklist.html

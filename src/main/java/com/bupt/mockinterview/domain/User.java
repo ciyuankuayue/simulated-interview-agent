@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.domain;
+﻿package com.bupt.mockinterview.domain;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -9,7 +9,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.Instant;
 
 /**
- * 用户账号（R1-1，2026-09-28 新增）。
+ * 用户账号（R1-1， 新增）。
  * <p>
  * 表名 {@code app_user} 避开 H2 / MySQL {@code user} 保留字。
  * 密码用 BCrypt 加密（{@code org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder}），

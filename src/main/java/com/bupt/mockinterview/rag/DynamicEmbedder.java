@@ -1,9 +1,9 @@
-package com.bupt.mockinterview.rag;
+﻿package com.bupt.mockinterview.rag;
 
 import java.util.function.Supplier;
 
 /**
- * 按密钥有无在真实通义与离线 Fake 之间<b>每次调用</b>动态切换的 Embedder（2026-09-19）。
+ * 按密钥有无在真实通义与离线 Fake 之间<b>每次调用</b>动态切换的 Embedder。
  *
  * <p>目的：用户在页面保存/解锁 DashScope 密钥后，向量化立即热生效，无需重启服务。
  * 密钥为空时退到 {@link FakeEmbedder}，保证未配置阶段整条链路仍能跑通（降级语义与

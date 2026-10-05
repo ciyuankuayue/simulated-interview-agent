@@ -1,9 +1,9 @@
-# 领域模型（domain.md）
+﻿# 领域模型（domain.md）
 
 > 唯一事实源：本文件定义实体、字段、关系、可见性边界。改结构先确认，再动代码。
 > 原则：明细全在 DB 给 AI 推理用；用户看到的是「状态视图」和「Critic 报告」——**精简 = 表达精炼、抓核心、不啰嗦；关键内容（每答评价/纠正/知识补充/示范回答/整体注意事项/提醒）不省**。
 
-## 1. 实体清单（13 个，2026-10-02 R1-3 新增 user_api_key / quota）
+## 1. 实体清单（13 个，R1-3 新增 user_api_key / quota）
 
 | # | 实体 | 用途 | 可见性 |
 |---|------|------|--------|
@@ -51,7 +51,7 @@
 - used_tokens       # 已消耗（token 当量；非负，永不超过 total，最后一次透支由 clamp 归零到 total）
 - created_at / updated_at
 
-> R2 计量规则（2026-10-02 用户冻结）：
+> R2 计量规则（用户冻结）：
 > - **PLATFORM**：DeepSeek 与 embedding（DashScope）都走平台 key。调用**前预检**余额（=0 直接 402，不发请求）；调用**后**按响应 `usage.total_tokens` **实扣**；usage 缺失按「输入+输出字符数 1 字符≈1 token」估算兜底（偏保守，`app.quota.usage-estimate-enabled` 可关）。允许最后一次小幅超出，扣减时 clamp 到 total，之后预检拦死。
 > - **BYOK**：API 费由用户自己付给 DeepSeek；平台仍在调用**前**扣固定服务费 `app.quota.byok-charge-per-call`（token 当量，默认 1），条件 UPDATE 不超发，余额不足 402。BYOK 的 embedding 仍走平台 key → 按 token 实扣（与对话模式无关）。
 > - 扣减与流水在 REQUIRES_NEW 独立事务提交：token 已真实烧掉，业务事务后续回滚不退款。
@@ -202,7 +202,7 @@
 - 答对（该知识点本轮 score≥6）：从 weak_point 移除（或标记 resolved）
 - MVP 不做 Leitner / SM-2，跑通后再评估
 
-实现（T8，2026-09-18）：`memory/SpacedRepetition.java` 排期 + `memory/WeakPointMemoryService.java` 唯一入口
+实现（T8）：`memory/SpacedRepetition.java` 排期 + `memory/WeakPointMemoryService.java` 唯一入口
 `onTurnScored(jd, knowledgePoint, score, status, now)`。知识点 key 用**判分模型输出的 `knowledge_point` 短标签**
 （不用 missed_points——措辞每轮都漂，会把同一知识点打散成多条），匹配前做归一化：去标点空白 → 去中文虚词 → 小写，
 再精确相等或包含匹配（较短一方 ≥4 字）。
@@ -214,7 +214,7 @@
 - 角色：支持部分启用（可只开技术深挖官 / 只开行为面试官）；角色按勾选顺序轮转（追问继承所属主问题角色）；Critic 始终在
 - 用户绝不接触 interview_turn / project_doc / real_interview_record / knowledge_chunk 原始明细
 
-## 7. R4 向量持久化（Lucene FSDirectory，2026-10-03）
+## 7. R4 向量持久化（Lucene FSDirectory）
 
 > 结论：向量块从「进程内 `InMemoryVectorStore`（重启即丢、向量层跨用户可见）」迁到 **Lucene 9.12.3 FSDirectory 落盘索引**，并在向量检索层做用户隔离。检索算法仍是归一化向量上的最近邻（Lucene HNSW，等价余弦）。
 
@@ -241,7 +241,7 @@
 
 **监控语义**：`GET /api/health/deps` 的 `embedder.vectorChunks` = 全局**存活** Lucene doc 总数（`reader.numDocs()`，跨用户、不含已逻辑删除待合并的旧 replace 版本），仅作粗监控，**不是**当前用户块数。
 
-## 8. R3 多模型路由（2026-10-03）
+## 8. R3 多模型路由
 
 > 目标：对话 LLM 从「DeepSeek 单厂焊死」重构为「Provider 抽象 + 用户级厂商路由」，首批接入通义千问（DashScope OpenAI 兼容模式）。embedding 不动（仍 DashScope 恒平台 key）。
 

@@ -1,4 +1,4 @@
-package com.bupt.mockinterview.web;
+﻿package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.Quota;
@@ -20,7 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 管理接口（R2，2026-10-03；api.md §7）。
+ * 管理接口（R2，；api.md §7）。
  * 首版只有 token 充值：ADMIN 按用户名给任意用户加总额度。鉴权仍只有 JWT 一道，
  * 角色校验在方法内显式做（非 ADMIN → 403 FORBIDDEN）。
  */
