@@ -5,7 +5,9 @@ COPY pom.xml .
 COPY mvnw mvnw
 COPY .mvn .mvn
 COPY src ./src
-RUN chmod +x mvnw && ./mvnw -B -ntp clean package -DskipTests
+# 直接用 maven:3.9.9 镜像已预装的同版本 mvn；slim 镜像无 unzip，
+# 用 ./mvnw 会下载 Maven 分发包并因缺 unzip 解压失败（exit 127）。
+RUN mvn -B -ntp clean package -DskipTests
 
 # ============ 运行阶段 ============
 FROM eclipse-temurin:17-jre-jammy
