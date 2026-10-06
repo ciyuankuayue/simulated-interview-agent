@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.security;
+package com.bupt.mockinterview.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;

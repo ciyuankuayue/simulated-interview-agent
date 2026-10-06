@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.rag;
+package com.bupt.mockinterview.rag;
 
 import java.util.function.Supplier;
 

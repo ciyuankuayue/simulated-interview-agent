@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.security;
+package com.bupt.mockinterview.security;
 
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;

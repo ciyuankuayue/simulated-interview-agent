@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.llm;
+package com.bupt.mockinterview.llm;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;

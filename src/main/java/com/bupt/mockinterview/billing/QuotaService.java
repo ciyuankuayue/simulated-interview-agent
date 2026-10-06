@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.billing;
+package com.bupt.mockinterview.billing;
 
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.LlmUsageLog;

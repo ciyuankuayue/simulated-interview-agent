@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.domain;
+package com.bupt.mockinterview.domain;
 
 /**
  * 用户对话模型（DeepSeek）调用方式（R1-3）。

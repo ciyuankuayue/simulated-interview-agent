@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.domain;
+package com.bupt.mockinterview.domain;
 
 /**
  * 用户角色（R1-3）。

@@ -1,4 +1,4 @@
-﻿# API 契约（api.md）
+# API 契约（api.md）
 
 > 对外契约唯一事实源。S4 契约优先产出。NEVER 未经确认修改本文件（改前先与用户确认）。
 > 传输：JSON；流式用 SSE（text/event-stream）。本地默认 http://localhost:8080。

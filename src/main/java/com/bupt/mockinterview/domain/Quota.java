@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.domain;
+package com.bupt.mockinterview.domain;
 
 import jakarta.persistence.*;
 import lombok.Getter;

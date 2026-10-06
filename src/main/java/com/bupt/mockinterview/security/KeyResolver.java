@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.security;
+package com.bupt.mockinterview.security;
 
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.User;

@@ -1,4 +1,4 @@
-﻿package com.bupt.mockinterview.web;
+package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.Quota;
