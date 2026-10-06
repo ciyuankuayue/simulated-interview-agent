@@ -168,7 +168,7 @@
 BUILD JDK NOT ALLOWED: this project requires JDK 17-23 to build Maven (fixed JDK 21 locally; set JAVA_HOME to your JDK 21 if needed).
 JDK 24+ is rejected because Lombok annotation processing silently failed there (getters/setters not generated, no compile error).
 Fix: open a NEW PowerShell and run mvnw.cmd directly (it auto-picks %USERPROFILE%\jdk-21 when JAVA_HOME is unset),
-or set $env:JAVA_HOME="<your-jdk-21-path>" explicitly.
+or set $env:JAVA_HOME="&lt;your-jdk-21-path&gt;" explicitly.
 Note: java.version=17 is the bytecode TARGET (major version 61); you do NOT need to install JDK 17.</message>
                                 </requireJavaVersion>
                             </rules>
