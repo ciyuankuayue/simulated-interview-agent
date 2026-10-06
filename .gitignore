@@ -71,5 +71,6 @@ docs/handoff.md
 docs/tasks.md
 docs/l3-comparison.md
 docs/test-acceptance-checklist.html
-# 过程记录性文档（踩坑/复盘，本地阅读用，不纳入版本库）
+# 过程记录性文档（踩坑/复盘/迭代计划，本地阅读用，不纳入版本库）
 docs/deployment-pitfalls.md
+docs/r2-iteration-plan.md
