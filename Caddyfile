@@ -1,0 +1,16 @@
+# ============ 备案期间：用 IP 直接访问（HTTP，无需域名/证书）============
+# 此时 .env 里 DOMAIN 留空即可，Caddy 只监听 80。
+:80 {
+    encode gzip
+    reverse_proxy app:8080
+}
+
+# ============ 备案完成后切换 ============
+# 1) 把 .env 里的 DOMAIN / ACME_EMAIL 填好（DOMAIN 的 A 记录已指向服务器公网 IP）
+# 2) 注释掉上面的 :80 块，取消下面块的注释
+# 3) 重启 caddy：docker compose -f docker-compose.prod.yml restart caddy
+# Caddy 会自动向 Let's Encrypt 申请并续期 HTTPS 证书。
+# {$DOMAIN} {
+#     encode gzip
+#     reverse_proxy app:8080
+# }
