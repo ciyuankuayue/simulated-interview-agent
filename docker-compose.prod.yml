@@ -15,6 +15,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DATABASE: mock_interview
+      MYSQL_ROOT_HOST: "%"                # 镜像初始化时建 root@%，否则默认只建 root@localhost，Docker 网段连库报 Host not allowed
       MYSQL_PWD: ${MYSQL_PASSWORD}        # 供 healthcheck 的 mysqladmin 读取，避免密码明文进命令行
     volumes:
       - mysql_data:/var/lib/mysql
