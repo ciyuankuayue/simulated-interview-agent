@@ -124,9 +124,13 @@ public class InterviewOrchestrator {
 
         // R7：出题祈使句唯一来源是当前角色的 questionTask()（行为角色不得出现「紧扣 JD 考点」），
         // JD/资料片段只作上下文框架，禁止在角色任务句之外再叠加写死的出题指令。
+        // C4：解析领域信号 + 构造领域约束，注入首题（取代写死在 persona 的「Java 后端」）
+        String domain = resolveDomain(jd);
+        String domainDirective = buildDomainDirective(domain, jd.getRawText(), context);
         String firstQuestion = llm.followUp(roles.get(0).systemPrompt(),
                 "岗位 JD：\n" + nullToEmpty(jd.getRawText())
                         + "\n\n候选人的资料片段（可能为空）：\n" + context
+                        + "\n\n" + domainDirective
                         + "\n\n" + roles.get(0).questionTask()).content();
 
         InterviewTurn first = newTurn(session, 1, 0, firstQuestion, toJson(refs));
@@ -201,9 +205,13 @@ public class InterviewOrchestrator {
         if (sr != null && sr.score() < 8 && askedLayer < target) {
             String followup = sr.followup();
             if (followup == null || followup.isBlank()) {
+                String domain = resolveDomain(session.getJdProfile());
+                String followupDirective = buildDomainDirective(domain,
+                        session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText()), null);
                 try {
                     followup = llm.followUp(currentRole(session, turns).systemPrompt(),
                             "题目：" + current.getQuestion() + "\n候选人的回答：" + answer
+                                    + "\n" + followupDirective
                                     + "\n请就这个回答再追一层 why（一句话，只输出追问本身）").content();
                 } catch (QuotaExhaustedException | IllegalStateException e) {
                     throw e;
@@ -255,8 +263,11 @@ public class InterviewOrchestrator {
         // R7：后续主问题同样用角色自己的任务句（已问列表承担「不要重复」语义）。
         String question;
         try {
+            String domain = resolveDomain(session.getJdProfile());
+            String domainDirective = buildDomainDirective(domain, jdText, null);
             question = llm.followUp(nextRole.systemPrompt(),
                     "岗位 JD：\n" + jdText + "\n\n已经问过的问题（不要重复）：\n" + asked
+                            + "\n\n" + domainDirective
                             + "\n\n" + nextRole.questionTask()).content();
         } catch (QuotaExhaustedException | IllegalStateException e) {
             // 402/409：不降级为 QUESTION_FAILED，直接打断（start/answer HTTP 由全局 handler 映射 402/409）
@@ -519,6 +530,51 @@ public class InterviewOrchestrator {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // ---------- C4 领域去硬编码（S1 / S2 / S3） ----------
+
+    /** C4 S2：解析本场领域信号——优先用 JD 已填的 jobType，否则从 JD 文本轻量推断。 */
+    private String resolveDomain(JdProfile jd) {
+        if (jd == null) {
+            return null;
+        }
+        if (jd.getJobType() != null && !jd.getJobType().isBlank()) {
+            return jd.getJobType();
+        }
+        return DomainInference.infer(jd.getRawText(), "").orElse(null);
+    }
+
+    /**
+     * C4 S3：领域约束指令——有领域则要求贴合；无实质资料则显式禁止假设固定技术栈。
+     * 关键：JD=1111 / 简历=2222 这类无意义输入会落入「jdEmpty && ctxEmpty」分支，
+     * 显式禁止默认 Java 后端，而不是 fail-open 到写死的人格。
+     */
+    private String buildDomainDirective(String domain, String jdText, String context) {
+        boolean jdEmpty = jdText == null || jdText.isBlank() || isMeaningless(jdText);
+        boolean ctxEmpty = context == null || context.isBlank();
+        if (domain != null && !domain.isBlank()) {
+            return "【领域约束】目标岗位方向：" + domain + "。请严格贴合该领域出题与追问，"
+                    + "不得套用 Java 后端等固定假设。";
+        }
+        if (jdEmpty && ctxEmpty) {
+            return "【领域约束】用户未提供有效 JD 或资料。严禁假设任何特定技术栈或岗位方向"
+                    + "（尤其不得默认 Java 后端），请只出通用计算机软件工程基础题。";
+        }
+        return "【领域约束】目标岗位方向以用户提供的 JD/资料为准，请严格贴合其中提到的领域出题，"
+                + "不得套用 Java 后端等固定假设。";
+    }
+
+    /** 判定 JD 是否为无意义输入（过短 / 纯数字或标点）。用于 C4 S3 空 JD 防御。 */
+    private static boolean isMeaningless(String text) {
+        String t = text.trim();
+        if (t.length() < 8) {
+            return true;
+        }
+        if (t.matches("[0-9\\s\\p{P}]+")) {
+            return true;
+        }
+        return false;
     }
 
     private static String nullToEmpty(String s) {

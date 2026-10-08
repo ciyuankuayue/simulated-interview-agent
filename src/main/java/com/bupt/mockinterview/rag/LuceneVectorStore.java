@@ -1,12 +1,19 @@
 package com.bupt.mockinterview.rag;
 
 import jakarta.annotation.PreDestroy;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.cjk.CJKAnalyzer;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.KnnVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexWriter;
@@ -31,7 +38,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -67,7 +77,11 @@ public class LuceneVectorStore implements VectorStore, AutoCloseable {
     static final String FIELD_SOURCE_ID = "sourceId";
     static final String FIELD_CHUNK_IDX = "chunkIdx";
     static final String FIELD_CONTENT = "content";
+    static final String FIELD_CONTENT_TEXT = "contentText";
     static final String FIELD_VEC = "vec";
+
+    /** 中文分词器（bigram），用于 contentText 字段的 BM25 索引与查询分词；StandardAnalyzer 对中文是单字切分。 */
+    private static final Analyzer CJK = new CJKAnalyzer();
 
     private final int dim;
     private final Path dir;
@@ -139,7 +153,11 @@ public class LuceneVectorStore implements VectorStore, AutoCloseable {
     }
 
     private IndexWriterConfig newWriterConfig() {
-        IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
+        // contentText 走 CJK 分词做 BM25；其余字段（userId/source 等均为 StringField，不参与分词）用 StandardAnalyzer。
+        Map<String, Analyzer> fieldAnalyzers = new HashMap<>();
+        fieldAnalyzers.put(FIELD_CONTENT_TEXT, CJK);
+        Analyzer analyzer = new PerFieldAnalyzerWrapper(new StandardAnalyzer(), fieldAnalyzers);
+        IndexWriterConfig cfg = new IndexWriterConfig(analyzer);
         // 显式 CREATE_OR_APPEND：目录有旧索引就追加，没有才新建，绝不 CREATE（误清空）。
         cfg.setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
         return cfg;
@@ -340,6 +358,99 @@ public class LuceneVectorStore implements VectorStore, AutoCloseable {
         }
     }
 
+    // —— 检索扩展：BM25 全文检索 + 混合 RRF 融合（RAG 评测 / 召回优化用，不破坏现有 search） ——
+
+    /**
+     * BM25 全文检索：查询经 CJK 分词后布尔 OR，userId 作为 {@code FILTER} 下推（不参与打分，仅过滤）。
+     * 与 {@link #search} 互补——向量擅长语义近义，BM25 擅长中文技术专有名词精确命中。
+     */
+    public List<KnowledgeChunk.ScoredChunk> searchKeyword(Long userId, String query, int topK) {
+        if (topK <= 0 || query == null || query.isBlank()) {
+            return List.of();
+        }
+        IndexSearcher s;
+        int total;
+        synchronized (readMonitor) {
+            s = this.searcher;
+            total = reader.numDocs();
+        }
+        if (total == 0) {
+            return List.of();
+        }
+        List<String> tokens = analyze(query);
+        if (tokens.isEmpty()) {
+            return List.of();
+        }
+        BooleanQuery.Builder kw = new BooleanQuery.Builder();
+        for (String t : tokens) {
+            kw.add(new TermQuery(new Term(FIELD_CONTENT_TEXT, t)), BooleanClause.Occur.SHOULD);
+        }
+        BooleanQuery.Builder b = new BooleanQuery.Builder();
+        b.add(kw.build(), BooleanClause.Occur.MUST);
+        if (userId != null) {
+            b.add(new TermQuery(new Term(FIELD_USER_ID, String.valueOf(userId))), BooleanClause.Occur.FILTER);
+        }
+        int n = Math.max(1, Math.min(topK, total));
+        try {
+            TopDocs top = s.search(b.build(), n);
+            List<KnowledgeChunk.ScoredChunk> out = new ArrayList<>(top.scoreDocs.length);
+            for (ScoreDoc sd : top.scoreDocs) {
+                Document d = s.doc(sd.doc);
+                out.add(new KnowledgeChunk.ScoredChunk(toChunk(d), sd.score));
+            }
+            return out;
+        } catch (IOException e) {
+            throw new IllegalStateException("BM25 检索失败", e);
+        }
+    }
+
+    /** 混合检索：向量 topN + BM25 topN 经 RRF 融合（k 默认 60）。返回融合后 topK。 */
+    public List<KnowledgeChunk.ScoredChunk> searchHybrid(Long userId, float[] queryVec, String query, int topK) {
+        return searchHybrid(userId, queryVec, query, topK, 60);
+    }
+
+    public List<KnowledgeChunk.ScoredChunk> searchHybrid(Long userId, float[] queryVec, String query, int topK, int k) {
+        if (topK <= 0) {
+            return List.of();
+        }
+        int n = Math.max(topK * 3, 30);
+        Map<String, Double> fused = new LinkedHashMap<>();
+        Map<String, KnowledgeChunk> byId = new HashMap<>();
+        List<KnowledgeChunk.ScoredChunk> v = search(userId, queryVec, n);
+        for (int i = 0; i < v.size(); i++) {
+            String id = v.get(i).chunk().id();
+            fused.merge(id, 1.0 / (k + i + 1), Double::sum);
+            byId.putIfAbsent(id, v.get(i).chunk());
+        }
+        List<KnowledgeChunk.ScoredChunk> bm = searchKeyword(userId, query, n);
+        for (int i = 0; i < bm.size(); i++) {
+            String id = bm.get(i).chunk().id();
+            fused.merge(id, 1.0 / (k + i + 1), Double::sum);
+            byId.putIfAbsent(id, bm.get(i).chunk());
+        }
+        return fused.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(topK)
+                .map(e -> new KnowledgeChunk.ScoredChunk(byId.get(e.getKey()), e.getValue()))
+                .toList();
+    }
+
+    /** 用 CJKAnalyzer 把查询文本切成词项（与索引端同分析器，保证 BM25 命中）。 */
+    private List<String> analyze(String text) {
+        List<String> out = new ArrayList<>();
+        try (TokenStream ts = CJK.tokenStream(FIELD_CONTENT_TEXT, text)) {
+            CharTermAttribute cat = ts.addAttribute(CharTermAttribute.class);
+            ts.reset();
+            while (ts.incrementToken()) {
+                out.add(cat.toString());
+            }
+            ts.end();
+        } catch (IOException e) {
+            throw new IllegalStateException("查询分词失败", e);
+        }
+        return out;
+    }
+
     private Document toDocument(KnowledgeChunk c) {
         Document d = new Document();
         d.add(new StringField(FIELD_ID, c.id(), StringField.Store.YES));
@@ -349,6 +460,8 @@ public class LuceneVectorStore implements VectorStore, AutoCloseable {
         d.add(new StringField(FIELD_SOURCE_TYPE, c.sourceType(), StringField.Store.YES));
         d.add(new StringField(FIELD_SOURCE_ID, c.sourceId(), StringField.Store.YES));
         d.add(new IntPoint(FIELD_CHUNK_IDX, parseChunkIdx(c.id())));
+        // contentText：BM25 全文检索用，走 CJK 分词（不存原文，省空间）；content 仍作 StoredField 供结果回放。
+        d.add(new TextField(FIELD_CONTENT_TEXT, c.content(), Field.Store.NO));
         d.add(new StoredField(FIELD_CONTENT, c.content()));
         // 向量不做 StoredField（检索结果不需要回放向量，省空间）；读取侧 embedding=null。
         d.add(new KnnVectorField(FIELD_VEC, fitAndNormalize(c.embedding())));

@@ -58,7 +58,7 @@ public class LlmService implements LlmPort {
 
     /** 判分 system prompt：4 维 × 0-2 分 = 0-8（domain.md §4），强制纯 JSON 输出。 */
     private static final String SCORE_SYSTEM = """
-            你是资深 Java 后端面试官，负责为候选人对一道面试题的回答打分。
+            你是资深技术面试官，负责为候选人对一道面试题的回答打分。
             评分共 4 个维度，每维 0-2 分，总分 0-8：正确性、完整性、深度、实证。
             只输出 JSON，不要任何多余文字，不要 markdown 代码块。格式：
             {"score": 0到8的整数,

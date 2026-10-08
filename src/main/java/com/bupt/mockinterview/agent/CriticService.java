@@ -28,7 +28,7 @@ import java.util.Map;
 public class CriticService {
 
     private static final String SYSTEM = """
-            你是资深 Java 后端面试教练。现在面试已结束，请基于全部轮次的问答出一份复盘报告。
+            你是资深面试教练。现在面试已结束，请基于全部轮次的问答出一份复盘报告。
             要求：
             1. 逐轮给出：讲解（这个知识点到底怎么回事）、纠正（答错/答偏在哪）、
                知识补充（该展开但没展开的）、示范回答（一段可直接背的回答，精炼不省关键）。
@@ -160,6 +160,10 @@ public class CriticService {
     private String buildUserPrompt(String jdText, List<TurnBrief> turns) {
         StringBuilder sb = new StringBuilder();
         sb.append("岗位 JD：\n").append(jdText == null ? "(无)" : jdText).append("\n\n全部问答：\n");
+        // C4 S2：把识别出的领域作为约束注入 Critic，避免报告默认偏 Java 后端
+        DomainInference.infer(jdText, null).ifPresent(d ->
+                sb.append("【领域约束】本场目标岗位方向：").append(d)
+                        .append("，复盘请贴合该领域，不得套用 Java 后端等固定假设。\n\n"));
         for (TurnBrief t : turns) {
             sb.append("[turn ").append(t.turnSeq()).append(" | 得分 ").append(t.score());
             if ("behavior".equals(t.track())) {

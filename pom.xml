@@ -138,7 +138,8 @@
             <artifactId>lucene-core</artifactId>
             <version>9.12.3</version>
         </dependency>
-        <!-- IndexWriterConfig() 默认用 StandardAnalyzer，它不在 lucene-core 而在本模块，需显式引入 -->
+        <!-- IndexWriterConfig() 默认用 StandardAnalyzer，它不在 lucene-core 而在本模块，需显式引入。
+             CJKAnalyzer / PerFieldAnalyzerWrapper 也在本模块内（org.apache.lucene.analysis.cjk / .analysis） -->
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-analysis-common</artifactId>

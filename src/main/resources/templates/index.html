@@ -87,8 +87,8 @@
             <!-- R3-2 对话模型入口已移至面试区回答输入框右下角（chatProviderMenu），设置区不再重复展示 -->
 
             <div id="quotaLine" class="quotaLine">
-                Token 额度：<b id="quotaRemaining">—</b> / <span id="quotaTotal">—</span>
-                <small>（已用 <span id="quotaUsed">—</span>；平台模式对话与向量化按真实 token 扣，自带 Key 每次对话另扣 1 token 服务费）</small>
+                积分：<b id="quotaRemaining">—</b> / <span id="quotaTotal">—</span>
+                <small>（已用 <span id="quotaUsed">—</span>；50 万 token = 1000 积分，平台对话与资料向量化按积分扣，自带 Key 每次对话另扣少量服务费）</small>
             </div>
 
             <!-- BYOK：保存/更换自带 key；仅 DeepSeek，embedding 永远走平台 -->
@@ -235,9 +235,9 @@
 <!-- ======================= Token 额度耗尽弹窗（R2：前置拦截 + 服务端 402 兜底，唯一动作=联系管理员充值） ======================= -->
 <div id="quotaModal" class="auth-overlay" hidden>
     <div class="auth-card quota-card" role="dialog" aria-modal="true" aria-labelledby="quotaTitle">
-        <h2 id="quotaTitle" class="authTitle">Token 额度已用完</h2>
-        <p id="quotaModalMsg" class="quota-msg">上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗 Token。请联系管理员为账号充值后继续。</p>
-        <p class="quota-sub">账号 <b id="quotaModalUser">—</b> · 当前余额 <b id="quotaModalRemain">0</b> token</p>
+        <h2 id="quotaTitle" class="authTitle">积分已用完</h2>
+        <p id="quotaModalMsg" class="quota-msg">上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗积分。请联系管理员为账号充值后继续。</p>
+        <p class="quota-sub">账号 <b id="quotaModalUser">—</b> · 当前余额 <b id="quotaModalRemain">0</b> 积分</p>
         <button type="button" id="btnQuotaOk" class="primary big">我知道了</button>
     </div>
 </div>

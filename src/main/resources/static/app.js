@@ -805,7 +805,7 @@
                 closeProviderMenu();
                 try {
                     await api('/api/user/settings', 'PUT', { chatProvider: value });
-                    tip(value === 'QWEN' ? '已切换为通义千问（走平台 key，按真实 token 扣）' : '已切换为 DeepSeek');
+                    tip(value === 'QWEN' ? '已切换为通义千问（走平台 key，按积分扣）' : '已切换为 DeepSeek');
                     await loadUserSettings();
                 } catch (err) {
                     tip(err.message, true);
@@ -929,12 +929,22 @@
         return String(n);
     }
 
-    /** 只重绘额度行（字段：R2 token 语义 totalTokens/usedTokens/remainingTokens）。 */
+    /**
+     * 积分换算（仅前端展示，后端仍以 token 记账）：1 积分 = 500 token（50 万 token = 1000 积分）。
+     * points 量级小（通常几百~几千），不套用「万」逻辑；整数去 .0，带小数保留 1 位并加千位分隔。
+     */
+    function formatPoints(tokens) {
+        const pts = (Number(tokens) || 0) / 500;
+        const rounded = Math.round(pts * 10) / 10;
+        return rounded.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
+    }
+
+    /** 只重绘额度行（字段：R2 token 语义 totalTokens/usedTokens/remainingTokens，前端换算为积分展示）。 */
     function renderQuota(quota) {
         state.quota = quota;  // 缓存给前置拦截用；null/异常时不更新（避免误判耗尽放行）
-        $('quotaRemaining').textContent = formatTokens(quota.remainingTokens);
-        $('quotaTotal').textContent = formatTokens(quota.totalTokens);
-        $('quotaUsed').textContent = formatTokens(quota.usedTokens);
+        $('quotaRemaining').textContent = formatPoints(quota.remainingTokens);
+        $('quotaTotal').textContent = formatPoints(quota.totalTokens);
+        $('quotaUsed').textContent = formatPoints(quota.usedTokens);
     }
 
     /**
@@ -949,9 +959,9 @@
     /** 弹出额度耗尽提示窗；serverMessage 为服务端 402 文案时原样展示，否则用默认引导。 */
     function showQuotaModal(serverMessage) {
         $('quotaModalUser').textContent = state.username || '—';
-        $('quotaModalRemain').textContent = state.quota ? formatTokens(state.quota.remainingTokens) : '0';
+        $('quotaModalRemain').textContent = state.quota ? formatPoints(state.quota.remainingTokens) : '0';
         $('quotaModalMsg').textContent = serverMessage
-            || '上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗 Token。请联系管理员为账号充值后继续。';
+            || '上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗积分。请联系管理员为账号充值后继续。';
         $('quotaModal').hidden = false;
     }
 
