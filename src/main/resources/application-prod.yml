@@ -1,0 +1,57 @@
+# R2-T0 D4 生产 profile（docker-compose.prod.yml 默认激活）：
+#   MySQL 8 + ddl-auto:none + Flyway 增量迁移 + 租户 strict fail-closed + 密钥/管理员 env 化。
+# 与 mysql profile 的区别：mysql 是本地连 Docker MySQL 的开发形态（ddl-auto:update、非 strict、
+# 不跑 Flyway）；prod 是一切安全开关打满的部署形态。
+#
+# 【全新空库首部署流程】（V1-V3 时代表结构由 Hibernate update 维护，仓库无全量建表脚本）：
+#   1) 先用 mysql profile 启动一次让 Hibernate 按实体建全表（含 tenant_id 可空列）：
+#        docker compose -f docker-compose.prod.yml --env-file .env run -e SPRING_PROFILES_ACTIVE=mysql --rm app
+#      （看到 Started 日志即可 Ctrl 停止；或本机 $env:SPRING_PROFILES_ACTIVE="mysql" 跑一次）
+#   2) 再以默认 prod profile 正常启动：Flyway 打基线 3 后执行 V4（脚本幂等，
+#      列已存在则只补 NOT NULL/索引），此后 schema 增量只走 Vn 脚本，Hibernate 不再改表。
+# 【存量库升级】（此前用 mysql profile update 维护、尚无 tenant_id）：直接以 prod 启动，
+#   Flyway baseline 3 → V4 四段式（加列→用 user_id 回填→NOT NULL→索引）。上线前先备份。
+
+spring:
+  datasource:
+    # 不带 createDatabaseIfNotExist：库由 mysql 容器的 MYSQL_DATABASE 预建，缺失应显式失败而非隐式创建。
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/mock_interview?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: ${MYSQL_USER:root}
+    # 无默认值：忘配 MYSQL_PASSWORD 时占位解析直接失败（fail-fast），杜绝空密码连库。
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none              # 生产禁止 Hibernate 改表；schema 只由 Flyway 脚本演进
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.MySQLDialect
+  flyway:
+    enabled: true
+    # 接入 Flyway 前的存量库一律视为基线（V1-V3 是 update 时代的手工补丁，不回补建表脚本），
+    # 从 V4 起由 Flyway 执行；历史不校验（V1-V3 与实体的细微差异不值得回填脚本）。
+    baseline-on-migrate: true
+    baseline-version: 3
+    validate-on-migrate: false
+
+jwt:
+  # 无默认值：缺失即启动失败；strict 下另由 JwtService 校验 ≥32 字节（双重 fail-fast）。
+  secret: ${JWT_SECRET}
+
+app:
+  tenant:
+    # 生产 fail-closed：任何无 TenantContext 的查询/写入直接抛异常，不回退兜底租户。
+    strict: true
+  rag:
+    # 生产绝不因「启动时资料表为空」清空持久向量索引（防卷挂载错误导致全量重建）。
+    clean-on-empty-sources: false
+  security:
+    # 无默认值：缺失即启动失败；UserKeyCipher strict 再校验一道。
+    data-key: ${APP_DATA_KEY}
+    # 平台 ADMIN 唯一产生方式（D3）：env 引导。username 空=本次不引导（启动 WARN）。
+    # 首建时 password 空则生成随机密码并在启动日志 WARN 回显一次。
+    bootstrap-admin:
+      username: ${BOOTSTRAP_ADMIN_USERNAME:}
+      password: ${BOOTSTRAP_ADMIN_PASSWORD:}

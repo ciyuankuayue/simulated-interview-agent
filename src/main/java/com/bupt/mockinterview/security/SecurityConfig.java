@@ -13,7 +13,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * 鉴权走手写的 {@link JwtAuthFilter}（R1-3 起为唯一门禁；旧 VaultAccessFilter 已删除）。
  */
 @Configuration
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({JwtProperties.class, BootstrapAdminProperties.class})
 public class SecurityConfig {
 
     @Bean

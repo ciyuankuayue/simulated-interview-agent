@@ -55,7 +55,10 @@ services:
       redis:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: mysql
+      # 默认 prod（ddl-auto:none + Flyway + strict + 密钥 fail-fast，见 application-prod.yml）。
+      # 全新空库首部署需先用 mysql profile 建一次表：
+      #   docker compose -f docker-compose.prod.yml --env-file .env run -e SPRING_PROFILES_ACTIVE=mysql --rm app
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
       MYSQL_HOST: mysql
       MYSQL_PORT: "3306"
       MYSQL_USER: root
@@ -66,6 +69,9 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
       APP_DATA_KEY: ${APP_DATA_KEY}
+      # R2-T0 D3：平台 ADMIN env 引导（ADMIN 的唯一产生方式；都留空则本次启动不引导）。
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       APP_RAG_INDEX_DIR: /app/data/rag-index
       # 4核4G 机器：JVM 锁 768M，给 mysql/redis/系统留足余量；2G 机器再调小
       JAVA_TOOL_OPTIONS: -Xmx768m -Xms512m -XX:+UseG1GC

@@ -2,8 +2,8 @@ package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.User;
-import com.bupt.mockinterview.domain.UserRole;
 import com.bupt.mockinterview.domain.repository.UserRepository;
+import com.bupt.mockinterview.security.CurrentTenantResolver;
 import com.bupt.mockinterview.security.JwtService;
 import com.bupt.mockinterview.security.TenantContext;
 import jakarta.validation.Valid;
@@ -12,7 +12,6 @@ import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -30,59 +29,64 @@ public class AuthController {
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
-    private final QuotaService quotaService;
+    private final RegistrationService registrationService;
 
     public AuthController(UserRepository userRepo, PasswordEncoder passwordEncoder,
-                          JwtService jwtService, QuotaService quotaService) {
+                          JwtService jwtService, RegistrationService registrationService) {
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
-        this.quotaService = quotaService;
+        this.registrationService = registrationService;
     }
 
-    /** 注册新用户 → 自动签发 JWT。库中首个账号为 ADMIN（全新部署引导注册）；并赠送服务点数。 */
+    /**
+     * 注册新用户（恒 USER）→ 自动签发 JWT；并赠送服务点数。ADMIN 仅由 env 引导器产生。
+     * <p>
+     * 白名单无身份路径的租户/事务三段式（系统租户开壳 → 用户行独立提交 → 赠额以本人租户
+     * 新 Session 落库）收口在 {@link RegistrationService}，docs/domain.md §9 有完整规约。
+     * controller 只负责：进入前置系统租户、异常→HTTP 映射、签发 token、finally 清上下文。
+     */
     @PostMapping("/register")
-    @Transactional
     public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest req) {
-        if (userRepo.existsByUsername(req.username)) {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("code", "USERNAME_TAKEN");
-            body.put("message", "用户名已被占用");
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
-        }
-
-        User user = new User(req.username, passwordEncoder.encode(req.password));
-        // 全新库的第一个注册者 = 管理员；其余均普通用户
-        if (userRepo.count() == 0) {
-            user.setRole(UserRole.ADMIN);
-        }
-        userRepo.save(user);
-        // 注册即建额度并赠送点数（同事务，失败整体回滚）。
-        // R2-T0：register 在 JWT 白名单内、请求线程无 TenantContext，必须显式设置新用户租户，
-        // 否则 Quota 行会落到兜底租户，用户登录后查不到自己的额度。
-        TenantContext.set(user.getId());
+        TenantContext.set(CurrentTenantResolver.FALLBACK_TENANT_ID);
         try {
-            quotaService.grantForNewUser(user);
+            User user;
+            try {
+                user = registrationService.registerNewUser(req.username, req.password);
+            } catch (RegistrationService.UsernameTakenException e) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("code", "USERNAME_TAKEN");
+                body.put("message", "用户名已被占用");
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+            }
+
+            String token = jwtService.generateToken(user.getId(), user.getUsername());
+            return ResponseEntity.status(HttpStatus.CREATED).body(responseOf(user, token));
         } finally {
             TenantContext.clear();
         }
-
-        String token = jwtService.generateToken(user.getId(), user.getUsername());
-        return ResponseEntity.status(HttpStatus.CREATED).body(responseOf(user, token));
     }
 
-    /** 登录 → 换取 JWT。 */
+    /**
+     * 登录 → 换取 JWT。白名单无身份路径：同样先 set 系统租户 0L，否则 strict 下 Session
+     * 创建即 fail-closed。只查不分区的 app_user，不碰任何分区表。
+     */
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody LoginRequest req) {
-        User user = userRepo.findByUsername(req.username).orElse(null);
-        if (user == null || !passwordEncoder.matches(req.password, user.getPasswordHash())) {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("code", "INVALID_CREDENTIALS");
-            body.put("message", "用户名或密码错误");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+        TenantContext.set(CurrentTenantResolver.FALLBACK_TENANT_ID);
+        try {
+            User user = userRepo.findByUsername(req.username).orElse(null);
+            if (user == null || !passwordEncoder.matches(req.password, user.getPasswordHash())) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("code", "INVALID_CREDENTIALS");
+                body.put("message", "用户名或密码错误");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+            }
+            String token = jwtService.generateToken(user.getId(), user.getUsername());
+            return ResponseEntity.ok(responseOf(user, token));
+        } finally {
+            TenantContext.clear();
         }
-        String token = jwtService.generateToken(user.getId(), user.getUsername());
-        return ResponseEntity.ok(responseOf(user, token));
     }
 
     /** 登出（无状态，客户端扔掉 token 即可；保留接口供前端调用）。 */

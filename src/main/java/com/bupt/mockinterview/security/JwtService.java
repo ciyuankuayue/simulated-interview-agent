@@ -5,6 +5,7 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.SecretKey;
@@ -32,9 +33,25 @@ public class JwtService {
     private final SecretKey key;
     private final long expiryMs;
 
+    /** 测试/非 strict 便捷构造：缺密钥走 dev 临时密钥路径。 */
     public JwtService(JwtProperties props) {
+        this(props, new TenantProperties(false));
+    }
+
+    /**
+     * 容器主构造。strict（prod profile）下密钥硬性（R2-T0 D4/C2 fail-fast）：
+     * 未配置或 UTF-8 不足 32 字节直接抛 {@link IllegalStateException} 终止启动，
+     * 不再零填充/临时密钥；非 strict 保留 dev 便利（临时随机密钥 / 零填充 + WARN）。
+     */
+    @Autowired
+    public JwtService(JwtProperties props, TenantProperties tenantProperties) {
         String secret = props.getSecret();
+        boolean strict = tenantProperties.isStrict();
         if (secret == null || secret.isBlank()) {
+            if (strict) {
+                throw new IllegalStateException(
+                        "JWT_SECRET 未配置：prod(strict) 模式禁止使用临时 JWT 密钥，请设置至少 32 字节的 JWT_SECRET");
+            }
             // 开发便利：自动生成 32 字节密钥，Base64URL 编码
             byte[] bytes = new byte[32];
             new SecureRandom().nextBytes(bytes);
@@ -44,6 +61,11 @@ public class JwtService {
         }
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
+            if (strict) {
+                throw new IllegalStateException(
+                        "JWT_SECRET 不足 32 字节（实际 " + keyBytes.length + " 字节）："
+                                + "prod(strict) 模式禁止零填充，请设置至少 32 字节的强密钥");
+            }
             // HMAC-SHA256 要求至少 32 字节
             byte[] padded = new byte[32];
             System.arraycopy(keyBytes, 0, padded, 0, Math.min(keyBytes.length, 32));

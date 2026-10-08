@@ -10,7 +10,7 @@
 - 鉴权（R1-1 多用户，R1-3 统一形态）：
   - **JWT 令牌**：`POST /api/auth/login` 返回 `{ token }`；所有业务接口（除 §2 的 auth 白名单）必须带 `Authorization: Bearer <token>`（HTTP 头）。SSE 的 EventSource 无法设头，允许 query 参数 `?jwt=<token>`（优先级：header > query）。
   - 缺失/失效/过期 → **401** `{code:"UNAUTHORIZED",message:"请先登录"}`。
-  - 令牌结构：`{ sub: userId, username, exp: 24h }`，密钥配环境变量 `JWT_SECRET`（空则启动时自动生成临时密钥，仅开发便利）。
+  - 令牌结构：`{ sub: userId, username, tid: tenantId, exp: 24h }`（R2-T0 起含 `tid` 租户标识，MVP 与 userId 同值；无 `tid` 的旧令牌以 `sub` 派生，向后兼容），密钥配环境变量 `JWT_SECRET`（prod profile 缺失或不足 32 字节直接启动失败；dev/test 空则启动时自动生成临时密钥）。
   - **R1-3 起只有 JWT 一道门禁**：T11/T12 的页面保险箱 / `X-Vault-Token` / VaultAccessFilter 已整体删除。能不能调 LLM 由用户的 key 模式（PLATFORM 平台 key / BYOK 自带 key）与额度决定（见 §7），不再有第二枚令牌。
   - **auth 白名单**：`POST /api/auth/register`、`POST /api/auth/login` 不放令牌。
 - 时间：ISO-8601 字符串
@@ -26,7 +26,8 @@
 - `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
 - `password`：≥6 字符，BCrypt 加密存储
 - resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
-- **R1-3/R2 附带效果**：库中**第一个注册账号** role=ADMIN（其后均 USER）；同时为该用户创建 quota 并赠送 token 额度（`app.quota.signup-bonus-tokens`，默认 500000）；新用户 key_mode=PLATFORM。
+- **R2-T0 起注册恒为 role=USER**（「首个注册者=ADMIN」规则已删除——任何公开注册都拿不到管理员，杜绝抢注首个账号）；同时为该用户创建 quota 并赠送 token 额度（`app.quota.signup-bonus-tokens`，默认 500000）；新用户 key_mode=PLATFORM。
+- **ADMIN 的唯一产生方式：env 引导器**（不开放任何 HTTP 接口）。启动时配置 `app.security.bootstrap-admin.username` / `password`（env `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`）：用户不存在则建 ADMIN（BCrypt + 赠额度）；已存在（含原 USER）则幂等升级为 ADMIN 并按配置更新密码、不重建额度；只配 username 不配 password 时首建生成随机密码并 WARN 回显一次；两项都不配则跳过（仅 WARN 指引，不影响启动）。
 - HTTP 201 Created
 
 ### POST /api/auth/login

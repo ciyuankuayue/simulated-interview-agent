@@ -274,6 +274,7 @@
 - 手写 user 谓词的方法（`findByUser`/`findByIdAndUserId`/`countByUserId` 等）**全部保留**：自动租户谓词 + 显式 user 谓词双保险，不列入收敛清单。
 - **【批 1 spike 实证缺口 1】`em.find`/裸 `findById(id)` 不带租户谓词**（hibernate-core 6.5.3，按 id 直取不走 SQM）：对 13 张分区表**禁止**使用 `JpaRepository.findById/getById/getReferenceById/findAllById/existsById/deleteById` 与 `EntityManager.find`；按 id 取数一律走 `findByIdAndUserId`/`existsByIdAndUserId` 这类 JPQL 作用域方法（代码审查清单项）。现状生产代码已全部符合，User（不分区）唯一例外。
 - **【批 1 spike 实证缺口 2】租户标识在 Session/事务开启时只解析一次**：必须**先 set TenantContext、后开事务**；在已开启的事务内 set 不生效。新线程/异步线程不继承 ThreadLocal，必须显式 carry（当前无 @Async；批 3 起若 broker 异步线程触达检索，交付线程必须显式 carry）。
+- **【批 2 实证缺口 3】`REQUIRES_NEW` 仅当当前存在活动事务时才挂起旧 Session 并新建物理 Session；无活动事务时直接复用 OSIV 在请求 filter/interceptor 阶段已绑定的物理 Session**（其租户在进入 controller 前已固定）。即「先 set 新租户、再调 REQUIRES_NEW 方法」并不能保证新 Session——必须保证调用栈上有一个活动事务被挂起。注册链路初版因此踩坑：controller 无 `@Transactional` 时 grant 的 REQUIRES_NEW 复用了 filter 阶段以旧租户创建的 Session，ThreadLocal 已是新用户但 `session.getTenantIdentifier()` 仍是旧值。
 - **启动期门控**：Spring Data 仓储 Bean 创建期（派生查询构造校验）Hibernate 就会回调 resolver，此时无请求上下文。strict 只在 `ApplicationReadyEvent` 之后 fail-closed；就绪前一律回退兜底 0L（就绪后无真实流量，无放行窗口）。
 
 **TenantContext 与 root 哨兵**
@@ -285,7 +286,16 @@
 - strict（prod profile，`app.tenant.strict=true`）：上下文缺失时 resolver **直接抛异常 fail-closed**，不依赖 Hibernate 对 null 的默认行为。
 - 非 strict（dev/test）：上下文缺失回退固定兜底租户 **0L——是受过滤的普通租户**（查询仍带 `tenant_id=0`），不是 root。
 
-**入口传播**：JWT 新增 `tid` claim（=userId），`JwtAuthFilter` 同时填 UserContext/TenantContext；无 tid 的旧 token 取 `sub` 派生（签名有效即可信）。白名单内的 `/api/auth/register` 由 AuthController 在建赠额 Quota 前后显式 set/clear TenantContext。REQUIRES_NEW 同线程传播 ThreadLocal；当前无 @Async；SSE `/events` 只订阅内存事件不查库（SseBroker 不得持有任何 Repository/EntityManager/JdbcTemplate 字段）。
+**入口传播**：JWT 新增 `tid` claim（=userId），`JwtAuthFilter` 同时填 UserContext/TenantContext；无 tid 的旧 token 取 `sub` 派生（签名有效即可信）。白名单内的 register/login（无身份）由 controller 入口置系统租户 0L、finally clear；注册编排收口 `web/RegistrationService`（规约见下）。REQUIRES_NEW 同线程传播 ThreadLocal；当前无 @Async；SSE `/events` 只订阅内存事件不查库（SseBroker 不得持有任何 Repository/EntityManager/JdbcTemplate 字段）。
+
+**白名单无身份路径事务规约（批 2 锁定，register/未来任何匿名写路径照此办理）**
+1. controller 方法首行 `TenantContext.set(FALLBACK_TENANT_ID /*0L*/)`，finally `clear()`；方法本身**不加** `@Transactional`。
+2. service 壳方法 `@Transactional`（普通 REQUIRED）：首个 Session 由此在 0L 下创建，只做查重等不分区表访问。
+3. 写 `app_user`（不分区）走 `UserLifecycleService.insertUser`（**REQUIRES_NEW 独立提交**）——必须先独立提交，后续 quota 事务的外键约束才能看到这行用户。
+4. `TenantContext.set(新用户id)` 后调 `QuotaService.grantForNewUser`（**REQUIRES_NEW**）：壳事务是活动事务，挂起后才真的新建物理 Session，quota 行才落本人租户（缺口 3）。
+5. 赠额失败：以 `UserLifecycleService.deleteUser`（REQUIRES_NEW）补偿删用户后 rethrow，禁止留无额度孤儿账号；finally 把上下文恢复 0L。
+6. 登录同理入口置 0L：只查不分区的 `app_user`，strict 下也不会因 Session 在空上下文创建而 fail-closed。
+- **测试对应物**：此类真实提交的 E2E 测试（如 `RegisterQuotaTenantIntegrationTest`、批 2 改造后的 `UserIsolationTest`）**不得**类级 `@Transactional`——测试事务在方法开始前就以 TestTenantContextListener 的 testuser 租户固定 Session，会以错误租户读到独立提交的本人数据；无类事务时每个 MockMvc 请求的 OSIV Session 随 JWT tid 创建，才是生产口径。注册名须 UUID 化防跨方法撞名。
 
 **禁令**：新增 native SQL / JdbcTemplate 查询必须人审租户条件（现存仅探活 `select 1` 与 dev 启动四表 COUNT，不触租户数据）。向量侧隔离不走本节机制，沿用 §7 的 Lucene userId pre-filter（生产 strict 下 RagService 对 null userId fail-closed）。
 

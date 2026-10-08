@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -52,6 +53,30 @@ class UserKeyCipherTest {
         assertThatThrownBy(() -> b.decrypt(stored))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("解密失败");
+    }
+
+    @Test
+    void strict_missingDataKey_failsStartup() {
+        UserKeyCipher cipher = new UserKeyCipher("", new TenantProperties(true));
+        assertThatThrownBy(cipher::init)
+                .as("strict（prod）缺 APP_DATA_KEY 必须直接启动失败，不允许临时 KEK")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("APP_DATA_KEY");
+        UserKeyCipher blank = new UserKeyCipher("   ", new TenantProperties(true));
+        assertThatThrownBy(blank::init).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void strict_withValidKey_initsNormally() {
+        UserKeyCipher cipher = new UserKeyCipher(fixedKek(), new TenantProperties(true));
+        assertThatCode(cipher::init).doesNotThrowAnyException();
+    }
+
+    @Test
+    void nonStrict_missingDataKey_keepsDevConvenience() {
+        // 单参构造=非 strict：缺 key 走临时 KEK + WARN，旧行为不回归
+        UserKeyCipher cipher = new UserKeyCipher("");
+        assertThatCode(cipher::init).doesNotThrowAnyException();
     }
 
     @Test

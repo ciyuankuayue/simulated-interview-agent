@@ -11,7 +11,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
-import org.springframework.transaction.annotation.Transactional;
+
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -32,10 +33,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 4. B 访问 A 的 JD / Session → 404（ownership 验证）
  * 5. username 重复注册 → 409
  * 6. 错误密码登录 → 401
+ *
+ * <p>R2-T0 批 2 起：<b>不能</b>类级 {@code @Transactional}。注册/赠额走 REQUIRES_NEW
+ * 独立提交（quota.tenant_id=新用户本人），而测试事务的 Session 在方法开始前就以
+ * TestTenantContextListener 的 testuser 租户固定——同事务内会以错误租户查询真实提交的数据。
+ * 无类事务时每个 MockMvc 请求的 OSIV Session 随 JWT（tid=本人）创建，才是真实生产口径。
+ * 数据真实落库，故注册名全部 UUID 化，{@link DirtiesContext} 类后销毁 H2 内存库。
  */
 @SpringBootTest(properties = "app.auth.jwt-enabled=true")
 @AutoConfigureMockMvc
-@Transactional
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class UserIsolationTest {
 
@@ -46,20 +52,26 @@ class UserIsolationTest {
 
     private String tokenA;
     private String tokenB;
+    /** 每方法唯一：批 2 起用户行经 REQUIRES_NEW 独立事务提交（不再随类测试事务回滚）。 */
+    private String nameA;
+    private String nameB;
 
     @BeforeEach
     void setUp() throws Exception {
+        nameA = "alice-" + UUID.randomUUID().toString().substring(0, 8);
+        nameB = "bobby-" + UUID.randomUUID().toString().substring(0, 8);
+
         // 注册用户 A
         ResultActions regA = mvc.perform(post("/api/auth/register")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"username\":\"alice\",\"password\":\"alice123\"}"));
+                .content("{\"username\":\"" + nameA + "\",\"password\":\"alice123\"}"));
         assertThat(regA.andReturn().getResponse().getStatus()).isEqualTo(201);
         tokenA = extractToken(regA);
 
         // 注册用户 B
         ResultActions regB = mvc.perform(post("/api/auth/register")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"username\":\"bobby\",\"password\":\"bob12345\"}"));
+                .content("{\"username\":\"" + nameB + "\",\"password\":\"bob12345\"}"));
         assertThat(regB.andReturn().getResponse().getStatus()).isEqualTo(201);
         tokenB = extractToken(regB);
 
@@ -85,15 +97,16 @@ class UserIsolationTest {
 
     @Test
     void authWhitelist_noToken_allowed() throws Exception {
-        // register/login 不放 token 也能访问
+        // register/login 不放 token 也能访问（注册名需唯一：用户行独立提交不回滚）
+        String nameC = "charlie-" + UUID.randomUUID().toString().substring(0, 8);
         mvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"charlie\",\"password\":\"charlie123\"}"))
+                        .content("{\"username\":\"" + nameC + "\",\"password\":\"charlie123\"}"))
                 .andExpect(status().isCreated());
 
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"alice\",\"password\":\"alice123\"}"))
+                        .content("{\"username\":\"" + nameA + "\",\"password\":\"alice123\"}"))
                 .andExpect(status().isOk());
     }
 
@@ -103,7 +116,7 @@ class UserIsolationTest {
     void duplicateUsername_registerReturns409() throws Exception {
         mvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"alice\",\"password\":\"another123\"}"))
+                        .content("{\"username\":\"" + nameA + "\",\"password\":\"another123\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("USERNAME_TAKEN"));
     }
@@ -112,7 +125,7 @@ class UserIsolationTest {
     void wrongPassword_loginReturns401() throws Exception {
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"alice\",\"password\":\"wrongpassword\"}"))
+                        .content("{\"username\":\"" + nameA + "\",\"password\":\"wrongpassword\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"));
     }

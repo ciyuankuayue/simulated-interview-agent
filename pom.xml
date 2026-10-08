@@ -83,6 +83,18 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- R2-T0 D4：prod profile 用 Flyway 管 MySQL schema 增量（ddl-auto:none）。
+             flyway-mysql 是 MySQL 8 支持模块（Flyway 9+ 从 core 拆出）；版本由 Spring Boot BOM 管。
+             默认/mysql profile 显式 spring.flyway.enabled=false（H2 create-drop / 本地 update 不跑）。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
+
         <!-- T2：Redis（指纹去重 / 会话缓存；MVP 不引 RabbitMQ，决策 #11） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -44,7 +44,7 @@ public class User {
     @Column(nullable = false, name = "chat_provider", length = 16)
     private ChatProviderChoice chatProvider = ChatProviderChoice.DEEPSEEK;
 
-    /** 角色：库中首个注册账号 = ADMIN，其余 USER（R1-3 持久化，管理接口后续迭代）。 */
+    /** 角色：公开注册恒 USER（默认）；ADMIN 仅由 BootstrapAdminInitializer 经 env 引导（R2-T0 D3）。 */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     private UserRole role = UserRole.USER;

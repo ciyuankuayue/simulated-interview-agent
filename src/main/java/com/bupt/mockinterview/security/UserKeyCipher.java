@@ -3,6 +3,7 @@ package com.bupt.mockinterview.security;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -35,16 +36,34 @@ public class UserKeyCipher {
     private static final int KEY_BYTES = 32;
 
     private final String configuredKeyB64;
+    private final boolean strict;
     private final SecureRandom random = new SecureRandom();
     private SecretKeySpec kek;
 
-    public UserKeyCipher(@Value("${app.security.data-key:${APP_DATA_KEY:}}") String configuredKeyB64) {
+    /** 测试/非 strict 便捷构造：缺 KEK 走临时密钥 + WARN 路径。 */
+    public UserKeyCipher(String configuredKeyB64) {
+        this(configuredKeyB64, new TenantProperties(false));
+    }
+
+    /**
+     * 容器主构造。strict（prod）下 {@code APP_DATA_KEY} 缺失直接抛异常终止启动（R2-T0 D4）；
+     * 非 strict 保留临时 KEK 便利。
+     */
+    @Autowired
+    public UserKeyCipher(@Value("${app.security.data-key:${APP_DATA_KEY:}}") String configuredKeyB64,
+                         TenantProperties tenantProperties) {
         this.configuredKeyB64 = configuredKeyB64;
+        this.strict = tenantProperties.isStrict();
     }
 
     @PostConstruct
     void init() {
         if (configuredKeyB64 == null || configuredKeyB64.isBlank()) {
+            if (strict) {
+                throw new IllegalStateException(
+                        "APP_DATA_KEY 未配置：prod(strict) 模式禁止使用临时数据加密密钥，"
+                                + "请设置 Base64 编码 32 字节的 APP_DATA_KEY");
+            }
             byte[] raw = new byte[KEY_BYTES];
             random.nextBytes(raw);
             this.kek = new SecretKeySpec(raw, "AES");

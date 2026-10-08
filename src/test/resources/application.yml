@@ -1,4 +1,10 @@
 # 测试 profile：禁用 JWT（48 个旧测试全部无 JWT 断言）
+# 注意：本文件整体遮蔽 src/main/resources/application.yml（classpath 同名文件 test 优先），
+# 故主文件中关闭的 autoconfigure 开关在此也要显式关——Flyway 不得对 H2 跑 MySQL 方言脚本。
+spring:
+  flyway:
+    enabled: false
+
 app:
   auth:
     jwt-enabled: false

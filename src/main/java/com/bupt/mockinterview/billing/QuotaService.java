@@ -36,8 +36,16 @@ public class QuotaService {
         this.props = props;
     }
 
-    /** 注册事务内调用：为新用户建额度并赠送 token。 */
-    @Transactional
+    /**
+     * 为新用户建额度并赠送 token。
+     * <p>
+     * R2-T0：固定 REQUIRES_NEW——注册/引导是<b>无身份白名单路径</b>，其首个 Hibernate Session
+     * 必须在系统租户 0L 下创建（只操作不分区的 app_user）；调用方拿到新用户自增 id 并
+     * {@code TenantContext.set(userId)} 后调用本方法，挂起旧 Session/事务，在<b>新建物理
+     * Session</b> 中写入 quota（同一 Session 内租户只解析一次，事后改 ThreadLocal 无效）。
+     * 独立提交也意味着赠额失败需由调用方补偿删除用户（见 AuthController.register）。
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Quota grantForNewUser(User user) {
         return quotaRepo.save(new Quota(user, props.getSignupBonusTokens()));
     }

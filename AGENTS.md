@@ -35,12 +35,14 @@
 - 跑测试：`.\mvnw.cmd test`
 - 本地访问：http://localhost:8080；依赖探活：http://localhost:8080/api/health/deps（`database`/`redis` 两个 ok 才算环境就绪）
 - MySQL + Redis：`docker compose up -d`（改 compose 端口/环境后必须 `docker compose up -d --force-recreate` 才生效，旧容器不会自动套用新配置）
+- **生产部署唯一口径 = `prod` profile**（R2-T0 起，docker-compose.prod.yml 已切 `SPRING_PROFILES_ACTIVE=prod`；本地 docker 真机联调仍可用 `mysql` profile）。prod 硬性：`ddl-auto:none` + Flyway 管 schema（V4 起执行，存量库 baseline-version=3）、`app.tenant.strict=true` fail-closed、缺 `JWT_SECRET`（或 <32 字节）/`APP_DATA_KEY`/MySQL 密码**直接启动失败**。**上线纪律：先备份数据库，再跑 Flyway（V4 给 13 表加 tenant_id）**；ADMIN 经 `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` env 引导（幂等），公开注册恒 USER
 - **JDK 不用手动设**：mvnw.cmd 在设有 `JAVA_HOME` 时尊重其值，未设时自动探测并使用 JDK 21 构建。pom enforcer 拒绝 JDK 24+（构建直接失败并提示）。
 - **LLM key 不用每窗同步**：`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` 已设为用户级环境变量，**新开**的 PowerShell 自动继承；只有设置前就开着的旧窗口才需要 `$env:DEEPSEEK_API_KEY=[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY','User')` 补一次。
 
 ### Architecture（技术栈精确版本 + 分层）
 - **Java 17 是编译目标**（release 17，产物 major=61）；**构建 JDK 固定 21**（由 mvnw 自动选择或经 `JAVA_HOME` 指定；JDK 24 被 enforcer 拒绝，Lombok 在高版本 JDK 曾静默失效）；Spring Boot 3.3.5 / Maven 3.9.9（mvnw 自带 dist）
-- 存储：MySQL 8（持久化 JD、简历版本、笔记、模拟记录）/ Redis（指纹去重、会话缓存）/ **Lucene 9.12.3 FSDirectory（R4 起向量块持久化，目录 `data/rag-index`，env `APP_RAG_INDEX_DIR` 可覆盖；userId pre-filter 隔离、beginReplace/commit/rollback 批次事务；部署必须挂持久卷，详见 docs/domain.md §7）**
+- 存储：MySQL 8（持久化 JD、简历版本、笔记、模拟记录；**prod 走 Flyway 迁移，脚本 `src/main/resources/db/migration/`，默认/H2 profile 显式 `spring.flyway.enabled=false`**）/ Redis（指纹去重、会话缓存）/ **Lucene 9.12.3 FSDirectory（R4 起向量块持久化，目录 `data/rag-index`，env `APP_RAG_INDEX_DIR` 可覆盖；userId pre-filter 隔离、beginReplace/commit/rollback 批次事务；部署必须挂持久卷，详见 docs/domain.md §7）**
+- **多租户（R2-T0 起，详见 docs/domain.md §9）**：13 张 owner 表 Hibernate `@TenantId` 分区（tenant_id，MVP=userId 同值独立列）；`security/TenantContext`（ThreadLocal，请求入口由 JwtAuthFilter 填、finally clear；`runAsRoot` 是唯一跨租户特权入口，块内每条查询 WHERE 必须显式带 tenantId/userId 谓词）。**已知机制缺口（6.5.3 实证）：分区表禁用裸 `findById/getById/em.find`（不走 SQM 不带租户谓词），按 id 取数一律 `findByIdAndUserId` 等作用域方法；必须先 set 租户后开事务（Session 开启时只解析一次）**
 - 消息：RabbitMQ（D3 引入，异步判分/追问；非必须，可后加）
 - LLM：
   - 生成/追问：DeepSeek `deepseek-flash`（非思考型用于追问，思考型用于判分）
@@ -58,7 +60,7 @@
   - `llm/`       LlmService（路由/计费收口 + parseScore/verifyApiKey；发 `tools` 字段做 function calling）+ `llm/chat/`（R3：ChatProvider 接口、ModelRole/ChatRequest/ChatResponse、ModelRouter、DeepSeekChatProvider/QwenChatProvider——HTTP 调用都在 provider 内）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool，provider 以 newBuilder 派生只覆盖超时），不混用 JDK HttpClient**（决策于 L3 对比实验阶段确立）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度
   - `billing/`   QuotaService（预检/用后实扣/条件 UPDATE 防超发 + llm_usage_log 流水 + ADMIN 充值；402）
-  - `security/`  JWT（JwtService/JwtAuthFilter/UserContext）、CurrentUserService、KeyResolver（PLATFORM/BYOK 路由）、UserKeyCipher（用户 key AES-GCM）
+  - `security/`  JWT（JwtService/JwtAuthFilter/UserContext）、CurrentUserService、KeyResolver（PLATFORM/BYOK 路由）、UserKeyCipher（用户 key AES-GCM）、TenantContext/CurrentTenantResolver/TenantProperties（R2-T0 租户分区）、BootstrapAdminProperties/BootstrapAdminInitializer（R2-T0 env 引导 ADMIN）
   - `domain/`    实体与持久化（含 User / UserApiKey / Quota）
 
 ### Restrictions（NEVER）
@@ -67,6 +69,7 @@
 - NEVER 未经确认修改对外 API 契约（见 `./docs/api.md`）
 - NEVER 自动 commit（改完由我审）
 - NEVER 用 Git Bash 直接跑 mvn
+- NEVER 让公开注册产生 ADMIN（注册恒 USER；ADMIN 只能由 BootstrapAdminInitializer 经 env 引导产生）；NEVER 在 13 张分区表上用裸 findById/em.find（R2-T0，见 Architecture 多租户条）
 
 ### Standards（规范）
 - commit message：`类型: 简述`（feat/fix/refactor/docs）

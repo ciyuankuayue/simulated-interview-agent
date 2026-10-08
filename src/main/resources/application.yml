@@ -24,6 +24,9 @@ spring:
       hibernate:
         format_sql: false
         dialect: org.hibernate.dialect.H2Dialect
+  # R2-T0 D4：默认 profile（H2 create-drop）不跑 Flyway；仅 prod profile 启用。
+  flyway:
+    enabled: false
 
   # ---- Redis（指纹去重 / 会话缓存；redis 用 docker 起，down 不影响启动，用到才连） ----
   data:

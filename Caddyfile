@@ -1,5 +1,9 @@
 # ============ 备案期间：用 IP 直接访问（HTTP，无需域名/证书）============
 # 此时 .env 里 DOMAIN 留空即可，Caddy 只监听 80。
+#
+# 安全说明（R2-T0）：本文件刻意不配置 log 指令——Caddy 2 默认不输出 access log，
+# 因此 SSE 请求 URL 中的 ?jwt= 查询参数不会被反代落盘；如未来开启 access log，
+# 必须配合 log 输出的 uri 脱敏（或改走 header 传 token），禁止原样记录 query。
 :80 {
     encode gzip
     reverse_proxy app:8080
