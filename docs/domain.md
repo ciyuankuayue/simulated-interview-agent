@@ -229,6 +229,12 @@
 - 登录用户用 4 参 `KnnVectorQuery("vec", q, candidateK, TermQuery(userId))`，filter 在 **HNSW 图遍历期**生效——别人的块不占召回名额，单用户资料极少也能召回自己；`candidateK=max(topK*3,30)`。离线（userId=null）用 3 参无 filter。
 - 跨用户互不可见 + 自己必能召回，由 `LuceneVectorStoreTest` 的极端 post-filter 场景（u1 仅 1 块 cos 0.8、u2 灌 60 个 cos≥0.85 更近块，u1 仍命中自己）与 `RagServiceUserIsolationTest` 保证。
 
+**strict fail-closed（R2-T0 批 3，D2：单目录，不做 per-tenant 目录）**
+- 守卫收口在生产唯一编排方 `RagService`（`LuceneVectorStore` 保持通用，POJO/实验/测试构造仍可传 null）：`app.tenant.strict=true` 时，`ingest`/`retrieve` 取到的 `userId`（`CurrentUserService.currentUserId()`，与是否装配计量无关）为 null → **在切块/embed/预检/任何索引写入之前**直接抛 `IllegalStateException`（消息含 `VECTOR_USER_MISSING`，全局异常映射为 409 CONFLICT——prod 下只可能是装配错误，必须显眼）；不产生任何向量块、不发 embedding 请求。
+- 非 strict（dev/test）保持 null 语义：3 参无 filter 路径放行（experiment、`StartupIndexCleaner` 白名单）。
+- strict 开关由生产构造注入 `TenantProperties`（`RagConfig` 装配）；离线便利构造（无 TenantProperties）恒为非 strict。
+- **null 调用面白名单（C2 审计项）**：除 test / `rag/experiment` / `StartupIndexCleaner`（dev only，不经 RagService）外，生产代码禁止向 RagService 传 null 身份。
+
 **replace 批次事务（PUT 同 source 不产生重复块）**
 - 入库唯一入口 `MaterialController.index → RagService.ingest`：预检（402 在任何索引动作前）→ `beginReplace`（缓冲删旧，提交前不可见）→ 逐块 embed+add → `commitBatch`（commit + 切 NRT reader）；异常 `rollbackBatch`（`IndexWriter.rollback()` 丢弃本批删/增并关闭 writer，锁内重建，旧已提交块保持可用）。
 - 删除是 **AND 语义** `BooleanQuery MUST(userId)+MUST(sourceType)+MUST(sourceId)` 传 `deleteDocuments(Query)`；严禁 `deleteDocuments(Term...)`（变长参是 OR，会删光该用户全部资料）。

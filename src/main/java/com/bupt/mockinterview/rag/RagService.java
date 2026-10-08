@@ -6,6 +6,7 @@ import com.bupt.mockinterview.billing.UsageEstimates;
 import com.bupt.mockinterview.billing.UsageScene;
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.security.CurrentUserService;
+import com.bupt.mockinterview.security.TenantProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,28 +31,48 @@ public class RagService {
     private final CurrentUserService currentUser;
     private final QuotaService quota;
     private final QuotaProperties quotaProps;
+    /**
+     * R2-T0 D2：strict 下向量入库/检索缺用户身份直接 fail-closed（消息含 {@link #VECTOR_USER_MISSING}）。
+     * 仅生产构造（RagConfig 注入 TenantProperties）可能为 true；离线便利构造恒 false。
+     */
+    private final boolean strict;
+
+    /** strict fail-closed 异常消息标记（domain.md §7）。 */
+    static final String VECTOR_USER_MISSING = "VECTOR_USER_MISSING";
 
     public RagService(Embedder embedder, VectorStore store) {
-        this(embedder, store, 500, 50, null, null, null);
+        this(embedder, store, 500, 50, null, null, null, null);
     }
 
     public RagService(Embedder embedder, VectorStore store, CurrentUserService currentUser) {
-        this(embedder, store, 500, 50, currentUser, null, null);
+        this(embedder, store, 500, 50, currentUser, null, null, null);
     }
 
-    /** 生产构造：带 token 计量（预检 + 实扣 + 流水）。 */
+    /** 生产构造：带 token 计量（预检 + 实扣 + 流水），非 strict（离线/测试装配用）。 */
     public RagService(Embedder embedder, VectorStore store, CurrentUserService currentUser,
                       QuotaService quota, QuotaProperties quotaProps) {
-        this(embedder, store, 500, 50, currentUser, quota, quotaProps);
+        this(embedder, store, 500, 50, currentUser, quota, quotaProps, null);
+    }
+
+    /** 生产唯一构造（R2-T0 批 3 起 RagConfig 使用）：计量 + strict 向量守卫。 */
+    public RagService(Embedder embedder, VectorStore store, CurrentUserService currentUser,
+                      QuotaService quota, QuotaProperties quotaProps, TenantProperties tenantProps) {
+        this(embedder, store, 500, 50, currentUser, quota, quotaProps, tenantProps);
     }
 
     public RagService(Embedder embedder, VectorStore store, int maxChars, int overlap,
                       CurrentUserService currentUser) {
-        this(embedder, store, maxChars, overlap, currentUser, null, null);
+        this(embedder, store, maxChars, overlap, currentUser, null, null, null);
     }
 
     public RagService(Embedder embedder, VectorStore store, int maxChars, int overlap,
                       CurrentUserService currentUser, QuotaService quota, QuotaProperties quotaProps) {
+        this(embedder, store, maxChars, overlap, currentUser, quota, quotaProps, null);
+    }
+
+    public RagService(Embedder embedder, VectorStore store, int maxChars, int overlap,
+                      CurrentUserService currentUser, QuotaService quota, QuotaProperties quotaProps,
+                      TenantProperties tenantProps) {
         this.embedder = embedder;
         this.store = store;
         this.maxChars = maxChars;
@@ -59,6 +80,23 @@ public class RagService {
         this.currentUser = currentUser;
         this.quota = quota;
         this.quotaProps = quotaProps;
+        this.strict = tenantProps != null && tenantProps.isStrict();
+    }
+
+    /**
+     * strict 守卫：缺用户身份的向量路径只允许出现在测试 / experiment / dev 启动清理器。
+     * 必须在切块、embed、额度预检、任何索引写入之前调用（domain.md §7）。
+     */
+    private void guardVectorUser(String operation) {
+        if (!strict) {
+            return;
+        }
+        Long identityUserId = currentUser == null ? null : currentUser.currentUserId();
+        if (identityUserId == null) {
+            throw new IllegalStateException(VECTOR_USER_MISSING
+                    + "：strict 模式下向量" + operation + "缺少用户身份（currentUser=null），"
+                    + "生产环境只可能是装配错误；匿名向量路径仅测试/experiment/dev 清理器放行");
+        }
     }
 
     /**
@@ -70,6 +108,7 @@ public class RagService {
      * 402/409 照常穿透 MaterialController。
      */
     public void ingest(String text, String sourceType, String sourceId) throws Exception {
+        guardVectorUser("入库");
         List<String> pieces = TextChunker.chunk(text, maxChars, overlap);
         Long userId = billableUserId();
         if (userId != null && !pieces.isEmpty()) {
@@ -94,6 +133,7 @@ public class RagService {
 
     /** 给定查询返回 top-k 最相似块（按余弦降序）。 */
     public List<KnowledgeChunk.ScoredChunk> retrieve(String query, int topK) throws Exception {
+        guardVectorUser("检索");
         Long userId = billableUserId();
         if (userId != null) {
             quota.ensureAvailable(userId, KeyMode.PLATFORM);

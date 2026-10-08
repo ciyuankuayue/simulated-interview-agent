@@ -10,6 +10,7 @@ import com.bupt.mockinterview.rag.RagProperties;
 import com.bupt.mockinterview.rag.RagService;
 import com.bupt.mockinterview.rag.VectorStore;
 import com.bupt.mockinterview.security.CurrentUserService;
+import com.bupt.mockinterview.security.TenantProperties;
 import okhttp3.OkHttpClient;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.springframework.context.annotation.Bean;
@@ -57,7 +58,9 @@ public class RagConfig {
     @Bean
     public RagService ragService(Embedder embedder, VectorStore store, CurrentUserService currentUser,
                                  com.bupt.mockinterview.billing.QuotaService quota,
-                                 com.bupt.mockinterview.billing.QuotaProperties quotaProps) {
-        return new RagService(embedder, store, currentUser, quota, quotaProps);
+                                 com.bupt.mockinterview.billing.QuotaProperties quotaProps,
+                                 TenantProperties tenantProps) {
+        // R2-T0 D2：strict（prod）下 null 用户身份的 ingest/retrieve 直接 fail-closed（domain.md §7）
+        return new RagService(embedder, store, currentUser, quota, quotaProps, tenantProps);
     }
 }
