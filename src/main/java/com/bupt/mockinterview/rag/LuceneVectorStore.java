@@ -24,6 +24,7 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnVectorQuery;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
@@ -38,6 +39,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -355,6 +357,51 @@ public class LuceneVectorStore implements VectorStore, AutoCloseable {
             return out;
         } catch (IOException e) {
             throw new IllegalStateException("向量检索失败", e);
+        }
+    }
+
+    /**
+     * 只读枚举（R2-T0 批 5 C3）：扫描已提交快照，按 (userId, sourceType, sourceId) 聚合块数。
+     * userId 非 null 用 TermQuery 下推；null = MatchAll 全量（跨租户白名单，仅 ADMIN 巡检）。
+     */
+    @Override
+    public List<IndexedSource> enumerateSources(Long userId) {
+        IndexSearcher s;
+        int total;
+        synchronized (readMonitor) {
+            s = this.searcher;
+            total = reader.numDocs();
+        }
+        if (total == 0) {
+            return List.of();
+        }
+        Query query = userId != null
+                ? new TermQuery(new Term(FIELD_USER_ID, String.valueOf(userId)))
+                : new MatchAllDocsQuery();
+        try {
+            TopDocs top = s.search(query, total);
+            // key = userId(空串表匿名) + \u0000 + sourceType + \u0000 + sourceId
+            Map<String, long[]> counts = new LinkedHashMap<>();
+            for (ScoreDoc sd : top.scoreDocs) {
+                Document d = s.doc(sd.doc);
+                String uid = d.get(FIELD_USER_ID);
+                String key = (uid == null ? "" : uid) + '\u0000'
+                        + d.get(FIELD_SOURCE_TYPE) + '\u0000' + d.get(FIELD_SOURCE_ID);
+                counts.computeIfAbsent(key, k -> new long[1])[0]++;
+            }
+            List<IndexedSource> out = new ArrayList<>(counts.size());
+            for (Map.Entry<String, long[]> e : counts.entrySet()) {
+                String[] parts = e.getKey().split("\u0000", 3);
+                Long uid = parts[0].isEmpty() ? null : Long.valueOf(parts[0]);
+                out.add(new IndexedSource(uid, parts[1], parts[2], (int) e.getValue()[0]));
+            }
+            out.sort(Comparator
+                    .comparing(IndexedSource::userId, Comparator.nullsFirst(Comparator.naturalOrder()))
+                    .thenComparing(IndexedSource::sourceType)
+                    .thenComparing(IndexedSource::sourceId));
+            return out;
+        } catch (IOException e) {
+            throw new IllegalStateException("枚举向量来源失败", e);
         }
     }
 

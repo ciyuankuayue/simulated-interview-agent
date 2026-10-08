@@ -205,6 +205,19 @@ body: `{ "username": "alice", "grantTokens": 200000 }`（grantTokens 必须 > 0�
 - 非 ADMIN → **403** `{code:"FORBIDDEN"}`；用户不存在 → **404** `{code:"USER_NOT_FOUND"}`。
 - resp: 充值后该用户的 quota 视图（同 GET /api/user/quota）。
 
+### GET /api/admin/index/orphans（R2-T0 批 5 新增，仅 ADMIN）
+向量索引孤儿块巡检（warn-first 只读；孤儿=向量有块而 knowledge_chunk 无对应行）。
+- query：`tenantId` 可选——不带 = 全租户（`scope:"ALL"`，跨租户枚举白名单）；带 = 单租户（`scope:"TENANT"`）。
+- resp：`{ "scope": "ALL|TENANT", "count": n, "orphans": [{ "tenantId", "sourceType", "sourceId", "indexedChunks", "reason" }] }`
+- reason：`VECTOR_WITHOUT_CHUNK`（有块无行）/ `INDEX_ANONYMOUS`（历史匿名块，tenantId=null）/ `SOURCE_ID_NOT_NUMERIC`（sourceId 无法映射 Long 行键）。
+- 非 ADMIN → **403** `{code:"FORBIDDEN"}`；未登录 → **401**。纯读，不删任何块。
+
+### POST /api/admin/index/delete-by-source（R2-T0 批 5 新增，仅 ADMIN）
+人工确认后回收单个孤儿来源（AND 语义删除，删前复验）。
+body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项必填；tenantId 必须显式，禁止匿名/隐式全量删）
+- resp：`{ "deleted": true, "tenantId", "sourceType", "sourceId", "chunksRemoved": n }`
+- 索引无此来源 → **404** `{code:"NOT_FOUND"}`；来源仍有知识块行（健康非孤儿，防误删活资料）→ **409** `{code:"CONFLICT"}`；非 ADMIN → **403**；未登录 → **401**；字段缺失 → **400**。
+
 ### 402 语义
 任何触发计费调用（DeepSeek 对话 / embedding）的业务接口，预检发现额度为 0 时：
 - **PLATFORM** → **402** `{code:"QUOTA_EXHAUSTED",message:"Token 额度已用完，请联系管理员充值"}`

@@ -2,7 +2,9 @@ package com.bupt.mockinterview.rag;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -48,6 +50,27 @@ public class InMemoryVectorStore implements VectorStore {
     @Override
     public void deleteAll() {
         chunks.clear();
+    }
+
+    /** 只读枚举：按 (userId, sourceType, sourceId) 聚合（R2-T0 批 5 C3）。 */
+    @Override
+    public List<IndexedSource> enumerateSources(Long userId) {
+        Map<String, long[]> counts = new LinkedHashMap<>();
+        for (KnowledgeChunk c : chunks) {
+            if (userId != null && !userId.equals(c.userId())) {
+                continue;
+            }
+            String key = (c.userId() == null ? "" : c.userId()) + "\u0000"
+                    + c.sourceType() + '\u0000' + c.sourceId();
+            counts.computeIfAbsent(key, k -> new long[1])[0]++;
+        }
+        List<IndexedSource> out = new ArrayList<>(counts.size());
+        for (Map.Entry<String, long[]> e : counts.entrySet()) {
+            String[] parts = e.getKey().split("\u0000", 3);
+            Long uid = parts[0].isEmpty() ? null : Long.valueOf(parts[0]);
+            out.add(new IndexedSource(uid, parts[1], parts[2], (int) e.getValue()[0]));
+        }
+        return out;
     }
 
     @Override

@@ -35,6 +35,14 @@ public interface VectorStore {
     /** 清空整个索引（dev 启动清孤儿块 / 测试用）。 */
     void deleteAll();
 
+    /**
+     * 只读枚举索引内 distinct 的 (userId, sourceType, sourceId) 来源及其存活块数（R2-T0 批 5 C3）。
+     * userId 非 null 时仅枚举该用户；userId=null = 跨租户全量枚举——这是 domain.md §9 登记的
+     * 唯一跨租户枚举白名单，调用方必须已经过 ADMIN 鉴权（{@code OrphanIndexInspector}）。
+     * 纯读操作，不改变任何 doc。
+     */
+    List<IndexedSource> enumerateSources(Long userId);
+
     /** 全局 doc 数（跨用户，含逻辑删除待合并）；仅粗监控。 */
     int size();
 
@@ -54,4 +62,13 @@ public interface VectorStore {
 
     /** 回滚当前批次（Lucene rollback + 重建 writer，旧块保留）；默认空实现。 */
     default void rollbackBatch() { /* InMemory 无事务可回滚 */ }
+
+    /**
+     * 索引中一个去重来源（C3 巡检用）。
+     *
+     * @param userId     块所属用户；null = 历史/离线匿名块
+     * @param chunks     该来源当前存活的块数
+     */
+    record IndexedSource(Long userId, String sourceType, String sourceId, int chunks) {
+    }
 }

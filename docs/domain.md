@@ -245,6 +245,12 @@
 - userId pre-filter 保证**跨用户不泄露**；但「资料行被删 / H2 create-drop 重建库」后，本用户旧向量若不清，仍会被**自己**检索到（悬空块）。
 - `StartupIndexCleaner`（ApplicationRunner）：开关 `app.rag.clean-on-empty-sources`（默认 **true**，mysql profile 显式 **false**）打开时，启动统计四张源表（`resume_version/note/project_doc/real_interview_record`）行数之和，=0 则 `deleteAll()` 并打 WARN，>0 不动；任何异常只告警不阻断启动。生产 mysql 资料持久，不存在该问题。
 
+**ADMIN 巡检与回收（R2-T0 批 5，C3：warn-first，不做自动清理）**
+- 只读枚举能力下沉 `VectorStore.enumerateSources(userId)`（Lucene 实现扫已提交快照按 (userId, sourceType, sourceId) 聚合块数；userId=null 全量是 §9 白名单登记的唯一跨租户枚举，只允许 ADMIN 鉴权后的 `OrphanIndexInspector` 调）；纯读不改 doc。
+- `OrphanIndexInspector`：孤儿三因——`VECTOR_WITHOUT_CHUNK`（有向量无 knowledge_chunk 行）、`INDEX_ANONYMOUS`（userId=null 历史/离线块）、`SOURCE_ID_NOT_NUMERIC`（sourceId 无法映射 Long 行键）。存在性校验是分区表查询：逐来源先 `TenantContext.set(块.userId)` 后开 Session（方法本身不加 @Transactional，每次 repo 调用独立事务，用完恢复上下文），谓词带 userId + @TenantId 自动分区。
+- 端点（api.md §7）：`GET /api/admin/index/orphans?tenantId=`（不带=全租户）、`POST /api/admin/index/delete-by-source`（显式 tenantId，删前复验；无此来源 404、健康来源 409）。**warn-first：系统永不自动删，只报告 + 等人审单点回收**；删除走 AND 语义 `deleteBySource`。
+- **业务删除联动留 F4**：将来「删除资料」接口上线时，必须同事务先后（或补偿）调 `KnowledgeChunkRepository.deleteByUserIdAndSourceTypeAndSourceId`（派生 delete 走 SQM 带分区谓词，禁用裸 delete(entity)）与 `VectorStore.deleteBySource`；ADMIN 巡检是兜底而非主路径。
+
 **监控语义**：`GET /api/health/deps` 的 `embedder.vectorChunks` = 全局**存活** Lucene doc 总数（`reader.numDocs()`，跨用户、不含已逻辑删除待合并的旧 replace 版本），仅作粗监控，**不是**当前用户块数。
 
 ## 8. R3 多模型路由
