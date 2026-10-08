@@ -13,7 +13,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -202,5 +204,93 @@ class QuotaServiceTest {
         assertThat(q.getUsedTokens()).isEqualTo(100);   // 恰好扣满，不超发
         assertThat(q.remaining()).isZero();
         assertThat(quotaService.recentUsage(user.getId(), 50)).hasSize(20);
+    }
+
+    /**
+     * R2-T0 批 4（C1）并发实证增强：50 线程 × 3 轮栅栏同发 = 150 次混合扣减，
+     * PLATFORM（每次实扣 7，含透支→clamp）与 BYOK（每次服务费 1，条件更新失败即 false）
+     * 各 75 次；总需求 75×7+75=600 远超额度 300。
+     * 不变量：无异常逃逸；任何已提交状态 used≤total/remaining≥0；最终恰好扣满 300；
+     * 流水数 = PLATFORM 调用数 75（clamp 照记真实用量）；BYOK 成功次数 + 平台实扣 = 300；
+     * 旁观的第二用户额度与流水零变化（无串号/交叉更新）。
+     */
+    @Test
+    void concurrentMixed_50threads_3rounds_neverOverdrafts() throws InterruptedException {
+        User user = newUserWithQuota("quota-concurrent-mixed-r2t0", 300);
+        User bystander = newUserWithQuota("quota-concurrent-bystander-r2t0", 500);
+
+        int threads = 50;
+        int rounds = 3;
+        long platformCost = 7L;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        CountDownLatch done = new CountDownLatch(threads);
+        AtomicInteger errors = new AtomicInteger();
+        AtomicInteger negativeRemaining = new AtomicInteger();
+        AtomicInteger byokAttempts = new AtomicInteger();
+        AtomicInteger byokSuccess = new AtomicInteger();
+        AtomicInteger platformAttempts = new AtomicInteger();
+
+        for (int i = 0; i < threads; i++) {
+            final int idx = i;
+            pool.submit(() -> {
+                try {
+                    for (int round = 0; round < rounds; round++) {
+                        barrier.await(60, TimeUnit.SECONDS);   // 每轮 50 线程齐发
+                        boolean platform = ((idx + round) & 1) == 0;
+                        if (platform) {
+                            platformAttempts.incrementAndGet();
+                            quotaService.settlePlatformCall(user.getId(), UsageScene.FOLLOWUP,
+                                    "deepseek-flash", 5, 2, platformCost, false);
+                        } else {
+                            byokAttempts.incrementAndGet();
+                            if (quotaService.chargeForByokCall(user.getId())) {
+                                byokSuccess.incrementAndGet();
+                            }
+                        }
+                        if (quotaService.getByUser(user.getId()).remaining() < 0L) {
+                            negativeRemaining.incrementAndGet();
+                        }
+                    }
+                } catch (InterruptedException | BrokenBarrierException | java.util.concurrent.TimeoutException e) {
+                    Thread.currentThread().interrupt();
+                    errors.incrementAndGet();
+                } catch (Exception e) {
+                    errors.incrementAndGet();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        assertThat(done.await(120, TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
+
+        assertThat(errors.get()).isZero();
+        assertThat(negativeRemaining.get()).isZero();
+
+        // 调用分布：150 次，平台/BYOK 各 75
+        assertThat(platformAttempts.get()).isEqualTo(75);
+        assertThat(byokAttempts.get()).isEqualTo(75);
+
+        Quota q = quotaRepo.findByUserId(user.getId()).orElseThrow();
+        assertThat(q.getUsedTokens()).isLessThanOrEqualTo(300L);
+        assertThat(q.remaining()).isGreaterThanOrEqualTo(0L);
+        assertThat(q.getUsedTokens()).isEqualTo(300L);   // 透支窗口由 clamp 兜底，恰好扣满
+        assertThat(q.remaining()).isZero();
+
+        // 恒等式：BYOK 成功扣的服务费 + 平台实扣（含 clamp）= 总额度
+        long recordedRealUsage = quotaService.recentUsage(user.getId(), 200).stream()
+                .mapToLong(com.bupt.mockinterview.domain.LlmUsageLog::getTotalTokens)
+                .sum();
+        assertThat(recordedRealUsage).isEqualTo(75L * platformCost);   // 75 次平台调用流水齐
+        // 透支不追讨：平台流水真实用量 525 ≥ 平台实际扣减（=300−BYOK服务费），差额被 clamp 吸收
+        assertThat(recordedRealUsage).isGreaterThanOrEqualTo(q.getUsedTokens() - byokSuccess.get());
+        assertThat(byokSuccess.get()).isLessThanOrEqualTo(75);
+
+        // 旁观者零变化
+        Quota bq = quotaRepo.findByUserId(bystander.getId()).orElseThrow();
+        assertThat(bq.getUsedTokens()).isZero();
+        assertThat(bq.remaining()).isEqualTo(500L);
+        assertThat(quotaService.recentUsage(bystander.getId(), 10)).isEmpty();
     }
 }
