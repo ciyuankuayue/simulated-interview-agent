@@ -65,11 +65,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             Claims claims = jwtService.parseToken(token);
             long userId = JwtService.userIdFrom(claims);
             String username = JwtService.usernameFrom(claims);
+            // R2-T0：tid 是租户 claim；旧令牌无 tid 时回退 sub（userId）派生
+            Long tenantId = JwtService.tenantIdFrom(claims);
+            if (tenantId == null) {
+                tenantId = userId;
+            }
             UserContext.set(userId, username);
+            TenantContext.set(tenantId);
             try {
                 chain.doFilter(request, response);
             } finally {
                 UserContext.clear();
+                TenantContext.clear();
             }
         } catch (JwtException | IllegalArgumentException e) {
             writeUnauthorized(response, "令牌无效或已过期，请重新登录");

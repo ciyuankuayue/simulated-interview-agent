@@ -6,6 +6,9 @@ import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.LlmUsageLogRepository;
 import com.bupt.mockinterview.domain.repository.QuotaRepository;
 import com.bupt.mockinterview.domain.repository.UserRepository;
+import com.bupt.mockinterview.security.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -35,6 +38,21 @@ class QuotaServiceTest {
     private UserRepository userRepo;
     @Autowired
     private LlmUsageLogRepository usageRepo;
+
+    /**
+     * R2-T0 H1：本类直写 Repository 且并发用例在线程池工作线程跑（工作线程永远没有
+     * TenantContext → 非 strict 回退兜底租户 0L）。共享测试主线程可能被前序 web 测试的
+     * filter finally 留在 testuser 租户，故每例强制 clear，让主线程与工作线程统一落 0L。
+     */
+    @BeforeEach
+    void clearTenantContext() {
+        TenantContext.clear();
+    }
+
+    @AfterEach
+    void clearTenantContextAfter() {
+        TenantContext.clear();
+    }
 
     private User newUserWithQuota(String name, long totalTokens) {
         User user = userRepo.save(new User(name, "hash"));

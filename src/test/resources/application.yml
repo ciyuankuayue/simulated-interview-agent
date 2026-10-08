@@ -2,6 +2,10 @@
 app:
   auth:
     jwt-enabled: false
+  tenant:
+    # R2-T0：测试非严格模式——线程缺 TenantContext 时回退兜底租户 0L（受过滤的普通租户，
+    # isRoot(0L)=false，查询仍带 tenant_id=0 谓词），不允许静默跨租户。
+    strict: false
   rag:
     # R4：测试套件因不同 @MockBean 组合会并存多个 Spring 上下文。统一用 ByteBuffersDirectory
     # 内存目录（每个上下文各自独立，走与生产相同的 Lucene 代码路径），避免多上下文争用同一

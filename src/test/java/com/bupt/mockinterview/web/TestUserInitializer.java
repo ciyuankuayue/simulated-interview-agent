@@ -3,6 +3,7 @@ package com.bupt.mockinterview.web;
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.UserRepository;
+import com.bupt.mockinterview.security.TenantContext;
 import com.bupt.mockinterview.security.UserContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -40,8 +41,15 @@ public class TestUserInitializer {
     public User testUser(UserRepository userRepo, PasswordEncoder encoder, QuotaService quotaService) {
         User user = userRepo.findByUsername("testuser").orElseGet(() ->
                 userRepo.save(new User("testuser", encoder.encode("password"))));
-        // PLATFORM 路径不扣点，但额度账户仍建上（GET /api/user/quota 与隔离测试用）
-        quotaService.grantIfAbsent(user);
+        // PLATFORM 路径不扣点，但额度账户仍建上（GET /api/user/quota 与隔离测试用）。
+        // R2-T0：启动期没有请求线程填充 TenantContext，显式以 testuser 租户建额度，
+        // 建完立即 clear——共享测试主线程的初始态保持「空→兜底租户 0L」（见测试方案 §1/H1）。
+        TenantContext.set(user.getId());
+        try {
+            quotaService.grantIfAbsent(user);
+        } finally {
+            TenantContext.clear();
+        }
         return user;
     }
 
@@ -94,10 +102,14 @@ public class TestUserInitializer {
         protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                         FilterChain chain) throws ServletException, IOException {
             UserContext.set(testUser.getId(), "testuser");
+            TenantContext.set(testUser.getId());
             try {
                 chain.doFilter(request, response);
             } finally {
+                // jwt=true context 中内层 JwtAuthFilter finally 已 clear 自己的上下文；
+                // 这里统一恢复为 testuser，保证任何请求结束后共享主线程状态确定。
                 UserContext.set(testUser.getId(), "testuser");
+                TenantContext.set(testUser.getId());
             }
         }
     }

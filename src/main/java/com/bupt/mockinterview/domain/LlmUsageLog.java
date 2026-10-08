@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.TenantId;
 
 import java.time.Instant;
 
@@ -30,6 +31,11 @@ public class LlmUsageLog {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /** R2-T0 多租户分区列：Hibernate @TenantId 自动回填/过滤，业务代码不赋值。 */
+    @TenantId
+    @Column(name = "tenant_id")
+    private Long tenantId;
 
     /** 归属用户（不用外键约束对象关联，扣减流水允许轻量写入）。 */
     @Column(name = "user_id", nullable = false)

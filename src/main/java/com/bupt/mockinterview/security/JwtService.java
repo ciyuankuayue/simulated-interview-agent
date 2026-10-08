@@ -57,7 +57,7 @@ public class JwtService {
     /**
      * 签发 JWT。
      *
-     * @param userId   用户 ID（放 {@code sub} claim）
+     * @param userId   用户 ID（放 {@code sub} claim）；同时写入 {@code tid} 租户 claim（R2-T0：MVP 同值）
      * @param username 用户名（额外 claim）
      * @return JWT 字符串
      */
@@ -68,6 +68,7 @@ public class JwtService {
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claim("username", username)
+                .claim("tid", userId)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(exp))
                 .signWith(key)
@@ -101,5 +102,14 @@ public class JwtService {
      */
     public static String usernameFrom(Claims claims) {
         return claims.get("username", String.class);
+    }
+
+    /**
+     * 从 claims 提取租户 ID（R2-T0）。新令牌含 {@code tid}；旧令牌无此 claim 时返回 null，
+     * 由调用方回退取 {@code sub}（userId）派生，保证旧令牌向后兼容。
+     */
+    public static Long tenantIdFrom(Claims claims) {
+        Number tid = claims.get("tid", Number.class);
+        return tid == null ? null : tid.longValue();
     }
 }

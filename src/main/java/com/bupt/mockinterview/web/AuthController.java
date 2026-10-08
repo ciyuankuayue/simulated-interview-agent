@@ -5,6 +5,7 @@ import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.UserRole;
 import com.bupt.mockinterview.domain.repository.UserRepository;
 import com.bupt.mockinterview.security.JwtService;
+import com.bupt.mockinterview.security.TenantContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -56,8 +57,15 @@ public class AuthController {
             user.setRole(UserRole.ADMIN);
         }
         userRepo.save(user);
-        // 注册即建额度并赠送点数（同事务，失败整体回滚）
-        quotaService.grantForNewUser(user);
+        // 注册即建额度并赠送点数（同事务，失败整体回滚）。
+        // R2-T0：register 在 JWT 白名单内、请求线程无 TenantContext，必须显式设置新用户租户，
+        // 否则 Quota 行会落到兜底租户，用户登录后查不到自己的额度。
+        TenantContext.set(user.getId());
+        try {
+            quotaService.grantForNewUser(user);
+        } finally {
+            TenantContext.clear();
+        }
 
         String token = jwtService.generateToken(user.getId(), user.getUsername());
         return ResponseEntity.status(HttpStatus.CREATED).body(responseOf(user, token));
