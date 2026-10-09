@@ -7,10 +7,11 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * R2-T0 批 6 审计：删除无显式 user 谓词的 findByIsActiveTrue（无调用方；
+ * 激活流程走 findByUserAndIsActiveTrue）。
+ */
 public interface ResumeVersionRepository extends JpaRepository<ResumeVersion, Long> {
-    /** MVP：全局找激活简历（MaterialController.activateResume 用）。 */
-    List<ResumeVersion> findByIsActiveTrue();
-
     /** R1-1 多用户隔离。 */
     List<ResumeVersion> findByUser(User user);
     List<ResumeVersion> findByUserAndIsActiveTrue(User user);

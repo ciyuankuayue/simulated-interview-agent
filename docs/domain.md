@@ -311,5 +311,10 @@
 
 **禁令**：新增 native SQL / JdbcTemplate 查询必须人审租户条件（现存仅探活 `select 1` 与 dev 启动四表 COUNT，不触租户数据）。向量侧隔离不走本节机制，沿用 §7 的 Lucene userId pre-filter（生产 strict 下 RagService 对 null userId fail-closed）。
 
+**【批 6 实证】Repository 全量审计 + 渗透矩阵**
+- 全仓 grep `findById/getById/em.find/getReferenceById/findAllById`：分区表零裸取，唯一命中是 `CurrentUserService.userRepo.findById`（app_user 不分区，合法）。
+- 清除 11 个**无显式 user 谓词且零调用**的派生死方法（`@TenantId` 虽自动加分区谓词，但无调用方的全局作用域方法属于未来误用隐患）：WeakPoint 4 个、InterviewSession 3 个（历史列表实际走 `findByUserOrderByIdDesc`）、CriticReport `findBySessionIdIn`、ResumeVersion `findByIsActiveTrue`、KnowledgeChunk 2 个。`CriticReportRepository.findBySessionId` 保留（WeakPointController 唯一调用方，源方法注释登记 @TenantId 兜底）。
+- `web/TenantIsolationPenetrationTest`（jwt=true、A/B 双真实账号、无类级 @Transactional + UUID 名 + DirtiesContext）8 个用例实证：资料/JD/会话历史/错题本列表跨租户为空；他人 id 的 start/激活/改文档/status/report/answer/end/events（SSE 走 query jwt）/weak-point 详情全 404；usage/quota/settings/api-key 只随 JWT 本人；admin 端点普通用户 403；无 token 全 401；向量路径用确定性 Embedder 证明 B 的出题 prompt 零泄露 A 的机密块、A 本人阳性召回 + answer/end/status 全链路 200。
+
 **Schema**：V4（Flyway，仅 prod/mysql 启用）对 13 表执行「加可空 tenant_id → 回填 tenant_id=user_id → 改 NOT NULL → 加索引」；H2 create-drop 由实体自动建列，不读脚本。
 
