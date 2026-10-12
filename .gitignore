@@ -75,3 +75,19 @@ docs/test-acceptance-checklist.html
 docs/deployment-pitfalls.md
 docs/r2-iteration-plan.md
 docs/deployment-runbook.md
+docs/sidechat-prompt.md
+
+# ===== 根目录个人面经/网申/协作规划文档（本地资料，不入库；AGENTS.md/README.md 已跟踪不受影响） =====
+AI协作项目-模拟面试Agent.md
+中芯国际网申-行为题答案.md
+面试准备-Agent概念映射与JD词汇.md
+面试准备-AI协作测试与故事勘误.md
+面试准备-Token计费与付费方案.md
+面试准备-为何不引MCP与LangChain.md
+面试准备-出题判分架构勘误.md
+面试准备-向量隔离与查询管线答疑.md
+面试准备-崩溃故事×3.md
+面试准备-技术追问答案.md
+面试准备-概念答疑.md
+面试准备-项目介绍话术.md
+面试准备-项目概述-详细.md
