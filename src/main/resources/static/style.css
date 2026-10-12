@@ -163,6 +163,23 @@ button.big { width: 100%; margin-top: 10px; padding: 10px; }
 .histItem span { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .histItem.noReport { opacity: .55; cursor: not-allowed; }
 
+/* ---------- 真实面试记录 ---------- */
+.recList { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.recItem { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; }
+.recItem .recMeta { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+.recItem .recContent { white-space: pre-wrap; word-break: break-word; color: #c8d2e6; }
+
+/* ---------- 报告操作栏 ---------- */
+.reportActions { margin: 4px 0 6px; gap: 6px; }
+.reportActions button { padding: 4px 10px; font-size: 12px; }
+
+/* ---------- 逐轮回看 ---------- */
+.turnsReplay { max-height: 40vh; overflow-y: auto; margin-top: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+.turnItem { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+.turnItem .turnMeta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.turnItem .turnQ { color: var(--accent2); font-weight: 600; margin-bottom: 4px; }
+.turnItem .turnA { white-space: pre-wrap; word-break: break-word; color: #c8d2e6; font-size: 13px; }
+
 /* ---------- 模型调用方式卡片（R1-3 双密钥模式） ---------- */
 .keyblock { border-color: #35415c; }
 .keybadge {

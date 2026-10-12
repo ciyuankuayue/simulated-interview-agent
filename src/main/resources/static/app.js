@@ -27,6 +27,7 @@
         es: null,
         awaiting: false,
         reportRendered: false,
+        reportSessionId: null,  // F2/F4：当前报告所属会话 id（live 或回看），供导出/逐轮回看用
         rendered: new Set(),  // 事件去重：type + turnSeq
         weakDetailLoaded: new Set(),  // 错题本详情懒加载：已拉取过的 weakPointId
         quota: null  // R2：最近一次额度视图 {totalTokens,usedTokens,remainingTokens}，null=未加载（不前置拦截）
@@ -146,9 +147,15 @@
 
     // ---------- 报告 ----------
 
-    function renderReport(r) {
+    function renderReport(r, sessionId) {
         if (state.reportRendered) return;   // end 的响应与 SSE 的 report 事件只渲染一次
         state.reportRendered = true;
+        state.reportSessionId = sessionId || state.sessionId;
+        // F4：报告已出，启用导出按钮；F2：启用逐轮回看
+        $('btnExportMd').disabled = false;
+        $('btnViewTurns').disabled = false;
+        $('turnsReplay').hidden = true;
+        $('turnsReplay').innerHTML = '';
 
         const turns = Array.isArray(r.perTurnReview) ? r.perTurnReview : [];
         const collapsed = Array.isArray(r.collapsedPoints) ? r.collapsedPoints : [];
@@ -232,10 +239,89 @@
         try {
             const r = await api('/api/interview/' + sessionId + '/report');
             state.reportRendered = false;  // 解除实时流的一次性闸门，强制渲染这份历史报告
-            renderReport(r);
+            renderReport(r, sessionId);
             setState('历史 #' + sessionId + ' 报告');
             tip('已载入历史会话 #' + sessionId + ' 的报告');
         } catch (e) { tip(e.message, true); }
+    }
+
+    // ---------- F1：真实面试记录 ----------
+
+    async function saveRealInterview() {
+        const content = $('realInterviewText').value.trim();
+        if (!content) { tip('请先填写面试记录内容', true); return; }
+        const btn = $('btnRealInterview');
+        btn.disabled = true;
+        try {
+            const r = await api('/api/real-interview', 'POST', { content });
+            tip('已保存真实面试记录 #' + r.recordId + '（已进 RAG 语料）');
+            $('realInterviewText').value = '';
+            loadRealInterview();
+        } catch (e) { tip(e.message, true); }
+        finally { btn.disabled = false; }
+    }
+
+    async function loadRealInterview() {
+        try {
+            const arr = await api('/api/real-interview');
+            const box = $('realInterviewList');
+            if (!arr.length) { box.innerHTML = '<p class="placeholder" style="margin:4px 0">暂无真实面试记录</p>'; return; }
+            box.innerHTML = arr.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(r =>
+                '<div class="recItem"><div class="recMeta">#' + r.recordId + ' · ' + fmtTime(r.createdAt) + '</div>' +
+                '<div class="recContent">' + esc(r.content) + '</div></div>').join('');
+        } catch (e) { tip('加载真实面试记录失败：' + e.message, true); }
+    }
+
+    // ---------- F2：面试逐轮回看 ----------
+
+    async function viewTurns() {
+        if (!state.reportSessionId) { tip('没有可回看的会话', true); return; }
+        const panel = $('turnsReplay');
+        const btn = $('btnViewTurns');
+        // 已展开 → 收起
+        if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; btn.textContent = '逐轮回看'; return; }
+        try {
+            btn.textContent = '加载中…';
+            const arr = await api('/api/interview/' + state.reportSessionId + '/turns');
+            if (!arr.length) {
+                panel.innerHTML = '<p class="placeholder">该会话暂无问答轮次记录</p>';
+            } else {
+                panel.innerHTML = arr.map(t =>
+                    '<div class="turnItem">' +
+                    '<div class="turnMeta">第 ' + t.seq + ' 轮' + (t.layer ? ' · ' + esc(t.layer) : '') + '</div>' +
+                    '<div class="turnQ">' + esc(t.question) + '</div>' +
+                    '<div class="turnA">' + esc(t.answer || '（未作答）') + '</div>' +
+                    '</div>').join('');
+            }
+            panel.hidden = false;
+            btn.textContent = '收起回看';
+        } catch (e) { tip(e.message, true); }
+        finally { btn.disabled = false; }
+    }
+
+    // ---------- F4：报告导出 Markdown ----------
+
+    function exportReportMd() {
+        if (!state.reportSessionId) { tip('没有可导出的报告', true); return; }
+        const sid = state.reportSessionId;
+        // 用 fetch 拿文本而不是直接 location.href，因为要带 Authorization 头
+        fetch('/api/interview/' + sid + '/report.md', {
+            headers: { 'Authorization': 'Bearer ' + state.token }
+        }).then(resp => {
+            if (!resp.ok) throw new Error('导出失败：' + resp.status);
+            return resp.text();
+        }).then(text => {
+            const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'interview-' + sid + '-report.md';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            tip('报告已导出为 Markdown');
+        }).catch(e => tip(e.message, true));
     }
 
     // ---------- 错题本 ----------
@@ -444,6 +530,12 @@
             try { await api('/api/note', 'POST', { content: content }); tip('笔记已存入 RAG 语料'); loadQuota(); }
             catch (e) { tip(e.message, true); }
         };
+        // F1：真实面试记录
+        $('btnRealInterview').onclick = saveRealInterview;
+        $('btnRefreshRealInterview').onclick = loadRealInterview;
+        // F2/F4：报告操作
+        $('btnExportMd').onclick = exportReportMd;
+        $('btnViewTurns').onclick = viewTurns;
 
         // 开始
         $('btnStart').onclick = async () => {
@@ -460,6 +552,11 @@
                 state.rendered.clear();
                 clearChat();
                 $('report').innerHTML = '<p class="placeholder">面试进行中，结束后出报告…</p>';
+                $('btnExportMd').disabled = true;
+                $('btnViewTurns').disabled = true;
+                $('btnViewTurns').textContent = '逐轮回看';
+                $('turnsReplay').hidden = true;
+                $('turnsReplay').innerHTML = '';
                 $('btnEnd').disabled = false;
                 $('answerText').disabled = true;
                 $('btnAnswer').disabled = true;
@@ -984,6 +1081,7 @@
         refreshResume();
         loadWeak();
         loadHistory();
+        loadRealInterview();  // F1：真实面试记录列表
     }
 
     // ---------- 启动 ----------

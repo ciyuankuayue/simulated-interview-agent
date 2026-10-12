@@ -248,6 +248,17 @@ public class MaterialController {
         return mapOf("recordId", saved.getId());
     }
 
+    @GetMapping("/real-interview")
+    public List<Map<String, Object>> listRealInterview() {
+        User user = currentUser.currentUser();
+        List<Map<String, Object>> resp = new ArrayList<>();
+        for (RealInterviewRecord r : recordRepo.findByUser(user)) {
+            resp.add(mapOf("recordId", r.getId(), "content", r.getContent(),
+                    "createdAt", str(r.getCreatedAt())));
+        }
+        return resp;
+    }
+
     // ---------- 内部 ----------
 
     /** 写入 RAG 语料库；技术故障只记日志（embedding 未配时不影响主流程），但 402/409 必须透传。 */

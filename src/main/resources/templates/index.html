@@ -148,6 +148,16 @@
         </div>
 
         <div class="block">
+            <label class="lb" for="realInterviewText">真实面试记录（可选）</label>
+            <textarea id="realInterviewText" rows="4" placeholder="记录真实面试经历：公司/岗位/被问到的问题/你的回答/结果…会进 RAG 语料，帮模拟面试更贴合真实场景"></textarea>
+            <div class="row">
+                <button id="btnRealInterview" class="ghost">保存记录</button>
+                <button id="btnRefreshRealInterview" class="ghost">刷新</button>
+            </div>
+            <div id="realInterviewList" class="recList"></div>
+        </div>
+
+        <div class="block">
             <span class="lb">面试官角色</span>
             <label class="chk"><input type="checkbox" class="roleChk" value="技术深挖官" checked> 技术深挖官</label>
             <label class="chk"><input type="checkbox" class="roleChk" value="项目质疑官"> 项目质疑官</label>
@@ -214,9 +224,14 @@
         </div>
 
         <h2>4. Critic 报告</h2>
+        <div class="row reportActions">
+            <button id="btnExportMd" class="ghost" disabled>导出 MD</button>
+            <button id="btnViewTurns" class="ghost" disabled>逐轮回看</button>
+        </div>
         <div id="report" class="report">
             <p class="placeholder">结束后这里出报告：匹配度、逐轮讲解、答崩点、表述问题、提醒。</p>
         </div>
+        <div id="turnsReplay" class="turnsReplay" hidden></div>
 
         <h2>5. 错题本（间隔重复）</h2>
         <div class="row">

@@ -4,6 +4,7 @@ import com.bupt.mockinterview.agent.AgentEvent;
 import com.bupt.mockinterview.agent.InterviewOrchestrator;
 import com.bupt.mockinterview.domain.CriticReport;
 import com.bupt.mockinterview.domain.InterviewSession;
+import com.bupt.mockinterview.domain.InterviewTurn;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.domain.repository.CriticReportRepository;
 import com.bupt.mockinterview.domain.repository.InterviewSessionRepository;
@@ -16,6 +17,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -204,6 +206,127 @@ public class InterviewController {
         return body;
     }
 
+    // ---------- 逐轮回看（F2） ----------
+
+    /**
+     * 某场面试的全部问答轮次（按 seq 升序），供历史回看时逐轮展示原题与原答。
+     * scoreJson 不回传（内部判分细节，报告里已有 perTurnReview）。
+     */
+    @GetMapping("/{sessionId}/turns")
+    public List<Map<String, Object>> turns(@PathVariable Long sessionId) {
+        sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
+                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+        List<Map<String, Object>> resp = new ArrayList<>();
+        for (InterviewTurn t : turnRepo.findBySessionIdOrderBySeqAsc(sessionId)) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("seq", t.getSeq());
+            m.put("layer", t.getLayer());
+            m.put("question", t.getQuestion());
+            m.put("answer", t.getAnswer());
+            resp.add(m);
+        }
+        return resp;
+    }
+
+    // ---------- 报告导出 Markdown（F4） ----------
+
+    /**
+     * 把 Critic 报告导出为 Markdown 文本，前端点击「导出 MD」直接下载。
+     * 纯文本拼接，零依赖；老报告字段缺失时跳过对应小节。
+     */
+    @GetMapping(value = "/{sessionId}/report.md", produces = "text/markdown; charset=UTF-8")
+    public ResponseEntity<String> reportMarkdown(@PathVariable Long sessionId) {
+        CriticReport r = reportRepo.findBySessionIdAndUser(sessionId, currentUser.currentUser()).orElse(null);
+        if (r == null) {
+            throw new IllegalArgumentException("该会话还没有报告，请先调用 end");
+        }
+        StringBuilder md = new StringBuilder();
+        md.append("# AI 模拟面试报告\n\n");
+        md.append("- 匹配度：**").append(r.getMatchScore() == null ? "—" : r.getMatchScore()).append("** / 100\n");
+        if (r.getCreatedAt() != null) {
+            md.append("- 生成时间：").append(r.getCreatedAt()).append("\n");
+        }
+        md.append("\n");
+
+        // 逐轮讲解
+        Object turnsObj = parseJson(r.getPerTurnReview(), new TypeReference<List<Map<String, Object>>>() {});
+        if (turnsObj instanceof List<?> turns && !turns.isEmpty()) {
+            md.append("## 逐轮讲解\n\n");
+            for (Object o : turns) {
+                if (!(o instanceof Map<?, ?> tRaw)) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> t = (Map<String, Object>) tRaw;
+                md.append("### 第 ").append(t.get("turnSeq")).append(" 轮 · ")
+                        .append(t.get("score")).append("/8");
+                if ("behavior".equals(t.get("track"))) md.append(" · 行为");
+                md.append("\n\n");
+                md.append("**题目**：").append(str(t.get("question"))).append("\n\n");
+                appendMdField(md, "讲解", t.get("explanation"));
+                appendMdField(md, "纠正", t.get("correction"));
+                appendMdField(md, "知识补充", t.get("knowledgeSupplement"));
+                appendMdField(md, "示范回答", t.get("exemplarAnswer"));
+            }
+        }
+
+        // 答崩点
+        Object collapsedObj = parseJson(r.getCollapsedPoints(), new TypeReference<List<String>>() {});
+        if (collapsedObj instanceof List<?> collapsed && !collapsed.isEmpty()) {
+            md.append("## 答崩点\n\n");
+            for (Object p : collapsed) md.append("- ").append(p).append("\n");
+            md.append("\n");
+        }
+
+        // 表述问题
+        Object issuesObj = parseJson(r.getExpressionIssues(), new TypeReference<List<Map<String, Object>>>() {});
+        if (issuesObj instanceof List<?> issues && !issues.isEmpty()) {
+            md.append("## 表述问题\n\n");
+            for (Object o : issues) {
+                if (!(o instanceof Map<?, ?> iRaw)) continue;
+                md.append("- **").append(str(iRaw.get("issue"))).append("**：")
+                        .append(str(iRaw.get("guide"))).append("\n");
+            }
+            md.append("\n");
+        }
+
+        // 行为维度
+        Map<String, Object> br = parseJsonObjectOrNull(r.getBehaviorReview());
+        if (br != null) {
+            md.append("## 行为面试评估\n\n");
+            Object dims = br.get("dimensions");
+            if (dims instanceof Map) {
+                md.append("| 维度 | 评分 |\n|---|---|\n");
+                for (Map.Entry<String, Object> e : ((Map<String, Object>) dims).entrySet()) {
+                    md.append("| ").append(e.getKey()).append(" | ").append(e.getValue()).append("/2 |\n");
+                }
+                md.append("\n");
+            }
+            if (br.get("summary") != null) {
+                md.append(br.get("summary")).append("\n\n");
+            }
+            Object sugs = br.get("suggestions");
+            if (sugs instanceof List) {
+                for (Object s : (List<?>) sugs) md.append("- ").append(s).append("\n");
+                md.append("\n");
+            }
+        }
+
+        // 整体注意事项
+        if (r.getOverallNotes() != null && !r.getOverallNotes().isBlank()) {
+            md.append("## 整体注意事项\n\n").append(r.getOverallNotes()).append("\n\n");
+        }
+
+        // 必要提醒
+        Object remindersObj = parseJson(r.getReminders(), new TypeReference<List<String>>() {});
+        if (remindersObj instanceof List<?> reminders && !reminders.isEmpty()) {
+            md.append("## 必要提醒\n\n");
+            for (Object p : reminders) md.append("- ").append(p).append("\n");
+        }
+
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=\"interview-" + sessionId + "-report.md\"")
+                .body(md.toString());
+    }
+
     // ---------- 内部 ----------
 
     private String statusOf(Long sessionId) {
@@ -261,5 +384,15 @@ public class InterviewController {
         } catch (Exception e) {
             return List.of();
         }
+    }
+
+    private static String str(Object v) {
+        return v == null ? "" : String.valueOf(v);
+    }
+
+    /** Markdown 导出用：字段非空才输出「- 标签：值」一行。 */
+    private static void appendMdField(StringBuilder md, String label, Object value) {
+        if (value == null || String.valueOf(value).isBlank()) return;
+        md.append("- **").append(label).append("**：").append(value).append("\n");
     }
 }
