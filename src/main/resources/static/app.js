@@ -1,67 +1,88 @@
-/*  AI 模拟面试 · 前端交互（T9）
+/* AI 模拟面试 · Vue3 前端（F12 重构）
  *
- *  约定：本文件是 api.md 契约的一个消费者——所有数据都走 /api/** 的 JSON 接口，
- *  页面骨架由 Thymeleaf 渲染，这里只负责「调接口 + 收 SSE + 渲染」。
- *
- *  两条关键时序（后端已配合处理，前端也要对上）：
- *  1. **订阅晚于生产**：start 会同步返回首题，但前端拿到 sessionId 才连 SSE。
- *     后端 SseBroker 保留历史并**重放**，所以首题由 SSE 的 question 事件渲染，
- *     start 响应的 firstQuestion 只做提示、不渲染——避免重复两遍。
- *  2. **answer 只回 {accepted:true}**：判分结果走 SSE（score / followup），
- *     所以提交后禁用输入，等下一个 await_answer 再放开。
- *
- *  无框架、无构建链（决策 #12）。原生 fetch + EventSource 足够。
+ * 从 Thymeleaf + 原生 JS 单文件迁移到 Vue3 CDN（无 npm 构建链）。
+ * 组件化拆分：认证 / 准备 / 面试 / 报告 / 错题本 / 心理陪伴。
+ * 共享状态用 reactive store，SSE 面试流在 InterviewPanel 组件内管理。
  */
 (function () {
     'use strict';
 
-    const $ = (id) => document.getElementById(id);
+    const { createApp, reactive, ref, computed, onMounted, nextTick, watch } = Vue;
 
-    const state = {
-        // R1-1.5 多用户鉴权：JS 内存变量，刷新即失（符合安全约定），**严禁 localStorage**
-        token: null,              // JWT（Authorization header / SSE jwt query）
-        username: null,           // 登录用户名（UI 显示用）
+    // ==================== 共享状态 Store ====================
+    const store = reactive({
+        token: null,
+        username: null,
         jdId: null,
-        jdList: [],  // F5：缓存 JD 完整列表（含 keywords），选中时展示考点
+        jdList: [],
         resumeId: null,
         sessionId: null,
-        es: null,
+        interviewActive: false,
         awaiting: false,
-        reportRendered: false,
-        reportSessionId: null,  // F2/F4：当前报告所属会话 id（live 或回看），供导出/逐轮回看用
-        rendered: new Set(),  // 事件去重：type + turnSeq
-        weakDetailLoaded: new Set(),  // 错题本详情懒加载：已拉取过的 weakPointId
-        quota: null  // R2：最近一次额度视图 {totalTokens,usedTokens,remainingTokens}，null=未加载（不前置拦截）
-        // R1-3 起只有 JWT 一道门禁（旧保险箱 vaultToken 已删除）；token 只在内存，刷新必失
-    };
+        reportSessionId: null,
+        quota: null,
+        chatMessages: [],      // 面试对话消息列表
+        report: null,          // 当前 Critic 报告
+        stateText: '未开始',
+        connOk: false,
+        connText: '未连接',
+        // 用户设置
+        keyMode: 'PLATFORM',
+        byokKey: '',
+        byokStatus: '',
+        chatProvider: 'DEEPSEEK',
+        // 错题本
+        weakList: [],
+        dueOnly: false,
+        // 历史
+        historyList: [],
+        histFilter: { keyword: '', status: '', minScore: '', maxScore: '' },
+        // 视图切换
+        view: 'prepare',
+    });
 
-    // ---------- 工具 ----------
+    // ==================== 工具函数 ====================
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function fmtTime(iso) {
+        if (!iso) return '—';
+        const d = new Date(iso);
+        return isNaN(d) ? iso : d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatTokens(n) {
+        if (n == null) return '—';
+        if (n >= 10000) return (n / 10000).toFixed(1) + ' 万';
+        return String(n);
+    }
+
+    function formatPoints(tokens) {
+        // 50 万 token = 1000 积分
+        if (tokens == null) return '—';
+        return Math.round(tokens / 500).toString();
+    }
 
     async function api(path, method, body) {
         const headers = { 'Content-Type': 'application/json; charset=utf-8' };
-        // R1-3 起单令牌：只有 JWT（Authorization header；SSE 走 ?jwt= query）
-        if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+        if (store.token) headers['Authorization'] = 'Bearer ' + store.token;
         const opt = { method: method || 'GET', headers: headers };
         if (body !== undefined) opt.body = JSON.stringify(body);
         let res;
-        try {
-            res = await fetch(path, opt);
-        } catch (e) {
-            throw new Error('请求失败（后端没起？）: ' + e.message);
-        }
+        try { res = await fetch(path, opt); }
+        catch (e) { throw new Error('请求失败（后端没起？）: ' + e.message); }
         const text = await res.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
         if (!res.ok) {
             const msg = (data && data.message) ? data.message : (typeof data === 'string' ? data : res.status);
-            // 401：登录接口=用户名密码错误直接抛给弹窗；其余一律 JWT 失效 → 强制下线（R1-3 已无第二道门禁）
             if (res.status === 401) {
                 if (path === '/api/auth/login') throw new Error(msg || '用户名或密码错误');
                 forceLogout('登录已过期，请重新登录');
                 throw new Error('登录已过期，请重新登录');
             }
-            // 402：Token 额度耗尽。R2 起平台实扣/BYOK 服务费统一走此码——
-            // 全局兜底弹窗（各入口另有前置拦截），同时刷新额度数字，错误继续抛给调用方走各自 catch
             if (res.status === 402 || (data && data.code === 'QUOTA_EXHAUSTED')) {
                 loadQuota();
                 showQuotaModal(msg);
@@ -74,1210 +95,933 @@
         return data;
     }
 
-    /** 强制下线：清 JWT、停 SSE、隐藏主界面、弹登录窗（带错误提示）。 */
     function forceLogout(message) {
-        state.token = null;
-        state.username = null;
-        state.quota = null;  // 清掉上个账号的额度视图，防下个用户登录前误拦
-        hideQuotaModal();
+        store.token = null;
+        store.username = null;
+        store.quota = null;
         closeStream();
-        $('appShell').hidden = true;
-        $('userArea').hidden = true;
+        hideQuotaModal();
         showAuthModal('login', message);
     }
 
-    function esc(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
-            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
-
-    function tip(msg, bad) {
-        const el = $('tip');
-        el.textContent = msg || '';
-        el.className = 'tip' + (bad ? ' bad' : '');
-    }
-
-    function setState(text) { $('stateText').textContent = text; }
-
-    function setConn(ok, text) {
-        $('connDot').className = 'dot ' + (ok ? 'online' : 'offline');
-        $('connText').textContent = text;
-    }
-
-    function fmtTime(iso) {
-        if (!iso) return '—';
-        const d = new Date(iso);
-        return isNaN(d) ? iso : d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-    }
-
-    // ---------- 对话区渲染 ----------
-
-    function bubble(cls, title, html) {
-        const box = document.createElement('div');
-        box.className = 'msg ' + cls;
-        box.innerHTML = '<div class="msgTitle">' + esc(title) + '</div><div class="msgBody">' + html + '</div>';
-        $('chat').appendChild(box);
-        $('chat').scrollTop = $('chat').scrollHeight;
-        return box;
-    }
-
-    function clearChat() {
-        $('chat').innerHTML = '';
-    }
-
-    function renderQuestion(ev) {
-        const layer = ev.layer ? ' · 追问 L' + ev.layer : '';
-        bubble('q', (ev.role || '面试官') + ' · 第 ' + ev.turnSeq + ' 题' + layer, esc(ev.question));
-    }
-
-    function renderScore(ev) {
-        const s = ev.score == null ? '—' : ev.score;
-        const pct = Math.max(0, Math.min(100, (Number(s) / 8) * 100));
-        // R7：行为轮角标（STAR 四维评分，赛道与技术轮区分）
-        const badge = ev.track === 'behavior' ? '<span class="trackBadge">行为评分</span>' : '';
-        const html =
-            '<div class="scoreRow"><span class="scoreNum">' + esc(s) + '</span><span class="scoreDen">/ 8</span>' +
-            '<span class="bar"><i style="width:' + pct + '%"></i></span></div>' +
-            (ev.oneLineCorrection ? '<div class="correction">一句纠正：' + esc(ev.oneLineCorrection) + '</div>' : '');
-        bubble('score', '本轮评分（第 ' + ev.turnSeq + ' 轮）' + badge, html);
-    }
-
-    function renderAnswer(text) {
-        bubble('me', '我', esc(text));
-    }
-
-    // ---------- 报告 ----------
-
-    function renderReport(r, sessionId) {
-        if (state.reportRendered) return;   // end 的响应与 SSE 的 report 事件只渲染一次
-        state.reportRendered = true;
-        state.reportSessionId = sessionId || state.sessionId;
-        // F4：报告已出，启用导出按钮；F2：启用逐轮回看
-        $('btnExportMd').disabled = false;
-        $('btnViewTurns').disabled = false;
-        $('turnsReplay').hidden = true;
-        $('turnsReplay').innerHTML = '';
-
-        const turns = Array.isArray(r.perTurnReview) ? r.perTurnReview : [];
-        const collapsed = Array.isArray(r.collapsedPoints) ? r.collapsedPoints : [];
-        const issues = Array.isArray(r.expressionIssues) ? r.expressionIssues : [];
-        const reminders = Array.isArray(r.reminders) ? r.reminders : [];
-
-        const turnHtml = turns.map((t) =>
-            '<details class="turn"><summary>第 ' + esc(t.turnSeq) + ' 轮 · ' + esc(t.score) + '/8 · ' +
-            (t.track === 'behavior' ? '<span class="trackBadge">行为</span> ' : '') +
-            esc(String(t.question || '').slice(0, 40)) + '</summary>' +
-            row('讲解', t.explanation) + row('纠正', t.correction) +
-            row('知识补充', t.knowledgeSupplement) + row('示范回答', t.exemplarAnswer) +
-            '</details>').join('');
-
-        $('report').innerHTML =
-            '<div class="match">匹配度 <b>' + esc(r.matchScore == null ? '—' : r.matchScore) + '</b> / 100</div>' +
-            behaviorCard(r.behaviorReview) +
-            (turnHtml ? '<h3>逐轮讲解</h3>' + turnHtml : '') +
-            list('答崩点', collapsed) +
-            (issues.length ? '<h3>表述问题</h3>' + issues.map((i) =>
-                '<div class="issue"><b>' + esc(i.issue) + '</b><div>' + esc(i.guide) + '</div></div>').join('') : '') +
-            (r.overallNotes ? '<h3>整体注意事项</h3><p class="notes">' + esc(r.overallNotes) + '</p>' : '') +
-            list('必要提醒', reminders);
-
-        setState('已完成，报告已出');
-    }
-
-    /**
-     * R7 行为维度卡：behaviorReview 为 null（纯技术场 / 老报告回看）或缺关键字段时整卡不渲染。
-     * dimensions：STAR结构 / 行动细节 / 结果与反思 / 表达与抗压，各 0-2 分。
-     */
-    function behaviorCard(br) {
-        if (!br || typeof br !== 'object') return '';
-        const dims = br.dimensions && typeof br.dimensions === 'object' ? br.dimensions : null;
-        const suggestions = Array.isArray(br.suggestions) ? br.suggestions : [];
-        if (!dims && !br.summary && !suggestions.length) return '';
-        const dimHtml = dims ? '<div class="behDims">' + Object.entries(dims).map(([k, v]) =>
-            '<span class="behDim">' + esc(k) + ' <b>' + esc(v) + '</b>/2</span>').join('') + '</div>' : '';
-        const sugHtml = suggestions.length
-            ? '<ul class="lst">' + suggestions.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
-        return '<h3>行为面试评估</h3><div class="behCard">' + dimHtml +
-            (br.summary ? '<p class="notes">' + esc(br.summary) + '</p>' : '') +
-            sugHtml + '</div>';
-    }
-
-    function row(label, value) {
-        return value ? '<div class="kv"><span class="k">' + label + '</span><span class="v">' + esc(value) + '</span></div>' : '';
-    }
-
-    function list(title, arr) {
-        if (!arr || !arr.length) return '';
-        return '<h3>' + title + '</h3><ul class="lst">' + arr.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>';
-    }
-
-    // ---------- 历史面试 + 报告回看 ----------
-
-    async function loadHistory() {
-        try {
-            // F8：拼接筛选参数
-            const params = new URLSearchParams();
-            const kw = $('histKw').value.trim();
-            const st = $('histStatus').value;
-            const mn = $('histMinScore').value;
-            const mx = $('histMaxScore').value;
-            if (kw) params.set('keyword', kw);
-            if (st) params.set('status', st);
-            if (mn) params.set('minScore', mn);
-            if (mx) params.set('maxScore', mx);
-            const qs = params.toString();
-            const arr = await api('/api/interview/sessions' + (qs ? '?' + qs : ''));
-            if (!arr || !arr.length) {
-                $('history').innerHTML = '<p class="placeholder">' + (kw || st || mn || mx ? '没有匹配的历史面试。' : '还没有历史面试。') + '</p>';
-                return;
-            }
-            $('history').innerHTML = arr.map((s) => {
-                const label = (s.jobType || '面试') + (s.sameTypeTag ? ' · ' + esc(s.sameTypeTag) : '');
-                const score = s.matchScore == null ? '未评分' : esc(s.matchScore) + ' 分';
-                const cls = 'histItem' + (s.hasReport ? '' : ' noReport');
-                const tag = s.hasReport ? '' : ' · ' + esc(s.status);
-                return '<button class="' + cls + '" data-sid="' + esc(s.sessionId) + '"' +
-                    (s.hasReport ? '' : ' disabled title="这场还没出报告"') + '>#' + esc(s.sessionId) +
-                    ' ' + esc(label) + '<span>' + esc(fmtTime(s.createdAt)) + ' · ' + score + esc(tag) + '</span></button>';
-            }).join('');
-        } catch (e) {
-            $('history').innerHTML = '<p class="placeholder bad">历史加载失败：' + esc(e.message) + '</p>';
+    function showQuotaModal(serverMessage) {
+        const m = document.getElementById('quotaModal');
+        if (m) {
+            m.hidden = false;
+            document.getElementById('quotaModalMsg').textContent =
+                serverMessage || '上传资料、开始面试都需要积分。请联系管理员充值。';
+            document.getElementById('quotaModalUser').textContent = store.username || '—';
+            document.getElementById('quotaModalRemain').textContent =
+                store.quota ? formatPoints(store.quota.remainingTokens) : '0';
         }
     }
+    function hideQuotaModal() { const m = document.getElementById('quotaModal'); if (m) m.hidden = true; }
 
-    // ---------- F7 分数趋势图 ----------
-
-    async function showTrend() {
-        const box = $('trendChart');
-        if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+    async function loadQuota() {
         try {
-            const arr = await api('/api/interview/trend');
-            if (!arr || !arr.length) {
-                box.innerHTML = '<p class="placeholder">还没有可绘制的分数数据（需至少一场已评分面试）。</p>';
-                box.hidden = false;
-                return;
-            }
-            box.innerHTML = drawTrendSvg(arr);
-            box.hidden = false;
-        } catch (e) {
-            box.innerHTML = '<p class="placeholder bad">趋势图加载失败：' + esc(e.message) + '</p>';
-            box.hidden = false;
-        }
+            store.quota = await api('/api/billing/quota');
+        } catch (e) { /* 额度加载失败不打扰 */ }
     }
 
-    /** 纯 SVG 折线图：X=场次序号，Y=匹配度 0-100，圆点 hover 显示详情。 */
-    function drawTrendSvg(data) {
-        const W = 400, H = 160, pad = { l: 32, r: 12, t: 12, b: 22 };
-        const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-        const n = data.length;
-        const maxY = 100;
-        const xAt = (i) => pad.l + (n <= 1 ? iw / 2 : (iw * i) / (n - 1));
-        const yAt = (v) => pad.t + ih - (ih * v) / maxY;
-
-        // 网格线 + Y 轴刻度
-        let grid = '';
-        for (let g = 0; g <= 4; g++) {
-            const y = pad.t + (ih * g) / 4;
-            const label = 100 - g * 25;
-            grid += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y +
-                '" stroke="#2a3650" stroke-dasharray="2,3"/>' +
-                '<text x="' + (pad.l - 4) + '" y="' + (y + 3) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + label + '</text>';
-        }
-
-        // 折线
-        const pts = data.map((d, i) => xAt(i) + ',' + yAt(d.matchScore)).join(' ');
-        const poly = '<polyline points="' + pts + '" fill="none" stroke="#5b9dff" stroke-width="2"/>';
-
-        // 圆点 + 标题提示
-        let dots = '';
-        data.forEach((d, i) => {
-            const cx = xAt(i), cy = yAt(d.matchScore);
-            const title = '#' + d.sessionId + ' · ' + fmtTime(d.createdAt) + ' · ' + d.matchScore + '分' +
-                (d.jobType ? ' · ' + d.jobType : '');
-            dots += '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="#5b9dff">' +
-                '<title>' + esc(title) + '</title></circle>';
-        });
-
-        // X 轴首尾日期
-        const xLabel = '<text x="' + pad.l + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9">' +
-            esc(fmtTime(data[0].createdAt)) + '</text>' +
-            '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9" text-anchor="end">' +
-            esc(fmtTime(data[n - 1].createdAt)) + '</text>';
-
-        const tip = '<div class="trendTip">共 ' + n + ' 场 · 匹配度范围 ' +
-            Math.min(...data.map(d => d.matchScore)) + '–' + Math.max(...data.map(d => d.matchScore)) + ' · 悬停圆点看详情</div>';
-
-        return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
-            grid + poly + dots + xLabel + '</svg>' + tip;
-    }
-
-    /** 回看指定场次的报告（历史点击）；与实时流无关，强制渲染覆盖当前报告区。 */
-    async function viewHistoryReport(sessionId) {
-        tip('正在加载 #' + sessionId + ' 的报告…');
-        try {
-            const r = await api('/api/interview/' + sessionId + '/report');
-            state.reportRendered = false;  // 解除实时流的一次性闸门，强制渲染这份历史报告
-            renderReport(r, sessionId);
-            setState('历史 #' + sessionId + ' 报告');
-            tip('已载入历史会话 #' + sessionId + ' 的报告');
-        } catch (e) { tip(e.message, true); }
-    }
-
-    // ---------- F1：真实面试记录 ----------
-
-    async function saveRealInterview() {
-        const content = $('realInterviewText').value.trim();
-        if (!content) { tip('请先填写面试记录内容', true); return; }
-        const btn = $('btnRealInterview');
-        btn.disabled = true;
-        try {
-            const r = await api('/api/real-interview', 'POST', { content });
-            tip('已保存真实面试记录 #' + r.recordId + '（已进 RAG 语料）');
-            $('realInterviewText').value = '';
-            loadRealInterview();
-        } catch (e) { tip(e.message, true); }
-        finally { btn.disabled = false; }
-    }
-
-    async function loadRealInterview() {
-        try {
-            const arr = await api('/api/real-interview');
-            const box = $('realInterviewList');
-            if (!arr.length) { box.innerHTML = '<p class="placeholder" style="margin:4px 0">暂无真实面试记录</p>'; return; }
-            box.innerHTML = arr.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(r =>
-                '<div class="recItem"><div class="recMeta">#' + r.recordId + ' · ' + fmtTime(r.createdAt) + '</div>' +
-                '<div class="recContent">' + esc(r.content) + '</div></div>').join('');
-        } catch (e) { tip('加载真实面试记录失败：' + e.message, true); }
-    }
-
-    // ---------- F2：面试逐轮回看 ----------
-
-    async function viewTurns() {
-        if (!state.reportSessionId) { tip('没有可回看的会话', true); return; }
-        const panel = $('turnsReplay');
-        const btn = $('btnViewTurns');
-        // 已展开 → 收起
-        if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; btn.textContent = '逐轮回看'; return; }
-        try {
-            btn.textContent = '加载中…';
-            const arr = await api('/api/interview/' + state.reportSessionId + '/turns');
-            if (!arr.length) {
-                panel.innerHTML = '<p class="placeholder">该会话暂无问答轮次记录</p>';
-            } else {
-                panel.innerHTML = arr.map(t =>
-                    '<div class="turnItem">' +
-                    '<div class="turnMeta">第 ' + t.seq + ' 轮' + (t.layer ? ' · ' + esc(t.layer) : '') + '</div>' +
-                    '<div class="turnQ">' + esc(t.question) + '</div>' +
-                    '<div class="turnA">' + esc(t.answer || '（未作答）') + '</div>' +
-                    '</div>').join('');
-            }
-            panel.hidden = false;
-            btn.textContent = '收起回看';
-        } catch (e) { tip(e.message, true); }
-        finally { btn.disabled = false; }
-    }
-
-    // ---------- F4：报告导出 Markdown ----------
-
-    function exportReportMd() {
-        if (!state.reportSessionId) { tip('没有可导出的报告', true); return; }
-        const sid = state.reportSessionId;
-        // 用 fetch 拿文本而不是直接 location.href，因为要带 Authorization 头
-        fetch('/api/interview/' + sid + '/report.md', {
-            headers: { 'Authorization': 'Bearer ' + state.token }
-        }).then(resp => {
-            if (!resp.ok) throw new Error('导出失败：' + resp.status);
-            return resp.text();
-        }).then(text => {
-            const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'interview-' + sid + '-report.md';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-            tip('报告已导出为 Markdown');
-        }).catch(e => tip(e.message, true));
-    }
-
-    // ---------- 错题本 ----------
-
-    async function loadWeak() {
-        try {
-            const path = $('dueOnly').checked ? '/api/weak-point/due' : '/api/weak-point';
-            const arr = await api(path);
-            if (!arr || !arr.length) {
-                $('weak').innerHTML = '<p class="placeholder">' +
-                    ($('dueOnly').checked ? '今天没有到期的复习项。' : '错题本是空的（答崩的知识点会自动进来）。') + '</p>';
-                return;
-            }
-            $('weak').innerHTML = arr.map((w) =>
-                '<details class="wp" data-id="' + esc(w.weakPointId) + '"><summary>' +
-                '<div class="wpTop"><b>' + esc(w.knowledgePoint) + '</b>' +
-                '<span class="chip">错 ' + esc(w.wrongCount) + ' 次 · stage ' + esc(w.reviewStage) + '</span></div>' +
-                '<div class="wpMeta">下次复习：' + esc(fmtTime(w.nextReviewAt)) + ' · 点击展开答崩现场</div>' +
-                (w.status ? '<div class="wpStatus">现状：' + esc(w.status) + '</div>' : '') +
-                '</summary><div class="wpBody">展开加载答崩现场…</div></details>').join('');
-        } catch (e) {
-            $('weak').innerHTML = '<p class="placeholder bad">加载失败：' + esc(e.message) + '</p>';
-        }
-    }
-
-    /** 错题本展开时懒加载详情（每个 id 只拉一次）。 */
-    async function loadWeakDetail(elDetails) {
-        const id = elDetails.getAttribute('data-id');
-        const body = elDetails.querySelector('.wpBody');
-        if (!body || state.weakDetailLoaded.has(id)) return;
-        state.weakDetailLoaded.add(id);
-        body.textContent = '加载中…';
-        try {
-            const d = await api('/api/weak-point/' + id);
-            body.innerHTML = renderWeakDetail(d);
-        } catch (e) {
-            state.weakDetailLoaded.delete(id);   // 加载失败允许重试
-            body.textContent = '详情加载失败：' + e.message;
-        }
-    }
-
-    function renderWeakDetail(d) {
-        const s = d.latest;
-        if (!s) {
-            return '<div class="sceneEmpty">该条目是升级前记录的旧数据，没有定位到具体答题轮次；可参考上方「现状」复习。</div>';
-        }
-        const layer = s.layer ? ' · 追问 L' + esc(s.layer) : ' · 主问题';
-        const head = '<div class="sceneHead">会话 #' + esc(s.sessionId) + ' · 第 ' + esc(s.turnSeq) + ' 轮' + layer +
-            ' · 得分 <b>' + esc(s.score == null ? '—' : s.score) + '</b>/8</div>';
-        const qa = '<div class="kv"><span class="k">原题</span><span class="v">' + esc(s.question) + '</span></div>' +
-            '<div class="kv"><span class="k">我的回答</span><span class="v">' +
-            esc(s.answer || '（未作答）') + '</span></div>';
-        const r = s.review;
-        const review = r ? (
-            row('讲解', r.explanation) + row('纠正', r.correction) +
-            row('知识补充', r.knowledgeSupplement) + row('示范回答', r.exemplarAnswer)) :
-            '<div class="sceneEmpty">这场还没出 Critic 报告，暂无讲解/示范回答。</div>';
-        return head + qa + review;
-    }
-
-    // ---------- F3 错题本复习模式 ----------
-
-    let reviewQueue = [];   // 待复习的 weakPoint 列表
-    let reviewIdx = 0;      // 当前复习到第几条
-    let reviewQuestion = ''; // 当前题目的题干（判分时回传）
-
-    async function startReviewMode() {
-        const panel = $('reviewPanel');
-        if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; return; }
-        try {
-            reviewQueue = await api('/api/weak-point/due');
-            if (!reviewQueue.length) {
-                panel.innerHTML = '<p class="placeholder">今天没有到期的复习项，去面试里练几个吧。</p>';
-                panel.hidden = false;
-                return;
-            }
-            reviewIdx = 0;
-            panel.hidden = false;
-            loadReviewItem();
-        } catch (e) {
-            panel.innerHTML = '<p class="placeholder bad">复习模式启动失败：' + esc(e.message) + '</p>';
-            panel.hidden = false;
-        }
-    }
-
-    /** 加载当前复习项：出题并展示答题框。 */
-    async function loadReviewItem() {
-        const panel = $('reviewPanel');
-        const w = reviewQueue[reviewIdx];
-        panel.innerHTML = '<div class="rvKp">知识点：' + esc(w.knowledgePoint) +
-            '（' + (reviewIdx + 1) + '/' + reviewQueue.length + '）</div>' +
-            '<div class="rvQ">出题中…</div>';
-        try {
-            const r = await api('/api/weak-point/' + w.weakPointId + '/review/question', 'POST');
-            reviewQuestion = r.question;
-            panel.innerHTML =
-                '<div class="rvKp">知识点：' + esc(w.knowledgePoint) +
-                '（' + (reviewIdx + 1) + '/' + reviewQueue.length + '）</div>' +
-                '<div class="rvQ">' + esc(reviewQuestion) + '</div>' +
-                '<textarea id="rvAnswer" placeholder="在此作答…"></textarea>' +
-                '<div class="rvActions">' +
-                '<button id="rvSubmit" class="primary">提交判分</button>' +
-                '<button id="rvSkip" class="ghost">跳过</button>' +
-                '</div>';
-            $('rvSubmit').onclick = submitReview;
-            $('rvSkip').onclick = nextReview;
-        } catch (e) {
-            panel.innerHTML = '<p class="placeholder bad">出题失败：' + esc(e.message) + '</p>';
-        }
-    }
-
-    async function submitReview() {
-        const ans = $('rvAnswer').value.trim();
-        if (!ans) { tip('请先作答', true); return; }
-        const btn = $('rvSubmit');
-        btn.disabled = true;
-        btn.textContent = '判分中…';
-        try {
-            const w = reviewQueue[reviewIdx];
-            const r = await api('/api/weak-point/' + w.weakPointId + '/review/answer', 'POST',
-                { question: reviewQuestion, answer: ans });
-            const stageText = r.resolved ? '已掌握，出队 ✓' :
-                'stage ' + r.newStage + ' · 下次复习 ' + fmtTime(r.nextReviewAt);
-            $('reviewPanel').innerHTML =
-                '<div class="rvKp">知识点：' + esc(w.knowledgePoint) + '</div>' +
-                '<div class="rvResult">' +
-                '<div class="rvScore">' + esc(r.score) + ' / 8</div>' +
-                '<div>' + esc(r.explanation || '') + '</div>' +
-                '<div style="margin-top:6px;color:var(--muted);font-size:12px">' + esc(stageText) + '</div>' +
-                '</div>' +
-                '<div class="rvActions"><button id="rvNext" class="primary">' +
-                (reviewIdx + 1 < reviewQueue.length ? '下一题' : '完成复习') + '</button></div>';
-            $('rvNext').onclick = nextReview;
-            loadWeak();  // 刷新错题本列表（阶梯已变）
-        } catch (e) {
-            tip(e.message, true);
-            btn.disabled = false;
-            btn.textContent = '提交判分';
-        }
-    }
-
-    function nextReview() {
-        reviewIdx++;
-        if (reviewIdx >= reviewQueue.length) {
-            $('reviewPanel').innerHTML = '<p class="placeholder">本轮复习完成，继续加油！</p>';
-            return;
-        }
-        loadReviewItem();
-    }
-
-    // ---------- SSE ----------
+    // ==================== SSE 面试流 ====================
+    let es = null;
+    let rendered = new Set();
+    let sseFails = 0;
 
     function openStream(sessionId) {
         closeStream();
-        // EventSource 不能自定义请求头：JWT 走 query 参数（R1-3 起唯一令牌）
         const url = '/api/interview/' + sessionId + '/events'
-            + (state.token ? '?jwt=' + encodeURIComponent(state.token) : '');
-        const es = new EventSource(url);
-        state.es = es;
-        let sseFails = 0;   // 连续连接失败计数：收到任何消息/onopen 归零，达上限停止重连（防 401 后无限打接口）
+            + (store.token ? '?jwt=' + encodeURIComponent(store.token) : '');
+        es = new EventSource(url);
+        sseFails = 0;
 
-        es.onopen = () => { sseFails = 0; setConn(true, 'SSE 已连接'); };
+        es.onopen = () => { sseFails = 0; store.connOk = true; store.connText = 'SSE 已连接'; };
 
         const on = (type, fn) => es.addEventListener(type, (e) => {
             let ev = {};
             try { ev = JSON.parse(e.data); } catch (err) { ev = {}; }
-            if (e.data != null) sseFails = 0;   // 有数据=真消息；连接错误的 error 事件 e.data 为 null，不重置
+            if (e.data != null) sseFails = 0;
             const key = type + ':' + (ev.turnSeq == null ? '' : ev.turnSeq);
-            if (ev.turnSeq == null || !state.rendered.has(key)) {
-                state.rendered.add(key);
+            if (ev.turnSeq == null || !rendered.has(key)) {
+                rendered.add(key);
                 fn(ev);
             }
         });
 
-        on('question', (ev) => { renderQuestion(ev); setState('等你作答'); });
-        on('followup', (ev) => { renderQuestion(ev); setState('等你作答（追问）'); });
-        on('score', renderScore);
-        on('await_answer', () => {
-            state.awaiting = true;
-            $('answerText').disabled = false;
-            $('btnAnswer').disabled = false;
-            $('answerText').focus();
-            setState('等你作答');
+        on('question', (ev) => {
+            const layer = ev.layer ? ' · 追问 L' + ev.layer : '';
+            store.chatMessages.push({ cls: 'q', title: (ev.role || '面试官') + ' · 第 ' + ev.turnSeq + ' 题' + layer, body: ev.question });
+            store.stateText = '等你作答';
         });
-        on('report', renderReport);
+        on('followup', (ev) => {
+            const layer = ev.layer ? ' · 追问 L' + ev.layer : '';
+            store.chatMessages.push({ cls: 'q', title: (ev.role || '面试官') + ' · 第 ' + ev.turnSeq + ' 题' + layer, body: ev.question });
+            store.stateText = '等你作答（追问）';
+        });
+        on('score', (ev) => {
+            const s = ev.score == null ? '—' : ev.score;
+            const pct = Math.max(0, Math.min(100, (Number(s) / 8) * 100));
+            const badge = ev.track === 'behavior' ? '<span class="trackBadge">行为评分</span>' : '';
+            const html = '<div class="scoreRow"><span class="scoreNum">' + esc(s) + '</span><span class="scoreDen">/ 8</span>' +
+                '<span class="bar"><i style="width:' + pct + '%"></i></span></div>' +
+                (ev.oneLineCorrection ? '<div class="correction">一句纠正：' + esc(ev.oneLineCorrection) + '</div>' : '');
+            store.chatMessages.push({ cls: 'score', title: '本轮评分（第 ' + ev.turnSeq + ' 轮）' + badge, html: html });
+        });
+        on('await_answer', () => {
+            store.awaiting = true;
+            store.stateText = '等你作答';
+        });
+        on('report', (r) => { renderReport(r); });
         on('error', (ev) => {
-            // 注意：EventSource 自带的 onerror 也走这里（那是连接错误，e.data 为 null），用 code 字段区分业务错误
             if (ev && ev.code) {
-                bubble('err', '异常 · ' + ev.code, esc(ev.message || ''));
+                store.chatMessages.push({ cls: 'err', title: '异常 · ' + ev.code, body: ev.message || '' });
             } else {
                 sseFails++;
                 if (sseFails >= 3) {
-                    // 连续失败（后端重启 / 401 被拒 / 网络断）：浏览器默认会无限重连，这里主动停掉，避免空打接口
                     closeStream();
-                    setConn(false, 'SSE 已断开');
-                    tip('实时连接连续失败已停止，可重新开始一场面试', true);
+                    store.connOk = false; store.connText = 'SSE 已断开';
                 } else {
-                    setConn(false, 'SSE 断开（自动重连 ' + sseFails + '/3）');
+                    store.connOk = false; store.connText = 'SSE 断开（自动重连 ' + sseFails + '/3）';
                 }
             }
         });
         on('done', async () => {
-            setConn(false, '本场结束');
-            $('answerText').disabled = true;
-            $('btnAnswer').disabled = true;
-            $('btnEnd').disabled = true;
+            store.connOk = false; store.connText = '本场结束';
+            store.awaiting = false;
             closeStream();
-            // 正常链路：答满题量后后端已自动推 report（report 事件先于 done），这里 reportRendered=true。
-            // 兜底：若 report 事件缺失（异常/旧版本后端），补一次 /end——接口幂等，已有报告直接返回。
-            if (!state.reportRendered && state.sessionId) {
-                setState('Critic 出报告中…');
+            if (!store.report && store.sessionId) {
+                store.stateText = 'Critic 出报告中…';
                 try {
-                    const r = await api('/api/interview/' + state.sessionId + '/end', 'POST');
-                    renderReport(r);   // 成功时内部会把状态置为「已完成，报告已出」
-                } catch (e) { tip('报告生成失败，可稍后在历史列表重试：' + e.message, true); }
+                    const r = await api('/api/interview/' + store.sessionId + '/end', 'POST');
+                    renderReport(r);
+                } catch (e) { /* 报告失败提示由调用方处理 */ }
             }
-            if (!state.reportRendered) setState('已结束');
-            loadWeak();     // 本场答崩的点已入错题本，顺手刷新
-            loadHistory();  // 新一场进入历史列表
-            loadQuota();    // 本场 token/服务费已实扣，同步额度（不重刷设置，避免动单选）
+            if (!store.report) store.stateText = '已结束';
+            loadWeak();
+            loadHistory();
+            loadQuota();
         });
     }
 
     function closeStream() {
-        if (state.es) { state.es.close(); state.es = null; }
+        if (es) { es.close(); es = null; }
     }
 
-    // ---------- 事件绑定 ----------
-
-    function bind() {
-        bindAuth();          // R1-1.5：登录/注册/登出
-        bindUserSettings();  // R1-3：PLATFORM/BYOK 模式切换、自带 key 管理、额度展示
-
-        // R2 额度耗尽弹窗：按钮关闭 / 点击遮罩空白处关闭
-        $('btnQuotaOk').onclick = hideQuotaModal;
-        $('quotaModal').addEventListener('click', (e) => {
-            if (e.target === $('quotaModal')) hideQuotaModal();
-        });
-
-        // JD
-        $('btnJd').onclick = async () => {
-            const rawText = $('jdText').value.trim();
-            if (!rawText) return tip('先粘贴 JD 正文', true);
-            if (quotaBlocked()) { showQuotaModal(); return; }
-            try {
-                const arr = await api('/api/jd', 'POST', { rawText: rawText, sameTypeTag: $('jdTag').value.trim() || null });
-                state.jdId = arr[0].jdId;
-                $('jdSelect').value = String(state.jdId);
-                tip('JD 已上传，keywords=' + (arr[0].keywords || []).join('、'));
-                await refreshJd();
-                loadQuota();  // JD 解析 token 已实扣，轻量同步额度
-            } catch (e) { tip(e.message, true); }
-        };
-        $('btnRefreshJd').onclick = refreshJd;
-        $('jdSelect').onchange = () => {
-            state.jdId = $('jdSelect').value ? Number($('jdSelect').value) : null;
-            showJdKeywords();
-        };
-
-        // 简历：上传新版本 + 历史版本下拉（选中即激活，与 JD 下拉同一交互范式）
-        $('btnResume').onclick = async () => {
-            const content = $('resumeText').value.trim();
-            if (!content) return tip('简历内容为空', true);
-            if (quotaBlocked()) { showQuotaModal(); return; }
-            try {
-                const r = await api('/api/resume', 'POST', { content: content });
-                tip('简历新版本 #' + r.resumeId + ' 已上传并入 RAG 语料');
-                $('resumeText').value = '';
-                state.resumeId = r.resumeId;
-                await refreshResume();
-                loadQuota();  // 简历切块向量化 token 已实扣
-            } catch (e) { tip(e.message, true); }
-        };
-        $('btnRefreshResume').onclick = refreshResume;
-        $('resumeSelect').onchange = async () => {
-            const id = $('resumeSelect').value;
-            state.resumeId = id ? Number(id) : null;
-            if (!id) return;
-            try {
-                await api('/api/resume/' + id + '/activate', 'POST');
-                tip('已切换当前简历版本 #' + id);
-                await refreshResume();
-            } catch (e) { tip(e.message, true); }
-        };
-        $('btnDoc').onclick = async () => {
-            const title = $('docTitle').value.trim();
-            const content = $('docText').value.trim();
-            if (!title || !content) return tip('项目文档需要标题 + 内容', true);
-            if (quotaBlocked()) { showQuotaModal(); return; }
-            try { await api('/api/project-doc', 'POST', { title: title, content: content }); tip('项目文档已上传（质疑官弹药库 +1）'); loadQuota(); }
-            catch (e) { tip(e.message, true); }
-        };
-        $('btnNote').onclick = async () => {
-            const content = $('noteText').value.trim();
-            if (!content) return tip('笔记内容为空', true);
-            if (quotaBlocked()) { showQuotaModal(); return; }
-            try { await api('/api/note', 'POST', { content: content }); tip('笔记已存入 RAG 语料'); loadQuota(); }
-            catch (e) { tip(e.message, true); }
-        };
-        // F1：真实面试记录
-        $('btnRealInterview').onclick = saveRealInterview;
-        $('btnRefreshRealInterview').onclick = loadRealInterview;
-        // F2/F4：报告操作
-        $('btnExportMd').onclick = exportReportMd;
-        $('btnViewTurns').onclick = viewTurns;
-
-        // 开始
-        $('btnStart').onclick = async () => {
-            if (!state.jdId) return tip('先上传或选择一个 JD', true);
-            if (quotaBlocked()) { showQuotaModal(); return; }
-            const roles = Array.from(document.querySelectorAll('.roleChk:checked')).map((c) => c.value);
-            const maxQuestions = Number($('maxQuestions').value) || 8;
-            tip('正在解析 JD + 检索资料，出首题…');
-            try {
-                const r = await api('/api/interview/start', 'POST',
-                    { jdId: state.jdId, resumeId: state.resumeId, roles: roles, maxQuestions: maxQuestions });
-                state.sessionId = r.sessionId;
-                state.reportRendered = false;
-                state.rendered.clear();
-                clearChat();
-                $('report').innerHTML = '<p class="placeholder">面试进行中，结束后出报告…</p>';
-                $('btnExportMd').disabled = true;
-                $('btnViewTurns').disabled = true;
-                $('btnViewTurns').textContent = '逐轮回看';
-                $('turnsReplay').hidden = true;
-                $('turnsReplay').innerHTML = '';
-                $('btnEnd').disabled = false;
-                $('answerText').disabled = true;
-                $('btnAnswer').disabled = true;
-                setState('等待首题（SSE）');
-                // 首题由 SSE 重放渲染（见文件头说明），这里不重复渲染 firstQuestion
-                openStream(r.sessionId);
-                tip('会话 #' + r.sessionId + ' 已开始');
-                loadQuota();  // 出题（含 RAG 检索 embedding）token 已实扣
-            } catch (e) {
-                if (e.code === 'QUOTA_EXHAUSTED') loadQuota();
-                tip(e.message, true);
-            }
-        };
-
-        // 作答
-        const submit = async () => {
-            const text = $('answerText').value.trim();
-            if (!text || !state.sessionId) return;
-            renderAnswer(text);
-            $('answerText').value = '';
-            $('answerText').disabled = true;
-            $('btnAnswer').disabled = true;
-            state.awaiting = false;
-            setState('判分中…');
-            try {
-                await api('/api/interview/' + state.sessionId + '/answer', 'POST', { answer: text });
-                loadQuota();  // 判分/追问 token 已实扣，轻量同步额度
-            } catch (e) {
-                if (e.code === 'QUOTA_EXHAUSTED') loadQuota();
-                tip(e.message, true);
-                setState('作答失败，可重试');
-                $('answerText').disabled = false;
-                $('btnAnswer').disabled = false;
-            }
-        };
-        $('btnAnswer').onclick = submit;
-        $('answerText').addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') submit();
-        });
-
-        // 结束
-        $('btnEnd').onclick = async () => {
-            if (!state.sessionId) return;
-            setState('Critic 出报告中…');
-            try {
-                const r = await api('/api/interview/' + state.sessionId + '/end', 'POST');
-                renderReport(r);   // 响应与 SSE 的 report 只渲染一次（flag 去重）
-                loadWeak();
-                loadHistory();     // 报告已出，历史条目变为可点开
-                loadQuota();       // Critic token 已实扣，轻量同步额度
-            } catch (e) { tip(e.message, true); }
-        };
-
-        // 历史
-        $('btnHistory').onclick = loadHistory;
-        $('btnTrend').onclick = showTrend;
-        // F8 筛选：输入即触发（防抖）
-        let histTimer = null;
-        const histFilterChange = () => { clearTimeout(histTimer); histTimer = setTimeout(loadHistory, 300); };
-        $('histKw').addEventListener('input', histFilterChange);
-        $('histStatus').onchange = loadHistory;
-        $('histMinScore').addEventListener('input', histFilterChange);
-        $('histMaxScore').addEventListener('input', histFilterChange);
-        // 事件委托：历史条目点击回看报告（列表是动态渲染的，不能逐条绑）
-        $('history').addEventListener('click', (e) => {
-            const btn = e.target.closest('.histItem');
-            if (btn && !btn.disabled) viewHistoryReport(btn.getAttribute('data-sid'));
-        });
-
-        // 错题本
-        $('btnWeak').onclick = loadWeak;
-        $('dueOnly').onchange = loadWeak;
-        $('btnReviewMode').onclick = startReviewMode;
-        // toggle 事件会冒泡：展开时懒加载该条详情
-        $('weak').addEventListener('toggle', (e) => {
-            if (e.target.tagName === 'DETAILS' && e.target.open) loadWeakDetail(e.target);
-        }, true);
+    function renderReport(r, sessionId) {
+        if (store.report) return;
+        store.report = r;
+        store.reportSessionId = sessionId || store.sessionId;
+        store.stateText = '已完成，报告已出';
     }
 
+    // ==================== 认证弹窗控制 ====================
+    let authTab = 'login';
+    let authError = '';
+    function showAuthModal(tab, error) {
+        authTab = tab || 'login';
+        authError = error || '';
+        // 通过自定义事件通知 Auth 组件
+        window.dispatchEvent(new CustomEvent('show-auth', { detail: { tab: authTab, error: authError } }));
+    }
+
+    // ==================== 数据加载 ====================
     async function refreshJd() {
         try {
-            const arr = await api('/api/jd');
-            state.jdList = arr;  // F5：缓存完整列表（含 keywords）
-            const sel = $('jdSelect');
-            const keep = String(state.jdId || '');
-            sel.innerHTML = '<option value="">— 选择已有 JD —</option>' + arr.map((j) =>
-                '<option value="' + j.jdId + '">#' + j.jdId + ' ' + esc(j.jobType || '') +
-                (j.sameTypeTag ? ' · ' + esc(j.sameTypeTag) : '') + '</option>').join('');
-            if (keep) sel.value = keep;
-            showJdKeywords();
-        } catch (e) { /* 列表刷新失败不打扰用户 */ }
+            store.jdList = await api('/api/jd');
+        } catch (e) { /* 忽略 */ }
     }
 
-    /** F5：展示当前选中 JD 的考点标签云。 */
-    function showJdKeywords() {
-        const box = $('jdKeywords');
-        const id = Number($('jdSelect').value);
-        const jd = (state.jdList || []).find(j => j.jdId === id);
-        if (!jd || !jd.keywords || !jd.keywords.length) { box.innerHTML = ''; return; }
-        box.innerHTML = '<div class="kwTitle">考点预览：</div>' +
-            jd.keywords.map(k => '<span class="kwChip">' + esc(k) + '</span>').join('');
-    }
-
-    async function refreshResume() {
+    async function loadHistory() {
         try {
-            const arr = (await api('/api/resume')).slice().sort((a, b) => b.resumeId - a.resumeId);
-            const sel = $('resumeSelect');
-            sel.innerHTML = '<option value="">— 选择历史简历 —</option>' + arr.map((r) =>
-                '<option value="' + r.resumeId + '">#' + r.resumeId + ' · ' + fmtTime(r.createdAt) +
-                (r.isActive ? ' · 当前' : '') + '</option>').join('');
-            if (state.resumeId) {
-                sel.value = String(state.resumeId);
-            } else {
-                // 首次加载：默认选中「当前」版本（无则最新一条），免去每次手选
-                const pick = arr.find((r) => r.isActive) || arr[0];
-                if (pick) { state.resumeId = pick.resumeId; sel.value = String(pick.resumeId); }
-            }
-        } catch (e) { /* 列表刷新失败不打扰用户 */ }
+            const params = new URLSearchParams();
+            const f = store.histFilter;
+            if (f.keyword) params.set('keyword', f.keyword);
+            if (f.status) params.set('status', f.status);
+            if (f.minScore) params.set('minScore', f.minScore);
+            if (f.maxScore) params.set('maxScore', f.maxScore);
+            const qs = params.toString();
+            store.historyList = await api('/api/interview/sessions' + (qs ? '?' + qs : ''));
+        } catch (e) { /* 忽略 */ }
     }
 
-    // ---------- 用户登录 / 注册 / 登出（R1-1.5 模态弹窗） ----------
-
-    /** 弹窗内红色错误条（所有弹窗阶段的错误都走这里——#tip 在隐藏的主界面里，登录前不可见）。 */
-    function showAuthError(message) {
-        const el = $('authError');
-        el.textContent = message || '';
-        el.hidden = !message;
+    async function loadWeak() {
+        try {
+            const arr = await api('/api/weak-point' + (store.dueOnly ? '/due' : ''));
+            store.weakList = arr;
+        } catch (e) { /* 忽略 */ }
     }
 
-    function clearAuthError() { showAuthError(''); }
-
-    /**
-     * 显示登录弹窗。
-     * @param tab 'login' | 'register'，默认登录 Tab
-     * @param error 可选错误文案（如登录过期被强制下线时带入）
-     */
-    function showAuthModal(tab, error) {
-        switchAuthTab(tab || 'login');
-        $('loginPassword').value = '';
-        $('regPassword').value = '';
-        $('regPassword2').value = '';
-        showAuthError(error || '');
-        $('authModal').hidden = false;
-        setTimeout(() => $(tab === 'register' ? 'regUsername' : 'loginUsername').focus(), 0);
+    async function viewHistoryReport(sessionId) {
+        try {
+            store.report = await api('/api/interview/' + sessionId + '/report');
+            store.reportSessionId = sessionId;
+            store.view = 'history';
+        } catch (e) { alert(e.message); }
     }
 
-    /** 只切 Tab（active 类 + 表单 hidden），不重建 DOM，保证密码框按钮的一次性绑定不丢。 */
-    function switchAuthTab(tab) {
-        const isLogin = tab === 'login';
-        $('tabLogin').classList.toggle('active', isLogin);
-        $('tabRegister').classList.toggle('active', !isLogin);
-        $('tabLogin').setAttribute('aria-selected', String(isLogin));
-        $('tabRegister').setAttribute('aria-selected', String(!isLogin));
-        $('loginForm').hidden = !isLogin;
-        $('registerForm').hidden = isLogin;
-        clearAuthError();
-    }
-
-    /** 按钮 loading 态：禁用 + 文案切换，防重复提交；finally 里必须调 setAuthLoading(btn, false)。 */
-    function setAuthLoading(btn, on, loadingText) {
-        if (on) {
-            btn.dataset.originText = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = loadingText;
-        } else {
-            btn.disabled = false;
-            btn.textContent = btn.dataset.originText || btn.textContent;
-        }
-    }
-
-    /** 登录/注册成功的统一收尾：进主界面，加载模型调用方式 + 业务数据（R1-3 起无保险箱门禁）。 */
-    async function handleAuthSuccess(r) {
-        state.token = r.token;
-        state.username = r.username;
-
-        // 用户身份用 textContent 注入（用户名是服务端数据，不拼 innerHTML）
-        $('authUsername').textContent = r.username || '—';
-        $('userAvatar').textContent = (r.username || '?').charAt(0).toUpperCase();
-        $('userArea').hidden = false;
-        $('appShell').hidden = false;
-        $('authModal').hidden = true;
-        clearAuthError();
-        tip(r.username ? '欢迎，' + r.username : '登录成功');
-
-        loadUserSettings();
-        loadBusinessData();
-    }
-
-    /** 绑定登录弹窗：Tab 切换、两个 form 的 submit、登出。 */
-    function bindAuth() {
-        $('tabLogin').onclick = () => switchAuthTab('login');
-        $('tabRegister').onclick = () => switchAuthTab('register');
-
-        // 登录（form submit 天然支持 Enter；必须 preventDefault，否则原生提交会刷新页面）
-        $('loginForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const btn = $('btnLogin');
-            if (btn.disabled) return;
-            const u = $('loginUsername').value.trim();
-            const p = $('loginPassword').value;
-            if (!u) return showAuthError('请输入用户名');
-            if (!p) return showAuthError('请输入密码');
-            setAuthLoading(btn, true, '登录中…');
-            try {
-                const r = await api('/api/auth/login', 'POST', { username: u, password: p });
-                await handleAuthSuccess(r);
-            } catch (err) {
-                showAuthError(err.message);   // 401 已在 api() 转成人话
-            } finally {
-                setAuthLoading(btn, false);
-            }
-        };
-
-        // 注册（成功即自动登录：register 直接返回 JWT）
-        $('registerForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const btn = $('btnRegister');
-            if (btn.disabled) return;
-            const u = $('regUsername').value.trim();
-            const p = $('regPassword').value;
-            const p2 = $('regPassword2').value;
-            if (!u || u.length < 4 || u.length > 32) return showAuthError('用户名需 4-32 个字符');
-            if (!p || p.length < 6 || p.length > 128) return showAuthError('密码需 6-128 个字符');
-            if (p !== p2) return showAuthError('两次输入的密码不一致');
-            setAuthLoading(btn, true, '注册中…');
-            try {
-                const r = await api('/api/auth/register', 'POST', { username: u, password: p });
-                await handleAuthSuccess(r);
-            } catch (err) {
-                showAuthError(friendlyRegisterError(err));
-            } finally {
-                setAuthLoading(btn, false);
-            }
-        };
-
-        // 输入时清掉旧错误
-        ['loginUsername', 'loginPassword', 'regUsername', 'regPassword', 'regPassword2'].forEach((id) => {
-            $(id).addEventListener('input', clearAuthError);
-        });
-
-        // Enter 显式提交（不依赖浏览器隐式提交规则；requestSubmit 会走 onsubmit 的 preventDefault 流程）
-        [['loginUsername', 'loginForm'], ['loginPassword', 'loginForm'],
-         ['regUsername', 'registerForm'], ['regPassword', 'registerForm'],
-         ['regPassword2', 'registerForm']].forEach(([inputId, formId]) => {
-            $(inputId).addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    $(formId).requestSubmit();
-                }
-            });
-        });
-
-        // 登出：清 JWT（只在 JS 内存）+ 停 SSE + 刷新页面回登录弹窗，状态最干净
-        $('btnLogout').onclick = () => {
-            state.token = null;
-            state.username = null;
-            closeStream();
-            location.reload();
-        };
-    }
-
-    /** 注册接口错误文案友好化：409 用户名占用、400 服务端 @Valid 技术串兜底，其余透传。 */
-    function friendlyRegisterError(err) {
-        const m = err && err.message ? err.message : '';
-        if (m.indexOf('409') >= 0 || m.indexOf('占用') >= 0 || m.indexOf('已被注册') >= 0) {
-            return '用户名已被注册，换一个试试';
-        }
-        if (m.indexOf('400') >= 0) {
-            return '提交内容不符合要求：用户名需 4-32 字符，密码需 6-128 字符';
-        }
-        return m || '注册失败，请稍后重试';
-    }
-
-    // ---------- 模型调用方式（R1-3：平台额度 PLATFORM / 自带 Key BYOK） ----------
-
-    function showKeyMsg(message, bad) {
-        const el = $('keyMsg');
-        el.textContent = message || '';
-        el.hidden = !message;
-        el.className = 'keyMsg' + (bad ? ' bad' : 'ok');
-    }
-
-    function setBtnLoading(btn, on, loadingText) {
-        if (on) {
-            btn.dataset.originText = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = loadingText;
-        } else {
-            btn.disabled = false;
-            btn.textContent = btn.dataset.originText || btn.textContent;
-        }
-    }
-
-    function bindUserSettings() {
-        // 密码框「显示/隐藏」：登录/注册 + BYOK key 输入共用
-        document.querySelectorAll('.pwdToggle').forEach((btn) => {
-            btn.onclick = () => {
-                const input = $(btn.getAttribute('data-target'));
-                const show = input.type === 'password';
-                input.type = show ? 'text' : 'password';
-                btn.textContent = show ? '隐藏' : '显示';
-                input.focus();
+    // ==================== 组件：认证 ====================
+    const AuthPanel = {
+        data() {
+            return {
+                tab: 'login',
+                error: '',
+                loginUser: '', loginPwd: '',
+                regUser: '', regPwd: '', regPwd2: '',
+                loading: false,
+                showLoginPwd: false, showRegPwd: false, showRegPwd2: false,
             };
-        });
-
-        // 模式单选：PLATFORM 直接切；BYOK 已存 key 直接切，没存则展开录入框（服务端也会 409 兜底）
-        document.querySelectorAll('input[name="keyMode"]').forEach((radio) => {
-            radio.addEventListener('change', async () => {
-                if (!radio.checked) return;
-                showKeyMsg('');
-                const mode = radio.value;
-                $('byokBox').hidden = (mode !== 'BYOK');
-                if (mode === 'PLATFORM') {
-                    try {
-                        await api('/api/user/settings', 'PUT', { keyMode: 'PLATFORM' });
-                        showKeyMsg('已切回平台额度（不扣服务点）');
-                        await loadUserSettings();
-                    } catch (e) {
-                        showKeyMsg(e.message, true);
-                        await loadUserSettings();   // 单选 UI 回滚到服务端真实状态
-                    }
-                } else {
-                    try {
-                        await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
-                        showKeyMsg('已切换为自带 Key 模式（每次调用扣 1 服务点）');
-                        await loadUserSettings();
-                    } catch (e) {
-                        if (e.code === 'KEY_NOT_CONFIGURED') {
-                            // 服务端仍停在 PLATFORM，但 UI 要停在 BYOK 并展开录入框：
-                            // 不能 loadUserSettings()，否则会按服务端状态把单选和输入框拉回去
-                            document.querySelector('input[name="keyMode"][value="BYOK"]').checked = true;
-                            document.querySelector('input[name="keyMode"][value="PLATFORM"]').checked = false;
-                            $('byokBox').hidden = false;
-                            showKeyMsg('请先填写并保存你的 DeepSeek API Key');
-                        } else {
-                            showKeyMsg(e.message, true);
-                            await loadUserSettings();
-                        }
-                    }
-                }
+        },
+        mounted() {
+            window.addEventListener('show-auth', (e) => {
+                this.tab = e.detail.tab;
+                this.error = e.detail.error || '';
             });
-        });
-
-        // R3-2 对话模型唯一入口：回答输入框右下角紧凑下拉（chatProvider: DEEPSEEK / QWEN）。
-        // 切换成功后 loadUserSettings() → renderChatProvider() 回显；失败回滚到服务端状态。
-        $('chatProviderBtn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            const list = $('chatProviderList');
-            list.hidden = false;
-            $('chatProviderBtn').setAttribute('aria-expanded', 'true');
-        });
-        document.addEventListener('click', (e) => {
-            if (!$('chatProviderList').hidden && !$('chatProviderMenu').contains(e.target)) closeProviderMenu();
-        });
-        document.querySelectorAll('.chatProviderOpt').forEach((opt) => {
-            opt.addEventListener('mouseenter', () => {
-                if (opt.getAttribute('aria-selected') !== 'true') opt.style.background = 'var(--panel2)';
-            });
-            opt.addEventListener('mouseleave', () => {
-                if (opt.getAttribute('aria-selected') !== 'true') opt.style.background = 'transparent';
-            });
-            opt.addEventListener('click', async () => {
-                const value = opt.dataset.provider;
-                closeProviderMenu();
+        },
+        methods: {
+            switchTab(t) { this.tab = t; this.error = ''; },
+            clearError() { this.error = ''; },
+            async doLogin() {
+                if (!this.loginUser || !this.loginPwd) { this.error = '请输入用户名和密码'; return; }
+                this.loading = true;
                 try {
-                    await api('/api/user/settings', 'PUT', { chatProvider: value });
-                    tip(value === 'QWEN' ? '已切换为通义千问（走平台 key，按积分扣）' : '已切换为 DeepSeek');
-                    await loadUserSettings();
-                } catch (err) {
-                    tip(err.message, true);
-                    await loadUserSettings();   // 回滚到服务端真实状态
-                }
-            });
-        });
+                    const r = await api('/api/auth/login', 'POST', { username: this.loginUser, password: this.loginPwd });
+                    await handleAuthSuccess(r);
+                } catch (e) { this.error = e.message; }
+                finally { this.loading = false; }
+            },
+            async doRegister() {
+                if (!this.regUser || !this.regPwd) { this.error = '请输入用户名和密码'; return; }
+                if (this.regPwd !== this.regPwd2) { this.error = '两次密码不一致'; return; }
+                this.loading = true;
+                try {
+                    const r = await api('/api/auth/register', 'POST', { username: this.regUser, password: this.regPwd });
+                    await handleAuthSuccess(r);
+                } catch (e) { this.error = friendlyRegisterError(e); }
+                finally { this.loading = false; }
+            },
+        },
+        template: `
+<div class="auth-overlay">
+    <div class="auth-card" role="dialog" aria-modal="true">
+        <h1 class="authTitle">AI 模拟面试</h1>
+        <div class="auth-tabs" role="tablist">
+            <button type="button" :class="['auth-tab', tab==='login'?'active':'']" @click="switchTab('login')">登录</button>
+            <button type="button" :class="['auth-tab', tab==='register'?'active':'']" @click="switchTab('register')">注册</button>
+        </div>
+        <form v-if="tab==='login'" class="auth-form" @submit.prevent="doLogin">
+            <input v-model="loginUser" type="text" placeholder="用户名（≥4 字符）" @input="clearError">
+            <div class="pwdWrap">
+                <input v-model="loginPwd" :type="showLoginPwd?'text':'password'" placeholder="密码（≥6 字符）" @input="clearError">
+                <button type="button" class="pwdToggle" @click="showLoginPwd=!showLoginPwd">{{showLoginPwd?'隐藏':'显示'}}</button>
+            </div>
+            <button type="submit" class="primary big" :disabled="loading">{{loading?'登录中…':'登录'}}</button>
+        </form>
+        <form v-else class="auth-form" @submit.prevent="doRegister">
+            <input v-model="regUser" type="text" placeholder="用户名（4-32 字符）" @input="clearError">
+            <div class="pwdWrap">
+                <input v-model="regPwd" :type="showRegPwd?'text':'password'" placeholder="密码（6-128 字符）" @input="clearError">
+                <button type="button" class="pwdToggle" @click="showRegPwd=!showRegPwd">{{showRegPwd?'隐藏':'显示'}}</button>
+            </div>
+            <div class="pwdWrap">
+                <input v-model="regPwd2" :type="showRegPwd2?'text':'password'" placeholder="再输一遍密码" @input="clearError">
+                <button type="button" class="pwdToggle" @click="showRegPwd2=!showRegPwd2">{{showRegPwd2?'隐藏':'显示'}}</button>
+            </div>
+            <button type="submit" class="primary big" :disabled="loading">{{loading?'注册中…':'注册'}}</button>
+        </form>
+        <p v-if="error" class="auth-error">{{error}}</p>
+        <p class="auth-hint">令牌仅保存在浏览器内存中，刷新页面需重新登录</p>
+    </div>
+</div>`
+    };
 
-        // 保存（并切换）：先验活加密落库，成功后显式切 BYOK
-        $('btnByokSave').onclick = async () => {
-            const key = $('byokKey').value.trim();
-            if (!key) return showKeyMsg('请输入 DeepSeek API Key（sk- 开头）', true);
-            if (key.indexOf('sk-') !== 0) return showKeyMsg('DeepSeek API Key 应以 sk- 开头', true);
-            const btn = $('btnByokSave');
-            setBtnLoading(btn, true, '验活并保存…');
-            try {
-                await api('/api/user/api-key', 'PUT', { apiKey: key });
-                await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
-                $('byokKey').value = '';
-                showKeyMsg('已保存并切换到自带 Key 模式');
-                tip('自带 Key 已生效');
-                await loadUserSettings();
-            } catch (e) {
-                showKeyMsg(e.message, true);
-            } finally {
-                setBtnLoading(btn, false);
-            }
-        };
-
-        // 删除：服务端同时强制回退 PLATFORM（避免 BYOK 无 key 的死状态）
-        $('btnByokDelete').onclick = async () => {
-            const btn = $('btnByokDelete');
-            setBtnLoading(btn, true, '删除中…');
-            try {
-                await api('/api/user/api-key', 'DELETE');
-                $('byokKey').value = '';
-                showKeyMsg('已删除自带 Key，切回平台额度');
-                tip('已切回平台额度');
-                await loadUserSettings();
-            } catch (e) {
-                showKeyMsg(e.message, true);
-            } finally {
-                setBtnLoading(btn, false);
-            }
-        };
+    function friendlyRegisterError(err) {
+        const m = err.message || '';
+        if (m.includes('用户名')) return '用户名已被占用';
+        if (m.includes('密码')) return '密码长度需 6-128 字符';
+        return m;
     }
 
-    // R3-2 对话模型回显：右下角下拉触发文案 + 选中项高亮/✓（唯一入口）
-    function renderChatProvider(value) {
-        const v = value === 'QWEN' ? 'QWEN' : 'DEEPSEEK';
-        $('chatProviderLabel').textContent = v === 'QWEN' ? '通义千问' : 'DeepSeek';
-        document.querySelectorAll('.chatProviderOpt').forEach((opt) => {
-            const sel = opt.dataset.provider === v;
-            opt.setAttribute('aria-selected', sel ? 'true' : 'false');
-            opt.style.background = sel ? 'var(--panel2)' : 'transparent';
-            opt.style.fontWeight = sel ? '600' : '400';
-            opt.querySelector('.chatProviderTick').hidden = !sel;
-        });
-    }
-    function closeProviderMenu() {
-        $('chatProviderList').hidden = true;
-        $('chatProviderBtn').setAttribute('aria-expanded', 'false');
+    async function handleAuthSuccess(r) {
+        store.token = r.token;
+        store.username = r.username;
+        await loadBusinessData();
     }
 
-    /** 拉取模式 / key 状态 / 额度 / 平台 env 就绪情况，重绘卡片（登录后、每次切换、402 后都调）。 */
+    async function loadBusinessData() {
+        await Promise.all([refreshJd(), loadHistory(), loadWeak(), loadQuota(), loadUserSettings()]);
+    }
+
     async function loadUserSettings() {
-        let settings, keyInfo, quota;
         try {
-            [settings, keyInfo, quota] = await Promise.all([
-                api('/api/user/settings'),
-                api('/api/user/api-key'),
-                api('/api/user/quota')
-            ]);
-        } catch (e) {
-            $('keyBadge').textContent = '状态未知';
-            $('keyBadge').className = 'keybadge bad';
-            return;
-        }
-
-        const mode = settings.keyMode === 'BYOK' ? 'BYOK' : 'PLATFORM';
-        state.keyMode = mode;
-
-        // 单选与服务端状态对齐（切模式失败时也靠它回滚）
-        document.querySelectorAll('input[name="keyMode"]').forEach((radio) => {
-            radio.checked = (radio.value === mode);
-        });
-
-        // R3-2 对话模型回显：右下角下拉对齐服务端状态（缺字段/异常值安全回退 DEEPSEEK）
-        renderChatProvider(settings.chatProvider);
-
-        const badge = $('keyBadge');
-        if (mode === 'BYOK') {
-            badge.textContent = keyInfo.hasKey ? '自带 Key · sk-…' + esc(keyInfo.last4 || '') : '自带 Key（未保存）';
-            badge.className = 'keybadge ' + (keyInfo.hasKey ? 'ok' : 'bad');
-        } else {
-            badge.textContent = '平台额度';
-            badge.className = 'keybadge ok';
-        }
-
-        renderQuota(quota);
-
-        $('byokBox').hidden = (mode !== 'BYOK');
-        $('btnByokDelete').hidden = !keyInfo.hasKey;
-        $('byokStatus').textContent = keyInfo.hasKey
-            ? '已保存 sk-…' + (keyInfo.last4 || '') + '（输入新 Key 可更换）'
-            : '尚未保存 Key';
-
-        // 平台 env key 缺失时给一行引导（best-effort：deps 探活失败不打扰）
-        try {
-            const deps = await api('/api/health/deps');
-            if (mode === 'PLATFORM' && deps && deps.deepseek && deps.deepseek.configured === false) {
-                showKeyMsg('平台未配置 DEEPSEEK_API_KEY：请选「自带 Key」，或让运维配置环境变量', true);
-            }
-        } catch (e) { /* 探活接口失败不影响主流程 */ }
+            const s = await api('/api/settings');
+            store.keyMode = s.keyMode || 'PLATFORM';
+            store.byokStatus = s.byokMasked || '';
+            store.chatProvider = s.chatProvider || 'DEEPSEEK';
+        } catch (e) { /* 忽略 */ }
     }
 
-    /** token 额度数字格式化：≥1 万显示 x.x 万，避免一行长整数。 */
-    function formatTokens(n) {
-        n = Number(n) || 0;
-        if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + ' 万';
-        return String(n);
-    }
+    // ==================== 组件：准备区 ====================
+    const PreparePanel = {
+        data() {
+            return {
+                jdText: '', jdTag: '',
+                resumeText: '',
+                docTitle: '', docText: '',
+                noteText: '',
+                realInterviewText: '', realInterviewList: [],
+                roles: { tech: true, project: false, behavior: false },
+                maxQuestions: 8,
+                tip: '', tipBad: false,
+            };
+        },
+        computed: {
+            selectedJd() {
+                return store.jdList.find(j => j.jdId === store.jdId);
+            },
+            quotaRemaining() { return store.quota ? formatPoints(store.quota.remainingTokens) : '—'; },
+            quotaTotal() { return store.quota ? formatPoints(store.quota.totalTokens) : '—'; },
+            quotaUsed() { return store.quota ? formatPoints(store.quota.usedTokens) : '—'; },
+        },
+        methods: {
+            setTip(msg, bad) { this.tip = msg; this.tipBad = !!bad; },
+            async uploadJd() {
+                if (!this.jdText.trim()) { this.setTip('JD 内容不能为空', true); return; }
+                try {
+                    const r = await api('/api/jd', 'POST', { text: this.jdText, sameTypeTag: this.jdTag });
+                    store.jdId = r.jdId;
+                    await refreshJd();
+                    this.jdText = ''; this.jdTag = '';
+                    this.setTip('JD 已上传，解析出 ' + (r.keywords ? r.keywords.length : 0) + ' 个考点');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async uploadResume() {
+                if (!this.resumeText.trim()) { this.setTip('简历内容不能为空', true); return; }
+                try {
+                    const r = await api('/api/resume', 'POST', { content: this.resumeText });
+                    store.resumeId = r.resumeId;
+                    this.resumeText = '';
+                    this.setTip('简历版本已保存');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async uploadDoc() {
+                if (!this.docTitle.trim() || !this.docText.trim()) { this.setTip('标题和内容都不能为空', true); return; }
+                try {
+                    await api('/api/project-doc', 'POST', { title: this.docTitle, content: this.docText });
+                    this.docTitle = ''; this.docText = '';
+                    this.setTip('项目文档已上传');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async saveNote() {
+                if (!this.noteText.trim()) return;
+                try {
+                    await api('/api/note', 'POST', { content: this.noteText });
+                    this.noteText = '';
+                    this.setTip('笔记已存入 RAG');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async saveRealInterview() {
+                if (!this.realInterviewText.trim()) { this.setTip('记录内容不能为空', true); return; }
+                try {
+                    await api('/api/real-interview', 'POST', { content: this.realInterviewText });
+                    this.realInterviewText = '';
+                    await this.loadRealInterview();
+                    this.setTip('真实面试记录已保存');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async loadRealInterview() {
+                try { this.realInterviewList = await api('/api/real-interview'); }
+                catch (e) { /* 忽略 */ }
+            },
+            async switchKeyMode(mode) {
+                store.keyMode = mode;
+                try { await api('/api/settings/key-mode', 'POST', { keyMode: mode }); }
+                catch (e) { this.setTip(e.message, true); }
+            },
+            async saveByok() {
+                if (!store.byokKey.trim()) { this.setTip('请输入 DeepSeek API Key', true); return; }
+                try {
+                    const r = await api('/api/settings/byok', 'POST', { apiKey: store.byokKey });
+                    store.byokStatus = r.masked || '';
+                    store.byokKey = '';
+                    this.setTip('Key 已保存并切换为 BYOK');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async deleteByok() {
+                try {
+                    await api('/api/settings/byok', 'DELETE');
+                    store.byokStatus = '';
+                    store.keyMode = 'PLATFORM';
+                    this.setTip('已删除自带 Key，切回平台额度');
+                } catch (e) { this.setTip(e.message, true); }
+            },
+            async startInterview() {
+                if (!store.jdId) { this.setTip('请先选择或上传 JD', true); return; }
+                const roleList = [];
+                if (this.roles.tech) roleList.push('技术深挖官');
+                if (this.roles.project) roleList.push('项目质疑官');
+                if (this.roles.behavior) roleList.push('行为面试官');
+                if (!roleList.length) { this.setTip('至少选择一个面试官角色', true); return; }
+                try {
+                    store.chatMessages = [];
+                    store.report = null;
+                    rendered = new Set();
+                    const r = await api('/api/interview/start', 'POST', {
+                        jdId: store.jdId, resumeId: store.resumeId || null,
+                        roles: roleList, maxQuestions: this.maxQuestions
+                    });
+                    store.sessionId = r.sessionId;
+                    store.interviewActive = true;
+                    store.stateText = '面试官出题中…';
+                    openStream(r.sessionId);
+                } catch (e) { this.setTip(e.message, true); }
+            },
+        },
+        mounted() { this.loadRealInterview(); },
+        template: `
+<aside class="panel">
+    <h2>1. 准备</h2>
 
-    /**
-     * 积分换算（仅前端展示，后端仍以 token 记账）：1 积分 = 500 token（50 万 token = 1000 积分）。
-     * points 量级小（通常几百~几千），不套用「万」逻辑；整数去 .0，带小数保留 1 位并加千位分隔。
-     */
-    function formatPoints(tokens) {
-        const pts = (Number(tokens) || 0) / 500;
-        const rounded = Math.round(pts * 10) / 10;
-        return rounded.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
-    }
+    <div class="block keyblock">
+        <div class="row"><span class="lb">模型调用方式</span><span class="keybadge">{{store.keyMode==='PLATFORM'?'平台额度':'自带 Key'}}</span></div>
+        <div class="modeswitch" role="radiogroup">
+            <label class="modeopt"><input type="radio" name="keyMode" value="PLATFORM" :checked="store.keyMode==='PLATFORM'" @change="switchKeyMode('PLATFORM')"> <span>平台额度</span></label>
+            <label class="modeopt"><input type="radio" name="keyMode" value="BYOK" :checked="store.keyMode==='BYOK'" @change="switchKeyMode('BYOK')"> <span>自带 Key</span></label>
+        </div>
+        <div class="quotaLine">积分：<b>{{quotaRemaining}}</b> / <span>{{quotaTotal}}</span> <small>（已用 {{quotaUsed}}）</small></div>
+        <div v-if="store.keyMode==='BYOK'" class="keybox">
+            <div class="keyStatus" v-if="store.byokStatus">已有 Key：{{store.byokStatus}}</div>
+            <div class="pwdWrap">
+                <input v-model="store.byokKey" type="password" placeholder="DeepSeek API Key（sk-…）">
+            </div>
+            <div class="row">
+                <button class="primary" @click="saveByok">保存并切换</button>
+                <button class="warn" @click="deleteByok">删除并切回平台</button>
+            </div>
+            <small class="keyhint">Key 经 AES-GCM 加密存服务端，页面只显示末 4 位。</small>
+        </div>
+    </div>
 
-    /** 只重绘额度行（字段：R2 token 语义 totalTokens/usedTokens/remainingTokens，前端换算为积分展示）。 */
-    function renderQuota(quota) {
-        state.quota = quota;  // 缓存给前置拦截用；null/异常时不更新（避免误判耗尽放行）
-        $('quotaRemaining').textContent = formatPoints(quota.remainingTokens);
-        $('quotaTotal').textContent = formatPoints(quota.totalTokens);
-        $('quotaUsed').textContent = formatPoints(quota.usedTokens);
-    }
+    <div class="block">
+        <label class="lb">岗位 JD（粘贴后点上传）</label>
+        <textarea v-model="jdText" rows="6" placeholder="粘贴招聘 JD 原文…"></textarea>
+        <div class="row">
+            <input v-model="jdTag" type="text" placeholder="同类标签（可选）">
+            <button class="primary" @click="uploadJd">上传 JD</button>
+        </div>
+        <div class="row">
+            <select v-model.number="store.jdId">
+                <option :value="null">— 选择已有 JD —</option>
+                <option v-for="j in store.jdList" :key="j.jdId" :value="j.jdId">#{{j.jdId}} {{j.jobType}}{{j.sameTypeTag?' · '+j.sameTypeTag:''}}</option>
+            </select>
+            <button class="ghost" @click="refreshJd">刷新</button>
+        </div>
+        <div v-if="selectedJd && selectedJd.keywords && selectedJd.keywords.length" class="jdKeywords">
+            <div class="kwTitle">考点预览：</div>
+            <span v-for="k in selectedJd.keywords" :key="k" class="kwChip">{{k}}</span>
+        </div>
+    </div>
 
-    /**
-     * R2 前置拦截：额度视图已知且余额为 0 时，点击收费入口直接拦（不发请求）。
-     * state.quota 为 null（登录后 settings 尚未返回 / 查询失败）时不拦——
-     * 交给服务端 402 兜底弹窗，避免状态未知时误拦。
-     */
-    function quotaBlocked() {
-        return !!state.quota && Number(state.quota.remainingTokens) <= 0;
-    }
+    <div class="block">
+        <label class="lb">简历（md）</label>
+        <textarea v-model="resumeText" rows="4" placeholder="# 张三&#10;Java 后端…"></textarea>
+        <button class="ghost" @click="uploadResume">上传新简历版本</button>
+        <div class="row">
+            <select v-model.number="store.resumeId">
+                <option :value="null">— 选择历史简历 —</option>
+            </select>
+            <button class="ghost">刷新</button>
+        </div>
+    </div>
 
-    /** 弹出额度耗尽提示窗；serverMessage 为服务端 402 文案时原样展示，否则用默认引导。 */
-    function showQuotaModal(serverMessage) {
-        $('quotaModalUser').textContent = state.username || '—';
-        $('quotaModalRemain').textContent = state.quota ? formatPoints(state.quota.remainingTokens) : '0';
-        $('quotaModalMsg').textContent = serverMessage
-            || '上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗积分。请联系管理员为账号充值后继续。';
-        $('quotaModal').hidden = false;
-    }
+    <div class="block">
+        <label class="lb">项目文档（标题 + 详解）</label>
+        <input v-model="docTitle" type="text" placeholder="项目名">
+        <textarea v-model="docText" rows="4" placeholder="项目详解…"></textarea>
+        <button class="ghost" @click="uploadDoc">上传项目文档</button>
+    </div>
 
-    function hideQuotaModal() { $('quotaModal').hidden = true; }
+    <div class="block">
+        <label class="lb">笔记（可选）</label>
+        <textarea v-model="noteText" rows="3" placeholder="随手写的学习笔记"></textarea>
+        <button class="ghost" @click="saveNote">存笔记</button>
+    </div>
 
-    /**
-     * 轻量刷额度：只打 /api/user/quota，不重拉 settings/key/deps。
-     * JD 上传/start/answer/end 后调用——面试中绝不能 loadUserSettings()，
-     * 那会按服务端状态重置 PLATFORM/BYOK 单选与输入框。
-     */
-    async function loadQuota() {
-        try {
-            renderQuota(await api('/api/user/quota'));
-        } catch (e) { /* 额度刷新失败不挡主流程 */ }
-    }
+    <div class="block">
+        <label class="lb">真实面试记录（可选）</label>
+        <textarea v-model="realInterviewText" rows="4" placeholder="记录真实面试经历…"></textarea>
+        <div class="row">
+            <button class="ghost" @click="saveRealInterview">保存记录</button>
+            <button class="ghost" @click="loadRealInterview">刷新</button>
+        </div>
+        <div class="recList">
+            <div v-for="r in realInterviewList" :key="r.recordId" class="recItem">
+                <small>{{fmtTime(r.createdAt)}}</small>
+                <p>{{r.content}}</p>
+            </div>
+        </div>
+    </div>
 
-    /** 登录后需要加载的业务数据。 */
-    function loadBusinessData() {
-        refreshJd();
-        refreshResume();
-        loadWeak();
-        loadHistory();
-        loadRealInterview();  // F1：真实面试记录列表
-    }
+    <div class="block">
+        <span class="lb">面试官角色</span>
+        <label class="chk"><input type="checkbox" v-model="roles.tech"> 技术深挖官</label>
+        <label class="chk"><input type="checkbox" v-model="roles.project"> 项目质疑官</label>
+        <label class="chk"><input type="checkbox" v-model="roles.behavior"> 行为面试官</label>
+        <div class="row">
+            <label class="chk">主问题数</label>
+            <select v-model.number="maxQuestions">
+                <option :value="3">快速 3 题</option>
+                <option :value="5">标准 5 题</option>
+                <option :value="8">完整 8 题</option>
+            </select>
+        </div>
+        <button class="primary big" @click="startInterview">开始模拟面试</button>
+    </div>
 
-    // ---------- 启动 ----------
-    // R1-3 起只有 JWT 一道门禁（旧保险箱已删除），token 只在 JS 内存，刷新必失。
-    // 静态 HTML 初始即「#authModal 可见、#appShell hidden」，无首屏闪烁；
-    // 这里只绑事件、不调任何业务接口（无 JWT 会 401）。
-    // 登录成功后 handleAuthSuccess 加载模型调用方式 + 业务数据。
-    bind();
+    <p :class="['tip', tipBad?'bad':'']">{{tip}}</p>
+</aside>`
+    };
+
+    // ==================== 组件：面试区 ====================
+    const InterviewPanel = {
+        data() {
+            return { answer: '', providerMenuOpen: false };
+        },
+        computed: {
+            canAnswer() { return store.awaiting && store.interviewActive; },
+        },
+        methods: {
+            async submitAnswer() {
+                if (!this.canAnswer || !this.answer.trim()) return;
+                store.awaiting = false;
+                store.chatMessages.push({ cls: 'me', title: '我', body: this.answer });
+                const text = this.answer;
+                this.answer = '';
+                try {
+                    await api('/api/interview/' + store.sessionId + '/answer', 'POST', { answer: text });
+                } catch (e) {
+                    store.chatMessages.push({ cls: 'err', title: '提交失败', body: e.message });
+                    store.awaiting = true;
+                }
+            },
+            async endInterview() {
+                if (!confirm('确定结束并生成报告？')) return;
+                store.awaiting = false;
+                store.interviewActive = false;
+                try {
+                    const r = await api('/api/interview/' + store.sessionId + '/end', 'POST');
+                    renderReport(r);
+                    loadWeak(); loadHistory(); loadQuota();
+                } catch (e) {
+                    store.chatMessages.push({ cls: 'err', title: '结束失败', body: e.message });
+                }
+            },
+            async switchProvider(p) {
+                store.chatProvider = p;
+                this.providerMenuOpen = false;
+                try { await api('/api/settings/chat-provider', 'POST', { provider: p }); }
+                catch (e) { /* 忽略 */ }
+            },
+            onKey(e) {
+                if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); this.submitAnswer(); }
+            },
+        },
+        template: `
+<section class="panel main">
+    <h2>2. 面试</h2>
+    <div class="chat" ref="chatBox">
+        <p v-if="!store.chatMessages.length" class="placeholder">左侧上传 JD 后点「开始模拟面试」，题目会通过 SSE 实时推过来。</p>
+        <div v-for="(m, i) in store.chatMessages" :key="i" :class="['msg', m.cls]">
+            <div class="msgTitle" v-html="m.title"></div>
+            <div class="msgBody" v-html="m.html || esc(m.body)"></div>
+        </div>
+    </div>
+    <div class="answer">
+        <textarea v-model="answer" rows="3" placeholder="你的回答（Ctrl + Enter 提交）" :disabled="!canAnswer" @keydown="onKey"></textarea>
+        <div class="row">
+            <button class="primary" :disabled="!canAnswer" @click="submitAnswer">提交回答</button>
+            <button class="warn" :disabled="!store.interviewActive" @click="endInterview">结束并出报告</button>
+            <span class="state">{{store.stateText}}</span>
+            <span style="flex:1 1 auto"></span>
+            <div style="position:relative;display:inline-block">
+                <button type="button" @click="providerMenuOpen=!providerMenuOpen" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;font-size:13px;border-radius:6px">
+                    <span>{{store.chatProvider==='DEEPSEEK'?'DeepSeek':'通义千问'}}</span>
+                    <span style="font-size:10px;color:var(--accent2)">▾</span>
+                </button>
+                <div v-if="providerMenuOpen" style="position:absolute;right:0;bottom:calc(100% + 4px);z-index:30;min-width:168px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px">
+                    <button type="button" @click="switchProvider('DEEPSEEK')" style="display:flex;justify-content:space-between;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);text-align:left;cursor:pointer">
+                        <span>DeepSeek</span><span v-if="store.chatProvider==='DEEPSEEK'" style="color:var(--accent)">✓</span>
+                    </button>
+                    <button type="button" @click="switchProvider('QWEN')" style="display:flex;justify-content:space-between;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);text-align:left;cursor:pointer">
+                        <span>通义千问</span><span v-if="store.chatProvider==='QWEN'" style="color:var(--accent)">✓</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>`
+    };
+
+    // ==================== 组件：报告区 ====================
+    const ReportPanel = {
+        data() {
+            return { showTurns: false, turns: [], showTrend: false, trendData: [], _histTimer: null };
+        },
+        computed: {
+            r() { return store.report; },
+            hasFilter() {
+                const f = store.histFilter;
+                return !!(f.keyword || f.status || f.minScore || f.maxScore);
+            },
+        },
+        methods: {
+            loadHistory() { loadHistory(); },
+            loadHistoryDebounced() { clearTimeout(this._histTimer); this._histTimer = setTimeout(loadHistory, 300); },
+            viewHistoryReport(sid) { viewHistoryReport(sid); },
+            row(label, value) {
+                return value ? '<div class="kv"><span class="k">' + label + '</span><span class="v">' + esc(value) + '</span></div>' : '';
+            },
+            listHtml(title, arr) {
+                if (!arr || !arr.length) return '';
+                return '<h3>' + title + '</h3><ul class="lst">' + arr.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>';
+            },
+            behaviorCard(br) {
+                if (!br || typeof br !== 'object') return '';
+                const dims = br.dimensions && typeof br.dimensions === 'object' ? br.dimensions : null;
+                const suggestions = Array.isArray(br.suggestions) ? br.suggestions : [];
+                if (!dims && !br.summary && !suggestions.length) return '';
+                const dimHtml = dims ? '<div class="behDims">' + Object.entries(dims).map(([k, v]) =>
+                    '<span class="behDim">' + esc(k) + ' <b>' + esc(v) + '</b>/2</span>').join('') + '</div>' : '';
+                const sugHtml = suggestions.length ? '<ul class="lst">' + suggestions.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+                return '<h3>行为面试评估</h3><div class="behCard">' + dimHtml +
+                    (br.summary ? '<p class="notes">' + esc(br.summary) + '</p>' : '') + sugHtml + '</div>';
+            },
+            reportHtml() {
+                if (!this.r) return '<p class="placeholder">结束后这里出报告：匹配度、逐轮讲解、答崩点、表述问题、提醒。</p>';
+                const turns = Array.isArray(this.r.perTurnReview) ? this.r.perTurnReview : [];
+                const collapsed = Array.isArray(this.r.collapsedPoints) ? this.r.collapsedPoints : [];
+                const issues = Array.isArray(this.r.expressionIssues) ? this.r.expressionIssues : [];
+                const reminders = Array.isArray(this.r.reminders) ? this.r.reminders : [];
+                const turnHtml = turns.map(t =>
+                    '<details class="turn"><summary>第 ' + esc(t.turnSeq) + ' 轮 · ' + esc(t.score) + '/8 · ' +
+                    (t.track === 'behavior' ? '<span class="trackBadge">行为</span> ' : '') +
+                    esc(String(t.question || '').slice(0, 40)) + '</summary>' +
+                    this.row('讲解', t.explanation) + this.row('纠正', t.correction) +
+                    this.row('知识补充', t.knowledgeSupplement) + this.row('示范回答', t.exemplarAnswer) +
+                    '</details>').join('');
+                return '<div class="match">匹配度 <b>' + esc(this.r.matchScore == null ? '—' : this.r.matchScore) + '</b> / 100</div>' +
+                    this.behaviorCard(this.r.behaviorReview) +
+                    (turnHtml ? '<h3>逐轮讲解</h3>' + turnHtml : '') +
+                    this.listHtml('答崩点', collapsed) +
+                    (issues.length ? '<h3>表述问题</h3>' + issues.map(i =>
+                        '<div class="issue"><b>' + esc(i.issue) + '</b><div>' + esc(i.guide) + '</div></div>').join('') : '') +
+                    (this.r.overallNotes ? '<h3>整体注意事项</h3><p class="notes">' + esc(this.r.overallNotes) + '</p>' : '') +
+                    this.listHtml('必要提醒', reminders);
+            },
+            async exportMd() {
+                if (!store.reportSessionId) return;
+                try {
+                    const res = await fetch('/api/interview/' + store.reportSessionId + '/report.md', {
+                        headers: { 'Authorization': 'Bearer ' + store.token }
+                    });
+                    const text = await res.text();
+                    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = '面试报告_' + store.reportSessionId + '.md';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                } catch (e) { alert('导出失败：' + e.message); }
+            },
+            async toggleTurns() {
+                if (!store.reportSessionId) return;
+                if (this.showTurns) { this.showTurns = false; return; }
+                try {
+                    this.turns = await api('/api/interview/' + store.reportSessionId + '/turns');
+                    this.showTurns = true;
+                } catch (e) { alert(e.message); }
+            },
+            async toggleTrend() {
+                if (this.showTrend) { this.showTrend = false; return; }
+                try {
+                    this.trendData = await api('/api/interview/trend');
+                    this.showTrend = true;
+                } catch (e) { alert(e.message); }
+            },
+            trendSvg() {
+                const data = this.trendData;
+                if (!data || !data.length) return '';
+                const W = 400, H = 160, pad = { l: 32, r: 12, t: 12, b: 22 };
+                const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+                const n = data.length;
+                const xAt = (i) => pad.l + (n <= 1 ? iw / 2 : (iw * i) / (n - 1));
+                const yAt = (v) => pad.t + ih - (ih * v) / 100;
+                let grid = '';
+                for (let g = 0; g <= 4; g++) {
+                    const y = pad.t + (ih * g) / 4;
+                    grid += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y + '" stroke="#2a3650" stroke-dasharray="2,3"/>' +
+                        '<text x="' + (pad.l - 4) + '" y="' + (y + 3) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + (100 - g * 25) + '</text>';
+                }
+                const pts = data.map((d, i) => xAt(i) + ',' + yAt(d.matchScore)).join(' ');
+                let dots = '';
+                data.forEach((d, i) => {
+                    dots += '<circle cx="' + xAt(i) + '" cy="' + yAt(d.matchScore) + '" r="3" fill="#5b9dff"><title>#' + d.sessionId + ' · ' + fmtTime(d.createdAt) + ' · ' + d.matchScore + '分</title></circle>';
+                });
+                const xLabel = '<text x="' + pad.l + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9">' + esc(fmtTime(data[0].createdAt)) + '</text>' +
+                    '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + esc(fmtTime(data[n - 1].createdAt)) + '</text>';
+                return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + grid +
+                    '<polyline points="' + pts + '" fill="none" stroke="#5b9dff" stroke-width="2"/>' + dots + xLabel + '</svg>';
+            },
+        },
+        template: `
+<div>
+    <h2>3. 历史面试</h2>
+    <div class="row">
+        <button class="ghost" @click="loadHistory">刷新历史</button>
+        <button class="ghost" @click="toggleTrend">分数趋势</button>
+        <span class="state">最近 20 场，点有报告的回看</span>
+    </div>
+    <div class="histFilters">
+        <input v-model="store.histFilter.keyword" type="text" placeholder="搜索 JD 关键词…" @input="loadHistoryDebounced">
+        <select v-model="store.histFilter.status" @change="loadHistory">
+            <option value="">全部状态</option>
+            <option value="DONE">已结束</option>
+            <option value="INTERVIEWING">进行中</option>
+        </select>
+        <input v-model="store.histFilter.minScore" type="number" min="0" max="100" placeholder="最低分" @input="loadHistoryDebounced">
+        <input v-model="store.histFilter.maxScore" type="number" min="0" max="100" placeholder="最高分" @input="loadHistoryDebounced">
+    </div>
+    <div class="history">
+        <p v-if="!store.historyList.length" class="placeholder">{{hasFilter?'没有匹配的历史面试。':'还没有历史面试。'}}</p>
+        <button v-for="s in store.historyList" :key="s.sessionId" :class="['histItem', s.hasReport?'':'noReport']" :disabled="!s.hasReport" @click="s.hasReport && viewHistoryReport(s.sessionId)">
+            #{{s.sessionId}} {{s.jobType||'面试'}}{{s.sameTypeTag?' · '+s.sameTypeTag:''}}
+            <span>{{fmtTime(s.createdAt)}} · {{s.matchScore==null?'未评分':s.matchScore+' 分'}}{{s.hasReport?'':' · '+s.status}}</span>
+        </button>
+    </div>
+    <div v-if="showTrend" class="trendChart" v-html="trendSvg()"></div>
+
+    <h2>4. Critic 报告</h2>
+    <div class="row reportActions">
+        <button class="ghost" :disabled="!store.report" @click="exportMd">导出 MD</button>
+        <button class="ghost" :disabled="!store.report" @click="toggleTurns">逐轮回看</button>
+    </div>
+    <div class="report" v-html="reportHtml()"></div>
+    <div v-if="showTurns" class="turnsReplay">
+        <div v-for="t in turns" :key="t.turnId" class="turnItem">
+            <div class="turnMeta">第 {{t.seq}} 轮{{t.layer?' · L'+t.layer:''}}</div>
+            <div class="turnQ">{{t.question}}</div>
+            <div class="turnA">{{t.answer}}</div>
+        </div>
+    </div>
+</div>`
+    };
+
+    // ==================== 组件：错题本 ====================
+    const WeakPanel = {
+        data() {
+            return { reviewPanel: false, reviewQueue: [], reviewIdx: 0, reviewQuestion: '', reviewAnswer: '', reviewResult: null, _detailCache: {} };
+        },
+        methods: {
+            loadWeak() { loadWeak(); },
+            stageText(w) { return w.resolved ? '已掌握' : 'stage ' + (w.reviewStage || 0); },
+            async loadDetail(w) {
+                if (this._detailCache[w.weakPointId]) return;
+                try {
+                    const d = await api('/api/weak-point/' + w.weakPointId);
+                    this._detailCache[w.weakPointId] = d;
+                } catch (e) { /* 忽略 */ }
+            },
+            async startReview() {
+                if (this.reviewPanel) { this.reviewPanel = false; return; }
+                try {
+                    this.reviewQueue = await api('/api/weak-point/due');
+                    if (!this.reviewQueue.length) { this.reviewPanel = true; return; }
+                    this.reviewIdx = 0;
+                    this.reviewPanel = true;
+                    this.loadReviewItem();
+                } catch (e) { alert(e.message); }
+            },
+            async loadReviewItem() {
+                this.reviewResult = null;
+                this.reviewAnswer = '';
+                try {
+                    const w = this.reviewQueue[this.reviewIdx];
+                    const r = await api('/api/weak-point/' + w.weakPointId + '/review/question', 'POST');
+                    this.reviewQuestion = r.question;
+                } catch (e) { alert('出题失败：' + e.message); }
+            },
+            async submitReview() {
+                if (!this.reviewAnswer.trim()) return;
+                try {
+                    const w = this.reviewQueue[this.reviewIdx];
+                    this.reviewResult = await api('/api/weak-point/' + w.weakPointId + '/review/answer', 'POST',
+                        { question: this.reviewQuestion, answer: this.reviewAnswer });
+                    loadWeak();
+                } catch (e) { alert(e.message); }
+            },
+            nextReview() {
+                this.reviewIdx++;
+                if (this.reviewIdx >= this.reviewQueue.length) { this.reviewPanel = false; return; }
+                this.loadReviewItem();
+            },
+        },
+        template: `
+<div>
+    <h2>5. 错题本（间隔重复）</h2>
+    <div class="row">
+        <button class="ghost" @click="loadWeak">刷新</button>
+        <button class="ghost" @click="startReview">复习模式</button>
+        <label class="chk"><input type="checkbox" v-model="store.dueOnly" @change="loadWeak"> 只看今日到期</label>
+    </div>
+    <div class="weak">
+        <p v-if="!store.weakList.length" class="placeholder">答崩的知识点会自动进这里，按 [1,3,7,15] 天阶梯排复习。</p>
+        <details v-for="w in store.weakList" :key="w.weakPointId" @toggle.open="loadDetail(w)">
+            <summary>
+                <span class="wpKp">{{w.knowledgePoint}}</span>
+                <span class="wpMeta">{{stageText(w)}} · 错 {{w.wrongCount||0}} 次{{w.nextReviewAt?' · 下次 '+fmtTime(w.nextReviewAt):''}}</span>
+            </summary>
+            <div v-if="_detailCache[w.weakPointId]" class="wpDetail">
+                <div v-if="_detailCache[w.weakPointId].latest">
+                    <div class="wpScene"><b>最近答崩现场：</b>{{_detailCache[w.weakPointId].latest.question}}</div>
+                    <div class="wpSceneAnswer">你的回答：{{_detailCache[w.weakPointId].latest.answer}}</div>
+                    <div v-if="_detailCache[w.weakPointId].latest.explanation" class="wpExp">讲解：{{_detailCache[w.weakPointId].latest.explanation}}</div>
+                </div>
+            </div>
+        </details>
+    </div>
+    <div v-if="reviewPanel" class="reviewPanel">
+        <p v-if="!reviewQueue.length" class="placeholder">今天没有到期的复习项。</p>
+        <template v-else>
+            <div v-if="!reviewResult">
+                <div class="rvKp">知识点：{{reviewQueue[reviewIdx].knowledgePoint}}（{{reviewIdx+1}}/{{reviewQueue.length}}）</div>
+                <div class="rvQ">{{reviewQuestion}}</div>
+                <textarea v-model="reviewAnswer" placeholder="在此作答…"></textarea>
+                <div class="rvActions">
+                    <button class="primary" @click="submitReview">提交判分</button>
+                    <button class="ghost" @click="nextReview">跳过</button>
+                </div>
+            </div>
+            <div v-else class="rvResult">
+                <div class="rvScore">{{reviewResult.score}} / 8</div>
+                <div>{{reviewResult.explanation}}</div>
+                <div style="margin-top:6px;color:var(--muted);font-size:12px">{{reviewResult.resolved?'已掌握，出队 ✓':'stage '+reviewResult.newStage+' · 下次复习 '+fmtTime(reviewResult.nextReviewAt)}}</div>
+                <div class="rvActions"><button class="primary" @click="nextReview">{{reviewIdx+1<reviewQueue.length?'下一题':'完成复习'}}</button></div>
+            </div>
+        </template>
+    </div>
+</div>`
+    };
+
+    // ==================== 组件：心理陪伴（F10） ====================
+    const CompanionPanel = {
+        data() {
+            return { messages: [], input: '', loading: false };
+        },
+        methods: {
+            async send() {
+                const text = this.input.trim();
+                if (!text || this.loading) return;
+                this.messages.push({ role: 'user', text });
+                this.input = '';
+                this.loading = true;
+                try {
+                    const r = await api('/api/companion/chat', 'POST', { message: text });
+                    this.messages.push({ role: 'companion', text: r.reply, safe: r.safe });
+                } catch (e) {
+                    this.messages.push({ role: 'companion', text: '抱歉，我现在有点累，等会儿再陪你聊好吗？' });
+                } finally { this.loading = false; }
+            },
+            reset() {
+                this.messages = [];
+                api('/api/companion/reset', 'POST').catch(() => {});
+            },
+        },
+        template: `
+<div class="companion">
+    <h2>6. 心理陪伴</h2>
+    <p class="companionIntro">我是小暖，一个愿意听你说话的陪伴者。有什么想说的都可以告诉我。</p>
+    <div class="companionChat">
+        <div v-for="(m, i) in messages" :key="i" :class="['cMsg', m.role]">
+            <span class="cRole">{{m.role==='user'?'我':'小暖'}}</span>
+            <p :class="{'cSafe': m.safe}">{{m.text}}</p>
+        </div>
+        <p v-if="loading" class="cLoading">小暖正在想…</p>
+    </div>
+    <div class="companionInput">
+        <textarea v-model="input" rows="2" placeholder="说点什么…（Ctrl+Enter 发送）" @keydown.ctrl.enter="send"></textarea>
+        <div class="row">
+            <button class="primary" :disabled="loading" @click="send">发送</button>
+            <button class="ghost" @click="reset">清空对话</button>
+        </div>
+    </div>
+</div>`
+    };
+
+    // ==================== 主应用 ====================
+    const App = {
+        components: { AuthPanel, PreparePanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel },
+        computed: {
+            loggedIn() { return !!store.token; },
+        },
+        methods: {
+            logout() {
+                store.token = null;
+                store.username = null;
+                closeStream();
+            },
+        },
+        mounted() {
+            // 点击额度弹窗确定按钮
+            const btn = document.getElementById('btnQuotaOk');
+            if (btn) btn.addEventListener('click', hideQuotaModal);
+            // 默认展示登录
+            if (!store.token) showAuthModal('login');
+        },
+        template: `
+<div>
+    <auth-panel v-if="!loggedIn"></auth-panel>
+    <div v-else id="appShell">
+        <header class="topbar">
+            <div class="brand">AI 模拟面试<span class="sub">贴 JD → 角色追问 → Critic 报告 + 错题本</span></div>
+            <div class="topbar-right">
+                <div class="conn">
+                    <span :class="['dot', store.connOk?'online':'offline']"></span>
+                    <span>{{store.connText}}</span>
+                </div>
+                <div class="user-area">
+                    <span class="user-avatar">{{store.username ? store.username[0].toUpperCase() : '?'}}</span>
+                    <span class="user-name">{{store.username}}</span>
+                    <button class="ghost" @click="logout">登出</button>
+                </div>
+            </div>
+        </header>
+        <nav class="viewTabs">
+            <button :class="['vt', store.view==='prepare'?'active':'']" @click="store.view='prepare'">准备</button>
+            <button :class="['vt', store.view==='interview'?'active':'']" @click="store.view='interview'">面试</button>
+            <button :class="['vt', store.view==='history'?'active':'']" @click="store.view='history'">报告</button>
+            <button :class="['vt', store.view==='weak'?'active':'']" @click="store.view='weak'">错题本</button>
+            <button :class="['vt', store.view==='companion'?'active':'']" @click="store.view='companion'">心理陪伴</button>
+        </nav>
+        <main class="layout">
+            <prepare-panel v-show="store.view==='prepare'"></prepare-panel>
+            <interview-panel v-show="store.view==='interview'"></interview-panel>
+            <aside v-show="store.view==='history'" class="panel side">
+                <report-panel></report-panel>
+            </aside>
+            <aside v-show="store.view==='weak'" class="panel side">
+                <weak-panel></weak-panel>
+            </aside>
+            <aside v-show="store.view==='companion'" class="panel side">
+                <companion-panel></companion-panel>
+            </aside>
+        </main>
+    </div>
+</div>`
+    };
+
+    // 暴露给组件内部调用的全局函数
+    const app = createApp(App);
+    app.config.globalProperties.esc = esc;
+    app.config.globalProperties.fmtTime = fmtTime;
+    app.config.globalProperties.store = store;
+    app.mount('#app');
 })();

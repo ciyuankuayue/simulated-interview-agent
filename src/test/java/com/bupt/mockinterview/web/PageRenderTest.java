@@ -31,15 +31,13 @@ class PageRenderTest {
         String html = mvc.perform(get("/"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
 
+        // F12 Vue3 重构后：index.html 只负责挂载点 + 静态资源，业务文本在 app.js 组件模板里
         assertThat(html)
                 .contains("AI 模拟面试")
-                .contains("开始模拟面试")
-                .contains("技术深挖官")
-                .contains("项目质疑官")
-                .contains("错题本")
-                .contains("Critic 报告");
-        // 骨架只负责挂载资源，业务逻辑全在 app.js 里（决策 #12：无前端构建链）
-        assertThat(html).contains("/app.js").contains("/style.css");
+                .contains("id=\"app\"")
+                .contains("vue.global")   // Vue3 CDN
+                .contains("/app.js")
+                .contains("/style.css");
     }
 
     @Test
@@ -49,7 +47,15 @@ class PageRenderTest {
         assertThat(js)
                 .contains("EventSource")
                 .contains("/api/interview/")
-                .contains("/api/weak-point");
+                .contains("/api/weak-point")
+                // F12：业务文本现在在组件模板里
+                .contains("开始模拟面试")
+                .contains("技术深挖官")
+                .contains("项目质疑官")
+                .contains("错题本")
+                .contains("Critic 报告")
+                // F10：心理陪伴
+                .contains("/api/companion/chat");
 
         String css = mvc.perform(get("/style.css"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
