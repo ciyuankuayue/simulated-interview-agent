@@ -24,9 +24,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -101,22 +103,63 @@ public class InterviewController {
     // ---------- 历史会话列表（T10） ----------
 
     /**
-     * 最近 20 场会话（精简卡片），供历史报告回看入口。
-     * hasReport=false 的场次（进行中/未 end）不可点开报告。
+     * 历史面试列表（F8 支持筛选）。
+     *
+     * @param jobType     岗位类型精确匹配（可选）
+     * @param sameTypeTag 同类标签精确匹配（可选）
+     * @param status      会话状态（DONE/INTERVIEWING/...，可选）
+     * @param minScore    匹配度下限（含，可选）
+     * @param maxScore    匹配度上限（含，可选）
+     * @param keyword     在 JD 原文里模糊搜索（可选，大小写不敏感）
+     * @param from        起始时间 ISO-8601（含，可选）
+     * @param to          结束时间 ISO-8601（含，可选）
      */
     @GetMapping("/sessions")
-    public List<Map<String, Object>> sessions() {
+    public List<Map<String, Object>> sessions(
+            @RequestParam(required = false) String jobType,
+            @RequestParam(required = false) String sameTypeTag,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Integer minScore,
+            @RequestParam(required = false) Integer maxScore,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
         User user = currentUser.currentUser();
-        List<InterviewSession> sessions =
-                sessionRepo.findByUserOrderByIdDesc(user);
+        List<InterviewSession> sessions = sessionRepo.findByUserOrderByIdDesc(user);
         List<Long> ids = sessions.stream().map(InterviewSession::getId).toList();
         java.util.Set<Long> reportedIds = reportRepo.findByUser(user).stream()
                 .map(r -> r.getSession() == null ? null : r.getSession().getId())
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toSet());
 
+        Instant fromAt = parseInstant(from);
+        Instant toAt = parseInstant(to);
+        String kw = keyword == null ? null : keyword.trim().toLowerCase();
+
         List<Map<String, Object>> resp = new ArrayList<>();
         for (InterviewSession s : sessions) {
+            // 过滤
+            if (jobType != null && !jobType.isBlank()) {
+                String jt = s.getJdProfile() == null ? null : s.getJdProfile().getJobType();
+                if (!jobType.equals(jt)) continue;
+            }
+            if (sameTypeTag != null && !sameTypeTag.isBlank()) {
+                String st = s.getJdProfile() == null ? null : s.getJdProfile().getSameTypeTag();
+                if (!sameTypeTag.equals(st)) continue;
+            }
+            if (status != null && !status.isBlank()) {
+                String st = s.getStatus() == null ? null : s.getStatus().name();
+                if (!status.equalsIgnoreCase(st)) continue;
+            }
+            if (minScore != null && (s.getMatchScore() == null || s.getMatchScore() < minScore)) continue;
+            if (maxScore != null && (s.getMatchScore() == null || s.getMatchScore() > maxScore)) continue;
+            if (fromAt != null && (s.getCreatedAt() == null || s.getCreatedAt().isBefore(fromAt))) continue;
+            if (toAt != null && (s.getCreatedAt() == null || s.getCreatedAt().isAfter(toAt))) continue;
+            if (kw != null && !kw.isEmpty()) {
+                String raw = s.getJdProfile() == null ? null : s.getJdProfile().getRawText();
+                if (raw == null || !raw.toLowerCase().contains(kw)) continue;
+            }
+
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("sessionId", s.getId());
             m.put("jdId", s.getJdProfile() == null ? null : s.getJdProfile().getId());
@@ -131,6 +174,11 @@ public class InterviewController {
             resp.add(m);
         }
         return resp;
+    }
+
+    private static Instant parseInstant(String s) {
+        if (s == null || s.isBlank()) return null;
+        try { return Instant.parse(s); } catch (Exception e) { return null; }
     }
 
     // ---------- answer ----------
@@ -204,6 +252,57 @@ public class InterviewController {
         body.put("turnCount", turnRepo.findBySessionIdOrderBySeqAsc(sessionId).size());
         body.put("matchScore", session.getMatchScore());
         return body;
+    }
+
+    // ---------- F7 分数趋势图 ----------
+
+    /**
+     * 多场面试的匹配度趋势（按时间升序），供前端画折线图。
+     * 只返回有 matchScore 的场次；每场含 matchScore + 报告里的逐轮均分 + 行为维度（若有）。
+     */
+    @GetMapping("/trend")
+    public List<Map<String, Object>> trend() {
+        User user = currentUser.currentUser();
+        List<Map<String, Object>> resp = new ArrayList<>();
+        for (InterviewSession s : sessionRepo.findByUserOrderByIdDesc(user)) {
+            if (s.getMatchScore() == null) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("sessionId", s.getId());
+            m.put("createdAt", s.getCreatedAt() == null ? null : s.getCreatedAt().toString());
+            m.put("matchScore", s.getMatchScore());
+            m.put("jobType", s.getJdProfile() == null ? null : s.getJdProfile().getJobType());
+
+            CriticReport r = reportRepo.findBySessionIdAndUser(s.getId(), user).orElse(null);
+            if (r != null) {
+                Object turnsObj = parseJson(r.getPerTurnReview(), new TypeReference<List<Map<String, Object>>>() {});
+                if (turnsObj instanceof List<?> turns && !turns.isEmpty()) {
+                    double sum = 0; int cnt = 0;
+                    for (Object o : turns) {
+                        if (!(o instanceof Map<?, ?> t)) continue;
+                        Object sc = t.get("score");
+                        if (sc != null) { try { sum += Double.parseDouble(String.valueOf(sc)); cnt++; } catch (Exception ignored) {} }
+                    }
+                    m.put("avgTurnScore", cnt > 0 ? Math.round(sum / cnt * 10) / 10.0 : null);
+                }
+                Map<String, Object> br = parseJsonObjectOrNull(r.getBehaviorReview());
+                if (br != null && br.get("dimensions") instanceof Map<?, ?> dims) {
+                    Map<String, Object> dimMap = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> e : dims.entrySet()) {
+                        dimMap.put(String.valueOf(e.getKey()), e.getValue());
+                    }
+                    m.put("behaviorDimensions", dimMap);
+                }
+            }
+            resp.add(m);
+        }
+        resp.sort((a, b) -> {
+            String ta = (String) a.get("createdAt");
+            String tb = (String) b.get("createdAt");
+            if (ta == null) return -1;
+            if (tb == null) return 1;
+            return ta.compareTo(tb);
+        });
+        return resp;
     }
 
     // ---------- 逐轮回看（F2） ----------

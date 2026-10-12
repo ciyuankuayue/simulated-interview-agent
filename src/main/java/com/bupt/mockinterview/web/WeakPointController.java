@@ -6,11 +6,14 @@ import com.bupt.mockinterview.domain.WeakPoint;
 import com.bupt.mockinterview.domain.repository.CriticReportRepository;
 import com.bupt.mockinterview.domain.repository.InterviewTurnRepository;
 import com.bupt.mockinterview.memory.WeakPointMemoryService;
+import com.bupt.mockinterview.memory.WeakPointReviewService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,13 +36,16 @@ import java.util.Map;
 public class WeakPointController {
 
     private final WeakPointMemoryService memory;
+    private final WeakPointReviewService review;
     private final InterviewTurnRepository turnRepo;
     private final CriticReportRepository reportRepo;
     private final ObjectMapper mapper;
 
-    public WeakPointController(WeakPointMemoryService memory, InterviewTurnRepository turnRepo,
+    public WeakPointController(WeakPointMemoryService memory, WeakPointReviewService review,
+                               InterviewTurnRepository turnRepo,
                                CriticReportRepository reportRepo, ObjectMapper mapper) {
         this.memory = memory;
+        this.review = review;
         this.turnRepo = turnRepo;
         this.reportRepo = reportRepo;
         this.mapper = mapper;
@@ -78,6 +84,31 @@ public class WeakPointController {
         Map<String, Object> body = renderOne(w);
         body.put("latest", latestScene(w));
         return body;
+    }
+
+    // ---------- F3 复习模式 ----------
+
+    /** 生成该知识点的一道复习题（非思考档 LLM，快）。 */
+    @PostMapping("/{id}/review/question")
+    public Map<String, Object> reviewQuestion(@PathVariable Long id) {
+        WeakPoint w = review.require(id);
+        String question = review.generateQuestion(w);
+        return Map.of("weakPointId", id, "knowledgePoint", w.getKnowledgePoint(), "question", question);
+    }
+
+    public record ReviewAnswerRequest(String question, String answer) {}
+
+    /** 提交作答：LLM 判分（0-8）+ 更新复习阶梯，返回得分与遗漏点。 */
+    @PostMapping("/{id}/review/answer")
+    public Map<String, Object> reviewAnswer(@PathVariable Long id, @RequestBody ReviewAnswerRequest req) {
+        if (req == null || req.answer() == null || req.answer().isBlank()) {
+            throw new IllegalArgumentException("answer 不能为空");
+        }
+        if (req.question() == null || req.question().isBlank()) {
+            throw new IllegalArgumentException("question 不能为空");
+        }
+        WeakPoint w = review.require(id);
+        return review.reviewAnswer(w, req.question(), req.answer().trim());
     }
 
     // ---------- 内部 ----------

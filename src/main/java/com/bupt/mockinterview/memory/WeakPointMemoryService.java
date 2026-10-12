@@ -161,6 +161,38 @@ public class WeakPointMemoryService {
                 .orElseThrow(() -> new IllegalArgumentException("错题本条目不存在: " + id));
     }
 
+    /**
+     * F3 错题本复习模式：用户针对某知识点主动复习作答后，按得分更新复习阶梯。
+     *
+     * 规则（与面试主流程的 onTurnScored 对齐阈值，但语义不同——这里是「主动复习」）：
+     * <pre>
+     * score >= 6（答对）→ stage +1（封顶 MAX_STAGE），重排 nextReviewAt；已到顶阶则出队 resolved
+     * score <= 3（答错）→ 重置 stage=0，wrongCount+1，1 天后复习
+     * score 4-5       → 不动（没崩但也没掌握，维持当前阶梯）
+     * </pre>
+     *
+     * @return 更新后的 weakPoint
+     */
+    @Transactional
+    public WeakPoint reviewAnswer(Long id, int score, Instant now) {
+        WeakPoint w = require(id);
+        int s = w.getReviewStage() == null ? 0 : w.getReviewStage();
+        if (score >= SpacedRepetition.MASTERED_SCORE) {
+            if (s >= SpacedRepetition.MAX_STAGE) {
+                w.setResolved(true);
+                w.setResolvedAt(now);
+            } else {
+                w.setReviewStage(s + 1);
+                w.setNextReviewAt(SpacedRepetition.nextReviewAt(s + 1, now));
+            }
+        } else if (score <= SpacedRepetition.WEAK_SCORE_MAX) {
+            w.setReviewStage(0);
+            w.setWrongCount((w.getWrongCount() == null ? 0 : w.getWrongCount()) + 1);
+            w.setNextReviewAt(SpacedRepetition.nextReviewAt(0, now));
+        }
+        return repo.save(w);
+    }
+
     // ---------- 匹配 ----------
 
     /**

@@ -22,6 +22,7 @@
         token: null,              // JWT（Authorization header / SSE jwt query）
         username: null,           // 登录用户名（UI 显示用）
         jdId: null,
+        jdList: [],  // F5：缓存 JD 完整列表（含 keywords），选中时展示考点
         resumeId: null,
         sessionId: null,
         es: null,
@@ -214,9 +215,20 @@
 
     async function loadHistory() {
         try {
-            const arr = await api('/api/interview/sessions');
+            // F8：拼接筛选参数
+            const params = new URLSearchParams();
+            const kw = $('histKw').value.trim();
+            const st = $('histStatus').value;
+            const mn = $('histMinScore').value;
+            const mx = $('histMaxScore').value;
+            if (kw) params.set('keyword', kw);
+            if (st) params.set('status', st);
+            if (mn) params.set('minScore', mn);
+            if (mx) params.set('maxScore', mx);
+            const qs = params.toString();
+            const arr = await api('/api/interview/sessions' + (qs ? '?' + qs : ''));
             if (!arr || !arr.length) {
-                $('history').innerHTML = '<p class="placeholder">还没有历史面试。</p>';
+                $('history').innerHTML = '<p class="placeholder">' + (kw || st || mn || mx ? '没有匹配的历史面试。' : '还没有历史面试。') + '</p>';
                 return;
             }
             $('history').innerHTML = arr.map((s) => {
@@ -231,6 +243,72 @@
         } catch (e) {
             $('history').innerHTML = '<p class="placeholder bad">历史加载失败：' + esc(e.message) + '</p>';
         }
+    }
+
+    // ---------- F7 分数趋势图 ----------
+
+    async function showTrend() {
+        const box = $('trendChart');
+        if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+        try {
+            const arr = await api('/api/interview/trend');
+            if (!arr || !arr.length) {
+                box.innerHTML = '<p class="placeholder">还没有可绘制的分数数据（需至少一场已评分面试）。</p>';
+                box.hidden = false;
+                return;
+            }
+            box.innerHTML = drawTrendSvg(arr);
+            box.hidden = false;
+        } catch (e) {
+            box.innerHTML = '<p class="placeholder bad">趋势图加载失败：' + esc(e.message) + '</p>';
+            box.hidden = false;
+        }
+    }
+
+    /** 纯 SVG 折线图：X=场次序号，Y=匹配度 0-100，圆点 hover 显示详情。 */
+    function drawTrendSvg(data) {
+        const W = 400, H = 160, pad = { l: 32, r: 12, t: 12, b: 22 };
+        const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+        const n = data.length;
+        const maxY = 100;
+        const xAt = (i) => pad.l + (n <= 1 ? iw / 2 : (iw * i) / (n - 1));
+        const yAt = (v) => pad.t + ih - (ih * v) / maxY;
+
+        // 网格线 + Y 轴刻度
+        let grid = '';
+        for (let g = 0; g <= 4; g++) {
+            const y = pad.t + (ih * g) / 4;
+            const label = 100 - g * 25;
+            grid += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y +
+                '" stroke="#2a3650" stroke-dasharray="2,3"/>' +
+                '<text x="' + (pad.l - 4) + '" y="' + (y + 3) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + label + '</text>';
+        }
+
+        // 折线
+        const pts = data.map((d, i) => xAt(i) + ',' + yAt(d.matchScore)).join(' ');
+        const poly = '<polyline points="' + pts + '" fill="none" stroke="#5b9dff" stroke-width="2"/>';
+
+        // 圆点 + 标题提示
+        let dots = '';
+        data.forEach((d, i) => {
+            const cx = xAt(i), cy = yAt(d.matchScore);
+            const title = '#' + d.sessionId + ' · ' + fmtTime(d.createdAt) + ' · ' + d.matchScore + '分' +
+                (d.jobType ? ' · ' + d.jobType : '');
+            dots += '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="#5b9dff">' +
+                '<title>' + esc(title) + '</title></circle>';
+        });
+
+        // X 轴首尾日期
+        const xLabel = '<text x="' + pad.l + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9">' +
+            esc(fmtTime(data[0].createdAt)) + '</text>' +
+            '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9" text-anchor="end">' +
+            esc(fmtTime(data[n - 1].createdAt)) + '</text>';
+
+        const tip = '<div class="trendTip">共 ' + n + ' 场 · 匹配度范围 ' +
+            Math.min(...data.map(d => d.matchScore)) + '–' + Math.max(...data.map(d => d.matchScore)) + ' · 悬停圆点看详情</div>';
+
+        return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+            grid + poly + dots + xLabel + '</svg>' + tip;
     }
 
     /** 回看指定场次的报告（历史点击）；与实时流无关，强制渲染覆盖当前报告区。 */
@@ -382,6 +460,96 @@
         return head + qa + review;
     }
 
+    // ---------- F3 错题本复习模式 ----------
+
+    let reviewQueue = [];   // 待复习的 weakPoint 列表
+    let reviewIdx = 0;      // 当前复习到第几条
+    let reviewQuestion = ''; // 当前题目的题干（判分时回传）
+
+    async function startReviewMode() {
+        const panel = $('reviewPanel');
+        if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; return; }
+        try {
+            reviewQueue = await api('/api/weak-point/due');
+            if (!reviewQueue.length) {
+                panel.innerHTML = '<p class="placeholder">今天没有到期的复习项，去面试里练几个吧。</p>';
+                panel.hidden = false;
+                return;
+            }
+            reviewIdx = 0;
+            panel.hidden = false;
+            loadReviewItem();
+        } catch (e) {
+            panel.innerHTML = '<p class="placeholder bad">复习模式启动失败：' + esc(e.message) + '</p>';
+            panel.hidden = false;
+        }
+    }
+
+    /** 加载当前复习项：出题并展示答题框。 */
+    async function loadReviewItem() {
+        const panel = $('reviewPanel');
+        const w = reviewQueue[reviewIdx];
+        panel.innerHTML = '<div class="rvKp">知识点：' + esc(w.knowledgePoint) +
+            '（' + (reviewIdx + 1) + '/' + reviewQueue.length + '）</div>' +
+            '<div class="rvQ">出题中…</div>';
+        try {
+            const r = await api('/api/weak-point/' + w.weakPointId + '/review/question', 'POST');
+            reviewQuestion = r.question;
+            panel.innerHTML =
+                '<div class="rvKp">知识点：' + esc(w.knowledgePoint) +
+                '（' + (reviewIdx + 1) + '/' + reviewQueue.length + '）</div>' +
+                '<div class="rvQ">' + esc(reviewQuestion) + '</div>' +
+                '<textarea id="rvAnswer" placeholder="在此作答…"></textarea>' +
+                '<div class="rvActions">' +
+                '<button id="rvSubmit" class="primary">提交判分</button>' +
+                '<button id="rvSkip" class="ghost">跳过</button>' +
+                '</div>';
+            $('rvSubmit').onclick = submitReview;
+            $('rvSkip').onclick = nextReview;
+        } catch (e) {
+            panel.innerHTML = '<p class="placeholder bad">出题失败：' + esc(e.message) + '</p>';
+        }
+    }
+
+    async function submitReview() {
+        const ans = $('rvAnswer').value.trim();
+        if (!ans) { tip('请先作答', true); return; }
+        const btn = $('rvSubmit');
+        btn.disabled = true;
+        btn.textContent = '判分中…';
+        try {
+            const w = reviewQueue[reviewIdx];
+            const r = await api('/api/weak-point/' + w.weakPointId + '/review/answer', 'POST',
+                { question: reviewQuestion, answer: ans });
+            const stageText = r.resolved ? '已掌握，出队 ✓' :
+                'stage ' + r.newStage + ' · 下次复习 ' + fmtTime(r.nextReviewAt);
+            $('reviewPanel').innerHTML =
+                '<div class="rvKp">知识点：' + esc(w.knowledgePoint) + '</div>' +
+                '<div class="rvResult">' +
+                '<div class="rvScore">' + esc(r.score) + ' / 8</div>' +
+                '<div>' + esc(r.explanation || '') + '</div>' +
+                '<div style="margin-top:6px;color:var(--muted);font-size:12px">' + esc(stageText) + '</div>' +
+                '</div>' +
+                '<div class="rvActions"><button id="rvNext" class="primary">' +
+                (reviewIdx + 1 < reviewQueue.length ? '下一题' : '完成复习') + '</button></div>';
+            $('rvNext').onclick = nextReview;
+            loadWeak();  // 刷新错题本列表（阶梯已变）
+        } catch (e) {
+            tip(e.message, true);
+            btn.disabled = false;
+            btn.textContent = '提交判分';
+        }
+    }
+
+    function nextReview() {
+        reviewIdx++;
+        if (reviewIdx >= reviewQueue.length) {
+            $('reviewPanel').innerHTML = '<p class="placeholder">本轮复习完成，继续加油！</p>';
+            return;
+        }
+        loadReviewItem();
+    }
+
     // ---------- SSE ----------
 
     function openStream(sessionId) {
@@ -488,6 +656,7 @@
         $('btnRefreshJd').onclick = refreshJd;
         $('jdSelect').onchange = () => {
             state.jdId = $('jdSelect').value ? Number($('jdSelect').value) : null;
+            showJdKeywords();
         };
 
         // 简历：上传新版本 + 历史版本下拉（选中即激活，与 JD 下拉同一交互范式）
@@ -612,6 +781,14 @@
 
         // 历史
         $('btnHistory').onclick = loadHistory;
+        $('btnTrend').onclick = showTrend;
+        // F8 筛选：输入即触发（防抖）
+        let histTimer = null;
+        const histFilterChange = () => { clearTimeout(histTimer); histTimer = setTimeout(loadHistory, 300); };
+        $('histKw').addEventListener('input', histFilterChange);
+        $('histStatus').onchange = loadHistory;
+        $('histMinScore').addEventListener('input', histFilterChange);
+        $('histMaxScore').addEventListener('input', histFilterChange);
         // 事件委托：历史条目点击回看报告（列表是动态渲染的，不能逐条绑）
         $('history').addEventListener('click', (e) => {
             const btn = e.target.closest('.histItem');
@@ -621,6 +798,7 @@
         // 错题本
         $('btnWeak').onclick = loadWeak;
         $('dueOnly').onchange = loadWeak;
+        $('btnReviewMode').onclick = startReviewMode;
         // toggle 事件会冒泡：展开时懒加载该条详情
         $('weak').addEventListener('toggle', (e) => {
             if (e.target.tagName === 'DETAILS' && e.target.open) loadWeakDetail(e.target);
@@ -630,13 +808,25 @@
     async function refreshJd() {
         try {
             const arr = await api('/api/jd');
+            state.jdList = arr;  // F5：缓存完整列表（含 keywords）
             const sel = $('jdSelect');
             const keep = String(state.jdId || '');
             sel.innerHTML = '<option value="">— 选择已有 JD —</option>' + arr.map((j) =>
                 '<option value="' + j.jdId + '">#' + j.jdId + ' ' + esc(j.jobType || '') +
                 (j.sameTypeTag ? ' · ' + esc(j.sameTypeTag) : '') + '</option>').join('');
             if (keep) sel.value = keep;
+            showJdKeywords();
         } catch (e) { /* 列表刷新失败不打扰用户 */ }
+    }
+
+    /** F5：展示当前选中 JD 的考点标签云。 */
+    function showJdKeywords() {
+        const box = $('jdKeywords');
+        const id = Number($('jdSelect').value);
+        const jd = (state.jdList || []).find(j => j.jdId === id);
+        if (!jd || !jd.keywords || !jd.keywords.length) { box.innerHTML = ''; return; }
+        box.innerHTML = '<div class="kwTitle">考点预览：</div>' +
+            jd.keywords.map(k => '<span class="kwChip">' + esc(k) + '</span>').join('');
     }
 
     async function refreshResume() {

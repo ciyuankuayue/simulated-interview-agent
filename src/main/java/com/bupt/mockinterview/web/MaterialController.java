@@ -112,9 +112,22 @@ public class MaterialController {
         List<Map<String, Object>> resp = new ArrayList<>();
         for (JdProfile jd : jdRepo.findByUser(user)) {
             resp.add(mapOf("jdId", jd.getId(), "jobType", jd.getJobType(),
-                    "sameTypeTag", jd.getSameTypeTag(), "createdAt", str(jd.getCreatedAt())));
+                    "sameTypeTag", jd.getSameTypeTag(), "createdAt", str(jd.getCreatedAt()),
+                    "keywords", parseKeywords(jd.getKeywords())));
         }
         return resp;
+    }
+
+    /** keywords TEXT 列存的是 JSON 数组，解析成 List；空/解析失败返回空列表。 */
+    private List<String> parseKeywords(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        try {
+            return mapper.readValue(text, new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     // ---------- 简历 ----------
