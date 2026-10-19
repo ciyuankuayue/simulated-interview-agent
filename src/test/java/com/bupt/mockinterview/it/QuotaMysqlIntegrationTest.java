@@ -1,6 +1,7 @@
 package com.bupt.mockinterview.it;
 
 import com.bupt.mockinterview.billing.QuotaService;
+import com.bupt.mockinterview.billing.QuotaProperties;
 import com.bupt.mockinterview.billing.UsageScene;
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.domain.Quota;
@@ -33,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIf("#{T(com.bupt.mockinterview.it.MysqlItSupport).isMysqlReachable()}")
 class QuotaMysqlIntegrationTest extends MysqlItSupport {
 
+    private static final long POINT = QuotaProperties.TOKENS_PER_POINT;
+
     @Autowired private QuotaService quotaService;
     @Autowired private QuotaRepository quotaRepo;
     @Autowired private LlmUsageLogRepository usageRepo;
@@ -64,31 +67,31 @@ class QuotaMysqlIntegrationTest extends MysqlItSupport {
 
     @Test
     void byokCharge_fixedFee_neverOverdrafts_onInnoDB() {
-        User user = newUserWithQuota("r5-mysql-byok", 2);
+        User user = newUserWithQuota("r5-mysql-byok", 2 * POINT);
         asUser(user);
 
         assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
-        assertThat(quotaService.getByUser(user.getId()).remaining()).isEqualTo(1);
+        assertThat(quotaService.getByUser(user.getId()).remaining()).isEqualTo(POINT);
         assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
         assertThat(quotaService.getByUser(user.getId()).remaining()).isZero();
         // 第三次：条件 UPDATE 不命中 → false，不超发
         assertThat(quotaService.chargeForByokCall(user.getId())).isFalse();
-        assertThat(quotaRepo.findByUserId(user.getId()).orElseThrow().getUsedTokens()).isEqualTo(2);
+        assertThat(quotaRepo.findByUserId(user.getId()).orElseThrow().getUsedTokens()).isEqualTo(2 * POINT);
     }
 
     /**
      * R2-T0 C1 并发实证真机版：50 线程 × 3 轮栅栏同发 = 150 次混合扣减
-     * （PLATFORM 每次 7 / BYOK 每次 1，各 75 次），总额度 300 远不足以覆盖。
-     * InnoDB 行锁下不变量：无异常、无负余额、恰好扣满 300、旁观者零变化。
+     * （PLATFORM 每次 7 积分 / BYOK 每次 1 积分，各 75 次），总额度 300 积分远不足以覆盖。
+     * InnoDB 行锁下不变量：无异常、无负余额、恰好扣满 300 积分、旁观者零变化。
      */
     @Test
     void concurrentMixed_50x3_neverOverdrafts_onInnoDB() throws InterruptedException {
-        User user = newUserWithQuota("r5-mysql-concurrent", 300);
+        User user = newUserWithQuota("r5-mysql-concurrent", 300 * POINT);
         User bystander = newUserWithQuota("r5-mysql-bystander", 500);
 
         int threads = 50;
         int rounds = 3;
-        long platformCost = 7L;
+        long platformCost = 7L * POINT;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CyclicBarrier barrier = new CyclicBarrier(threads);
         CountDownLatch done = new CountDownLatch(threads);
@@ -144,7 +147,7 @@ class QuotaMysqlIntegrationTest extends MysqlItSupport {
 
         asUser(user);
         Quota q = quotaRepo.findByUserId(user.getId()).orElseThrow();
-        assertThat(q.getUsedTokens()).isEqualTo(300L);       // 恰好扣满
+        assertThat(q.getUsedTokens()).isEqualTo(300 * POINT);       // 恰好扣满
         assertThat(q.remaining()).isZero();
 
         // 旁观者零变化

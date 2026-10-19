@@ -12,7 +12,7 @@ import java.util.Map;
 /**
  * F10 心理助手 / 情绪陪伴。
  *
- * <p>POST /api/companion/chat —— 发送一句心里话，返回温暖回应（命中自伤关键词则返回求助热线）。
+ * <p>POST /api/companion/chat —— 发送一句心里话，返回陪伴回应（命中自伤关键词则返回安全支持）。
  * <p>POST /api/companion/reset —— 清空当前用户的陪伴对话历史。
  */
 @RestController

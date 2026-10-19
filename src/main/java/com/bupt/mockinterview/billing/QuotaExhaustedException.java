@@ -8,14 +8,16 @@ import com.bupt.mockinterview.domain.KeyMode;
  */
 public class QuotaExhaustedException extends RuntimeException {
 
-    public static final String PLATFORM_MESSAGE = "Token 额度已用完，请联系管理员充值";
-    public static final String BYOK_MESSAGE = "服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值";
+    public static final String BETA_SUPPORT = "平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947";
+    public static final String PLATFORM_MESSAGE = "积分已用完。" + BETA_SUPPORT;
+    public static final String BYOK_MESSAGE = "积分不足以支付本次自带 Key 服务费。" + BETA_SUPPORT
+            + "；若仍有少量积分，可切回平台模式按用量使用";
 
     public QuotaExhaustedException(String message) {
         super(message);
     }
 
-    /** 按当前调用模式给不同引导文案（PLATFORM=找管理员；BYOK=可删 key 切回平台）。 */
+    /** 按调用模式提示积分不足；内测阶段由工作人员人工补额，无在线支付。 */
     public static QuotaExhaustedException forMode(KeyMode mode) {
         return new QuotaExhaustedException(mode == KeyMode.BYOK ? BYOK_MESSAGE : PLATFORM_MESSAGE);
     }

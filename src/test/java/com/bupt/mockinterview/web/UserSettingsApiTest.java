@@ -64,7 +64,7 @@ class UserSettingsApiTest {
         assertThat(noKey.get("hasKey").asBoolean()).isFalse();
 
         JsonNode quota0 = json(mvc.perform(get("/api/user/quota")));
-        assertThat(quota0.get("totalTokens").asLong()).isEqualTo(500_000L);
+        assertThat(quota0.get("totalTokens").asLong()).isEqualTo(50_000L);
         assertThat(quota0.get("usedTokens").asLong()).isZero();
 
         // ---- 无 key 切 BYOK → 409 ----
@@ -109,11 +109,11 @@ class UserSettingsApiTest {
         assertThat(json(putJson("/api/user/settings", "{\"keyMode\":\"BYOK\"}")).get("keyMode").asText())
                 .isEqualTo("BYOK");
 
-        // ---- BYOK 服务费：一次调用扣 1 token 当量，quota 立即可见 ----
+        // ---- BYOK 服务费：一次模型调用扣 1 积分（500 token 当量），quota 立即可见 ----
         assertThat(quotaService.chargeForByokCall(testUser.getId())).isTrue();
         JsonNode quota1 = json(mvc.perform(get("/api/user/quota")));
-        assertThat(quota1.get("usedTokens").asLong()).isEqualTo(1L);
-        assertThat(quota1.get("remainingTokens").asLong()).isEqualTo(499_999L);
+        assertThat(quota1.get("usedTokens").asLong()).isEqualTo(500L);
+        assertThat(quota1.get("remainingTokens").asLong()).isEqualTo(49_500L);
 
         // ---- 更换 key（last4 变化）----
         String secret2 = "sk-replaced-key-0000000000000000wxyz";

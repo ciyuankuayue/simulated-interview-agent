@@ -46,8 +46,7 @@ class JdQuotaPropagationTest {
         when(llm.chat(any(), anyBoolean(), anyList(), any(), anyBoolean(),
                 org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(com.bupt.mockinterview.billing.UsageScene.class)))
-                .thenThrow(new QuotaExhaustedException(
-                        "服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值"));
+                .thenThrow(QuotaExhaustedException.forMode(com.bupt.mockinterview.domain.KeyMode.BYOK));
 
         var actions = mvc.perform(post("/api/jd")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -57,6 +56,6 @@ class JdQuotaPropagationTest {
         JsonNode body = mapper.readTree(
                 actions.andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(body.get("code").asText()).isEqualTo("QUOTA_EXHAUSTED");
-        assertThat(body.get("message").asText()).contains("切回平台");
+        assertThat(body.get("message").asText()).contains("内测阶段", "联系工作人员补充额度", "13481264947");
     }
 }

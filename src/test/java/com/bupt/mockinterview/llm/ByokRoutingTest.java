@@ -95,7 +95,7 @@ class ByokRoutingTest {
 
         assertThatThrownBy(() -> llm.followUp("system", "user"))
                 .isInstanceOf(QuotaExhaustedException.class)
-                .hasMessageContaining("联系管理员充值");
+                .hasMessageContaining("内测阶段").hasMessageContaining("13481264947");
 
         verify(http, never()).newCall(any());
         verify(quotaService, never()).chargeForByokCall(any());

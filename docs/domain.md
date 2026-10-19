@@ -47,13 +47,15 @@
 ### quota（R2：token 计量；R1-3 的 points 列已整体替换）
 - id (PK)
 - user_id (FK UNIQUE, NOT NULL)
-- total_tokens      # 总额度（token 单位；注册赠送 app.quota.signup-bonus-tokens，默认 500000；ADMIN 可加）
+- total_tokens      # 总额度（token 单位；注册赠送 app.quota.signup-bonus-tokens，默认 50000 = 100 积分；ADMIN 可加）
 - used_tokens       # 已消耗（token 当量；非负，永不超过 total，最后一次透支由 clamp 归零到 total）
 - created_at / updated_at
 
-> R2 计量规则（用户冻结）：
+> 积分展示（2026-10-19）：1 积分 = 500 token 当量。保留现有 token 账本与 API；页面按此比例显示，最多 3 位小数，不把 0.002 积分舍入成 0。新用户默认赠 100 积分，存量用户额度不重置。
+>
+> R2 计量规则（2026-10-19 调整默认赠额与服务费）：
 > - **PLATFORM**：DeepSeek 与 embedding（DashScope）都走平台 key。调用**前预检**余额（=0 直接 402，不发请求）；调用**后**按响应 `usage.total_tokens` **实扣**；usage 缺失按「输入+输出字符数 1 字符≈1 token」估算兜底（偏保守，`app.quota.usage-estimate-enabled` 可关）。允许最后一次小幅超出，扣减时 clamp 到 total，之后预检拦死。
-> - **BYOK**：API 费由用户自己付给 DeepSeek；平台仍在调用**前**扣固定服务费 `app.quota.byok-charge-per-call`（token 当量，默认 1），条件 UPDATE 不超发，余额不足 402。BYOK 的 embedding 仍走平台 key → 按 token 实扣（与对话模式无关）。
+> - **BYOK**：API 费由用户自己付给 DeepSeek；平台仍在每次模型调用**前**扣固定服务费 `app.quota.byok-charge-per-call`（默认 500 token 当量 = 1 积分），条件 UPDATE 不超发，不足 1 积分即 402；一轮面试可能有多次模型调用。BYOK 的 embedding 仍走平台 key → 按实际用量折算积分（与对话模式无关）。
 > - 扣减与流水在 REQUIRES_NEW 独立事务提交：token 已真实烧掉，业务事务后续回滚不退款。
 > - 并发安全：单条条件 UPDATE 原子扣减（不引 @Version/Redis INCR），并发压测保证不超发。
 
@@ -64,7 +66,7 @@
 - key_mode         # PLATFORM / BYOK（embedding 恒 PLATFORM；R3-2 起 BYOK 用户选 QWEN 时对话也记 PLATFORM）
 - model            # 「厂商:模型名」标识（R3-1 起）：deepseek:<m> / qwen:<m> / dashscope:<embed-m>；历史行可能是裸 deepseek-flash（无前缀），原样保留不回填
 - prompt_tokens / completion_tokens / total_tokens   # 厂商 usage 原值；embedding 只 total；估算兜底时三者可为 0 而 total=估算值并记 estimated=true 的来源（实现上以 total_tokens>0 为准）
-- charged_tokens   # 实际从 quota 扣减的 token 当量（BYOK 对话时为服务费 1，不等于 total_tokens）
+- charged_tokens   # 扣减的 token 当量（BYOK 对话默认服务费 500 = 1 积分，不等于 total_tokens；历史按当时费率保留）
 - created_at
 
 > 用途：AGENTS.md「明细入 DB」原则下的逐次消耗凭证；支撑 GET /api/user/usage 与未来对账/管理后台。不做修改/删除接口。
@@ -317,4 +319,13 @@
 - `web/TenantIsolationPenetrationTest`（jwt=true、A/B 双真实账号、无类级 @Transactional + UUID 名 + DirtiesContext）8 个用例实证：资料/JD/会话历史/错题本列表跨租户为空；他人 id 的 start/激活/改文档/status/report/answer/end/events（SSE 走 query jwt）/weak-point 详情全 404；usage/quota/settings/api-key 只随 JWT 本人；admin 端点普通用户 403；无 token 全 401；向量路径用确定性 Embedder 证明 B 的出题 prompt 零泄露 A 的机密块、A 本人阳性召回 + answer/end/status 全链路 200。
 
 **Schema**：V4（Flyway，仅 prod/mysql 启用）对 13 表执行「加可空 tenant_id → 回填 tenant_id=user_id → 改 NOT NULL → 加索引」；H2 create-drop 由实体自动建列，不读脚本。
+
+## 10. 双陪考搭档（2026-10-19）
+
+- 陪考小暖（既有 CompanionService）负责情绪陪伴；通考小师（StudyCoachService）负责知识答疑与学习方向。两个角色的内存上下文完全分离，都以请求入口解析的本人 userId 为键。
+- 小暖 2026-10-19 初步优化：从强制一两句改为按需要自然展开，先回应具体处境，尊重只倾诉、不想听建议的意愿；求办法时给一个可选择的小步骤。报喜时回应已说出的进步、不补写经历。仍为短期 8 次成功问答，不自动读取档案。空模型输出抛 LlmException，前端保留输入；不写入假安慰或失败历史。既有关键词护栏保留，安全支持文本不包含未经核实的热线号码。
+- 小师最多保留最近 8 次成功问答，闲置 30 分钟后按访问清理；不新增实体、表或迁移，不将聊天自动写入资料库或错题本，不自动读取报告。
+- 小师模型调用统一走 LlmPort → LlmService（FAST 非思考）；保留路由、计费及 402/409/504 语义。失败不提交历史，同账号并发请求用 in-flight guard 拒绝；重置解除旧上下文，迟到响应不重新挂回。
+- UI 为两个角色提供独立入口、自我介绍和返回原页面；同页切换保留各自草稿，账号退出统一销毁。封面定位为心态陪伴、知识答疑、模拟练习、成长复盘的全流程支持，不承诺自动提醒或永久记忆。
+- 当前无支付接入：402 与设置/弹窗引导联系内测工作人员微信 13481264947 补额，ADMIN 手工增加额度接口不变。后续小暖、导师教学、开源调研和面试资料建设见 companion-and-interview-quality-backlog.md，未新增表或改索引权限。
 

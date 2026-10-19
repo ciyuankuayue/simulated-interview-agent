@@ -3,24 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AI 模拟面试 · 本地版</title>
+    <meta name="description" content="陪考小暖陪你稳住心态，通考小师陪你弄懂知识。从心态陪伴、知识答疑到面试模拟与成长复盘，你只管坚定向前，备考这一路，我们陪你。">
+    <title>AI 模拟面试 · 小暖与小师陪你备考</title>
     <link rel="stylesheet" th:href="@{/style.css}">
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script defer src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 </head>
 <body>
 
-<div id="app"></div>
+<div id="app"><div class="boot-state"><h1>面试练习室</h1><p>正在准备你的练习空间…如果长时间没有进入，请检查网络后刷新页面。</p></div></div>
+<noscript>请启用 JavaScript 后使用面试练习室。</noscript>
 
-<!-- Token 额度耗尽弹窗 -->
-<div id="quotaModal" class="auth-overlay" hidden>
-    <div class="auth-card quota-card" role="dialog" aria-modal="true" aria-labelledby="quotaTitle">
-        <h2 id="quotaTitle" class="authTitle">积分已用完</h2>
-        <p id="quotaModalMsg" class="quota-msg">上传 JD、简历 / 笔记 / 项目文档，以及开始模拟面试都需要消耗积分。请联系管理员为账号充值后继续。</p>
-        <p class="quota-sub">账号 <b id="quotaModalUser">—</b> · 当前余额 <b id="quotaModalRemain">0</b> 积分</p>
-        <button type="button" id="btnQuotaOk" class="primary big">我知道了</button>
-    </div>
-</div>
-
-<script th:src="@{/app.js}"></script>
+<script defer th:src="@{/app.js}"></script>
 </body>
 </html>

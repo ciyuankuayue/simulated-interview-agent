@@ -1,1027 +1,815 @@
-/* AI 模拟面试 · Vue3 前端（F12 重构）
- *
- * 从 Thymeleaf + 原生 JS 单文件迁移到 Vue3 CDN（无 npm 构建链）。
- * 组件化拆分：认证 / 准备 / 面试 / 报告 / 错题本 / 心理陪伴。
- * 共享状态用 reactive store，SSE 面试流在 InterviewPanel 组件内管理。
+/* Vue 3 client. Existing contracts and JWT-in-memory policy are unchanged; coach endpoints are additive.
+ * Views own their form state; account reset invalidates all outstanding requests.
  */
 (function () {
     'use strict';
-
-    const { createApp, reactive, ref, computed, onMounted, nextTick, watch } = Vue;
-
-    // ==================== 共享状态 Store ====================
-    const store = reactive({
-        token: null,
-        username: null,
-        jdId: null,
-        jdList: [],
-        resumeId: null,
-        sessionId: null,
-        interviewActive: false,
-        awaiting: false,
-        reportSessionId: null,
-        quota: null,
-        chatMessages: [],      // 面试对话消息列表
-        report: null,          // 当前 Critic 报告
-        stateText: '未开始',
-        connOk: false,
-        connText: '未连接',
-        // 用户设置
-        keyMode: 'PLATFORM',
-        byokKey: '',
-        byokStatus: '',
-        chatProvider: 'DEEPSEEK',
-        // 错题本
-        weakList: [],
-        dueOnly: false,
-        // 历史
-        historyList: [],
-        histFilter: { keyword: '', status: '', minScore: '', maxScore: '' },
-        // 视图切换
-        view: 'prepare',
+    const { createApp, reactive, nextTick } = Vue;
+    const initialState = () => ({
+        token: null, username: '', accountEpoch: 0, view: 'prepare', notice: null,
+        jdList: [], resumeList: [], historyList: [], weakList: [], quota: null,
+        keyMode: 'PLATFORM', chatProvider: 'DEEPSEEK', hasKey: false, last4: '',
+        jdId: null, resumeId: null, sessionId: null, maxQuestions: 3,
+        interviewActive: false, busy: false, awaiting: false, phase: 'idle',
+        currentTurn: null, mainCount: 0, messages: [], liveReport: null,
+        report: null, reportSessionId: null, connOk: false, connText: '尚未开始',
+        pendingSince: null, elapsed: 0, quotaOpen: false, dueOnly: false,
+        authDestination: null, buddyReturnView: 'prepare',
+        histFilter: { keyword: '', status: '', minScore: '', maxScore: '' }
     });
-
-    // ==================== 工具函数 ====================
-    function esc(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
-            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
-
-    function fmtTime(iso) {
-        if (!iso) return '—';
-        const d = new Date(iso);
-        return isNaN(d) ? iso : d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-    }
-
-    function formatTokens(n) {
-        if (n == null) return '—';
-        if (n >= 10000) return (n / 10000).toFixed(1) + ' 万';
-        return String(n);
-    }
-
-    function formatPoints(tokens) {
-        // 50 万 token = 1000 积分
-        if (tokens == null) return '—';
-        return Math.round(tokens / 500).toString();
-    }
-
-    async function api(path, method, body) {
-        const headers = { 'Content-Type': 'application/json; charset=utf-8' };
-        if (store.token) headers['Authorization'] = 'Bearer ' + store.token;
-        const opt = { method: method || 'GET', headers: headers };
-        if (body !== undefined) opt.body = JSON.stringify(body);
-        let res;
-        try { res = await fetch(path, opt); }
-        catch (e) { throw new Error('请求失败（后端没起？）: ' + e.message); }
-        const text = await res.text();
-        let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
-        if (!res.ok) {
-            const msg = (data && data.message) ? data.message : (typeof data === 'string' ? data : res.status);
-            if (res.status === 401) {
-                if (path === '/api/auth/login') throw new Error(msg || '用户名或密码错误');
-                forceLogout('登录已过期，请重新登录');
-                throw new Error('登录已过期，请重新登录');
-            }
-            if (res.status === 402 || (data && data.code === 'QUOTA_EXHAUSTED')) {
-                loadQuota();
-                showQuotaModal(msg);
-            }
-            const err = new Error(msg);
-            err.code = (data && data.code) ? data.code : null;
-            err.status = res.status;
-            throw err;
-        }
-        return data;
-    }
-
-    function forceLogout(message) {
-        store.token = null;
-        store.username = null;
-        store.quota = null;
-        closeStream();
-        hideQuotaModal();
-        showAuthModal('login', message);
-    }
-
-    function showQuotaModal(serverMessage) {
-        const m = document.getElementById('quotaModal');
-        if (m) {
-            m.hidden = false;
-            document.getElementById('quotaModalMsg').textContent =
-                serverMessage || '上传资料、开始面试都需要积分。请联系管理员充值。';
-            document.getElementById('quotaModalUser').textContent = store.username || '—';
-            document.getElementById('quotaModalRemain').textContent =
-                store.quota ? formatPoints(store.quota.remainingTokens) : '0';
-        }
-    }
-    function hideQuotaModal() { const m = document.getElementById('quotaModal'); if (m) m.hidden = true; }
-
-    async function loadQuota() {
-        try {
-            store.quota = await api('/api/billing/quota');
-        } catch (e) { /* 额度加载失败不打扰 */ }
-    }
-
-    // ==================== SSE 面试流 ====================
-    let es = null;
-    let rendered = new Set();
-    let sseFails = 0;
-
-    function openStream(sessionId) {
-        closeStream();
-        const url = '/api/interview/' + sessionId + '/events'
-            + (store.token ? '?jwt=' + encodeURIComponent(store.token) : '');
-        es = new EventSource(url);
-        sseFails = 0;
-
-        es.onopen = () => { sseFails = 0; store.connOk = true; store.connText = 'SSE 已连接'; };
-
-        const on = (type, fn) => es.addEventListener(type, (e) => {
-            let ev = {};
-            try { ev = JSON.parse(e.data); } catch (err) { ev = {}; }
-            if (e.data != null) sseFails = 0;
-            const key = type + ':' + (ev.turnSeq == null ? '' : ev.turnSeq);
-            if (ev.turnSeq == null || !rendered.has(key)) {
-                rendered.add(key);
-                fn(ev);
-            }
-        });
-
-        on('question', (ev) => {
-            const layer = ev.layer ? ' · 追问 L' + ev.layer : '';
-            store.chatMessages.push({ cls: 'q', title: (ev.role || '面试官') + ' · 第 ' + ev.turnSeq + ' 题' + layer, body: ev.question });
-            store.stateText = '等你作答';
-        });
-        on('followup', (ev) => {
-            const layer = ev.layer ? ' · 追问 L' + ev.layer : '';
-            store.chatMessages.push({ cls: 'q', title: (ev.role || '面试官') + ' · 第 ' + ev.turnSeq + ' 题' + layer, body: ev.question });
-            store.stateText = '等你作答（追问）';
-        });
-        on('score', (ev) => {
-            const s = ev.score == null ? '—' : ev.score;
-            const pct = Math.max(0, Math.min(100, (Number(s) / 8) * 100));
-            const badge = ev.track === 'behavior' ? '<span class="trackBadge">行为评分</span>' : '';
-            const html = '<div class="scoreRow"><span class="scoreNum">' + esc(s) + '</span><span class="scoreDen">/ 8</span>' +
-                '<span class="bar"><i style="width:' + pct + '%"></i></span></div>' +
-                (ev.oneLineCorrection ? '<div class="correction">一句纠正：' + esc(ev.oneLineCorrection) + '</div>' : '');
-            store.chatMessages.push({ cls: 'score', title: '本轮评分（第 ' + ev.turnSeq + ' 轮）' + badge, html: html });
-        });
-        on('await_answer', () => {
-            store.awaiting = true;
-            store.stateText = '等你作答';
-        });
-        on('report', (r) => { renderReport(r); });
-        on('error', (ev) => {
-            if (ev && ev.code) {
-                store.chatMessages.push({ cls: 'err', title: '异常 · ' + ev.code, body: ev.message || '' });
-            } else {
-                sseFails++;
-                if (sseFails >= 3) {
-                    closeStream();
-                    store.connOk = false; store.connText = 'SSE 已断开';
-                } else {
-                    store.connOk = false; store.connText = 'SSE 断开（自动重连 ' + sseFails + '/3）';
-                }
-            }
-        });
-        on('done', async () => {
-            store.connOk = false; store.connText = '本场结束';
-            store.awaiting = false;
-            closeStream();
-            if (!store.report && store.sessionId) {
-                store.stateText = 'Critic 出报告中…';
-                try {
-                    const r = await api('/api/interview/' + store.sessionId + '/end', 'POST');
-                    renderReport(r);
-                } catch (e) { /* 报告失败提示由调用方处理 */ }
-            }
-            if (!store.report) store.stateText = '已结束';
-            loadWeak();
-            loadHistory();
-            loadQuota();
-        });
-    }
-
-    function closeStream() {
-        if (es) { es.close(); es = null; }
-    }
-
-    function renderReport(r, sessionId) {
-        if (store.report) return;
-        store.report = r;
-        store.reportSessionId = sessionId || store.sessionId;
-        store.stateText = '已完成，报告已出';
-    }
-
-    // ==================== 认证弹窗控制 ====================
-    let authTab = 'login';
-    let authError = '';
-    function showAuthModal(tab, error) {
-        authTab = tab || 'login';
-        authError = error || '';
-        // 通过自定义事件通知 Auth 组件
-        window.dispatchEvent(new CustomEvent('show-auth', { detail: { tab: authTab, error: authError } }));
-    }
-
-    // ==================== 数据加载 ====================
-    async function refreshJd() {
-        try {
-            store.jdList = await api('/api/jd');
-        } catch (e) { /* 忽略 */ }
-    }
-
-    async function loadHistory() {
-        try {
-            const params = new URLSearchParams();
-            const f = store.histFilter;
-            if (f.keyword) params.set('keyword', f.keyword);
-            if (f.status) params.set('status', f.status);
-            if (f.minScore) params.set('minScore', f.minScore);
-            if (f.maxScore) params.set('maxScore', f.maxScore);
-            const qs = params.toString();
-            store.historyList = await api('/api/interview/sessions' + (qs ? '?' + qs : ''));
-        } catch (e) { /* 忽略 */ }
-    }
-
-    async function loadWeak() {
-        try {
-            const arr = await api('/api/weak-point' + (store.dueOnly ? '/due' : ''));
-            store.weakList = arr;
-        } catch (e) { /* 忽略 */ }
-    }
-
-    async function viewHistoryReport(sessionId) {
-        try {
-            store.report = await api('/api/interview/' + sessionId + '/report');
-            store.reportSessionId = sessionId;
-            store.view = 'history';
-        } catch (e) { alert(e.message); }
-    }
-
-    // ==================== 组件：认证 ====================
-    const AuthPanel = {
-        data() {
-            return {
-                tab: 'login',
-                error: '',
-                loginUser: '', loginPwd: '',
-                regUser: '', regPwd: '', regPwd2: '',
-                loading: false,
-                showLoginPwd: false, showRegPwd: false, showRegPwd2: false,
-            };
-        },
-        mounted() {
-            window.addEventListener('show-auth', (e) => {
-                this.tab = e.detail.tab;
-                this.error = e.detail.error || '';
+    const store = reactive(initialState());
+    const requests = new Set();
+    let stream = null;
+    let seen = new Set();
+    let submitted = new Set();
+    let historySequence = 0;
+    const staleError = () => Object.assign(new Error('会话已切换'), { stale: true });
+    const notify = (message, error = false) => {
+        if (message && message.stale) return;
+        store.notice = { message: message instanceof Error ? message.message : message, error };
+    };
+    function goBuddy(view) {
+        if (!store.token) {
+            store.authDestination = view;
+            notify('登录后即可和' + (view === 'coach' ? '通考小师' : '陪考小暖') + '聊聊，已为你选好入口。');
+            nextTick(() => {
+                document.querySelector('.auth-card')?.scrollIntoView({ block: 'center' });
+                document.querySelector('.auth-form input')?.focus({ preventScroll: true });
             });
+            return;
+        }
+        if (!['companion', 'coach'].includes(store.view)) store.buddyReturnView = store.view;
+        store.view = view;
+    }
+    const fmtTime = value => value ? new Date(value).toLocaleString('zh-CN', {
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    }) : '—';
+    // 与 QuotaProperties.TOKENS_PER_POINT 一致；API/DB 保持 token 当量，页面只显示积分。
+    const TOKENS_PER_POINT = 500;
+    const formatPoints = value => value == null ? '—' : (Number(value) / TOKENS_PER_POINT)
+        .toLocaleString('zh-CN', { maximumFractionDigits: 3 });
+    function closeStream() {
+        if (stream) { stream.close(); stream = null; }
+        store.connOk = false;
+    }
+    function resetAccount() {
+        const epoch = store.accountEpoch + 1;
+        closeStream();
+        requests.forEach(controller => controller.abort());
+        requests.clear();
+        seen = new Set(); submitted = new Set(); historySequence++;
+        Object.assign(store, initialState(), { accountEpoch: epoch });
+    }
+    async function api(path, method = 'GET', body, raw = false) {
+        const epoch = store.accountEpoch;
+        const controller = new AbortController();
+        requests.add(controller);
+        try {
+            const headers = {};
+            if (store.token) headers.Authorization = 'Bearer ' + store.token;
+            if (body !== undefined) headers['Content-Type'] = 'application/json; charset=utf-8';
+            const response = await fetch(path, {
+                method, headers, signal: controller.signal,
+                ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+            });
+            const text = await response.text();
+            if (epoch !== store.accountEpoch) throw staleError();
+            let data;
+            try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+            if (!response.ok) {
+                const error = Object.assign(new Error(data?.message || '请求未完成，请稍后重试（' + response.status + '）'), {
+                    status: response.status, code: data?.code
+                });
+                if (response.status === 401 && !path.startsWith('/api/auth/')) {
+                    resetAccount();
+                    notify('登录已过期，请重新登录。', true);
+                    throw staleError();
+                }
+                if (response.status === 402) {
+                    store.quotaOpen = true;
+                    store.quota = null;
+                }
+                throw error;
+            }
+            if (!raw && text && data === null) throw new Error('服务返回格式异常，请刷新后重试。');
+            return raw ? text : data;
+        } catch (error) {
+            if (epoch !== store.accountEpoch) throw staleError();
+            if (error instanceof TypeError) throw new Error('网络连接中断，请检查网络后重试。');
+            throw error;
+        } finally { requests.delete(controller); }
+    }
+    function waitFor(phase) {
+        store.phase = phase;
+        store.pendingSince = Date.now();
+        store.elapsed = 0;
+    }
+    async function refreshJd() { store.jdList = await api('/api/jd'); }
+    async function refreshResume() {
+        store.resumeList = (await api('/api/resume')).sort((a, b) => b.resumeId - a.resumeId);
+    }
+    async function loadQuota() { store.quota = await api('/api/user/quota'); }
+    async function loadSettings() {
+        const settings = await api('/api/user/settings');
+        store.keyMode = settings.keyMode;
+        store.chatProvider = settings.chatProvider;
+        const key = await api('/api/user/api-key');
+        store.hasKey = key.hasKey;
+        store.last4 = key.last4 || '';
+    }
+    async function loadHistory() {
+        const sequence = ++historySequence;
+        const params = new URLSearchParams();
+        Object.entries(store.histFilter).forEach(([key, value]) => {
+            if (value !== '') params.set(key, value);
+        });
+        const rows = await api('/api/interview/sessions?' + params);
+        if (sequence === historySequence) store.historyList = rows;
+    }
+    async function loadWeak() {
+        store.weakList = await api('/api/weak-point' + (store.dueOnly ? '/due' : ''));
+    }
+    function refreshAfterInterview() {
+        [loadHistory, loadWeak, loadQuota].forEach(fn => fn().catch(error => notify(error, true)));
+    }
+    function acceptReport(report, sessionId) {
+        store.liveReport = report;
+        if (store.reportSessionId == null || store.reportSessionId === sessionId || store.view === 'interview') {
+            store.report = report;
+            store.reportSessionId = sessionId;
+        }
+    }
+    async function recoverReport() {
+        const sessionId = store.sessionId;
+        try {
+            const report = await api('/api/interview/' + sessionId + '/report');
+            if (store.sessionId === sessionId) acceptReport(report, sessionId);
+        }
+        catch (error) { notify(error.stale ? error : '报告暂未获取成功，可稍后点击“获取报告”重试。', true); }
+    }
+    function openStream() {
+        closeStream();
+        if (!store.sessionId || !store.token) return;
+        const sessionId = store.sessionId, epoch = store.accountEpoch;
+        const source = new EventSource('/api/interview/' + sessionId + '/events?jwt=' + encodeURIComponent(store.token));
+        stream = source;
+        store.connText = '连接中';
+        let failures = 0;
+        const current = () => stream === source && epoch === store.accountEpoch && sessionId === store.sessionId;
+        source.onopen = () => {
+            if (!current()) return;
+            failures = 0; store.connOk = true; store.connText = '已连接';
+        };
+        const on = (type, callback) => source.addEventListener(type, event => {
+            if (!current()) return;
+            let data;
+            try { data = JSON.parse(event.data); } catch (_) { return; }
+            const key = type + ':' + (data.turnSeq ?? data.reportId ?? '');
+            if (type !== 'await_answer' && seen.has(key)) return;
+            if (type !== 'await_answer') seen.add(key);
+            callback(data);
+        });
+        const question = data => {
+            store.currentTurn = data.turnSeq;
+            if (!data.layer) store.mainCount++;
+            store.messages.push({ kind: 'question', seq: data.turnSeq, layer: data.layer || 0,
+                role: data.role || '面试官', text: data.question });
+        };
+        on('question', question);
+        on('followup', question);
+        on('score', data => store.messages.push({ kind: 'score', seq: data.turnSeq,
+            score: data.score, track: data.track, text: data.oneLineCorrection }));
+        on('await_answer', data => {
+            if (data.turnSeq !== store.currentTurn || submitted.has(data.turnSeq) || !store.interviewActive) return;
+            store.awaiting = true; store.busy = false; store.phase = 'answer'; store.pendingSince = null;
+        });
+        on('report', data => acceptReport(data, sessionId));
+        on('done', () => {
+            store.interviewActive = false; store.awaiting = false; store.busy = false;
+            store.phase = 'done'; store.pendingSince = null;
+            closeStream(); store.connText = '本场已结束';
+            if (!store.liveReport) recoverReport();
+            refreshAfterInterview();
+        });
+        source.addEventListener('error', event => {
+            if (!current()) return;
+            if (event.data) {
+                try {
+                    const data = JSON.parse(event.data);
+                    const text = data.code === 'QUESTION_FAILED'
+                        ? '下一题暂未准备成功。可以结束本场，查看已完成部分的报告。'
+                        : data.code === 'SCORE_FAILED' ? '本轮评分暂时不可用，系统会尝试继续练习。'
+                        : data.message || '本轮处理出现异常。';
+                    store.messages.push({ kind: 'error', text });
+                    if (data.code === 'QUESTION_FAILED') {
+                        store.busy = false; store.awaiting = false;
+                        store.pendingSince = null; store.phase = 'blocked';
+                    }
+                    if (data.code === 'QUOTA_EXHAUSTED') store.quotaOpen = true;
+                } catch (_) { notify('收到无法识别的事件，请重新连接。', true); }
+                return;
+            }
+            store.connOk = false;
+            store.connText = '正在重新连接';
+            if (++failures >= 3) {
+                closeStream(); store.connText = '连接已断开，请重新连接';
+            }
+        });
+    }
+    const icons = {
+        spark: 'M12 3l2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3z',
+        practice: 'M8 3h8l4 4v14H4V3z M8 10h8 M8 14h5 M8 18h3',
+        interview: 'M4 4h16v12H9l-5 4z M8 8h8 M8 12h5',
+        report: 'M5 3h14v18H5z M9 16v-3 M12 16V8 M15 16v-5',
+        folder: 'M3 6h7l2 2h9v12H3z M3 6V4h7l2 2',
+        leaf: 'M20 3C9 3 3 7 5 15c4 8 15 5 15-12z M5 21l10-11',
+        settings: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
+        arrow: 'M4 12h16 M14 6l6 6-6 6',
+        check: 'M5 12l4 4L19 6', plus: 'M12 5v14 M5 12h14',
+        logout: 'M9 4H4v16h5 M13 7l5 5-5 5 M8 12h10',
+        refresh: 'M20 8a8 8 0 10.2 7 M20 3v5h-5',
+        clock: 'M12 8v5l3 2 M21 12a9 9 0 11-18 0 9 9 0 0118 0'
+    };
+    const Icon = {
+        props: ['name'],
+        computed: { path() { return icons[this.name] || icons.spark; } },
+        template: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="path"/></svg>`
+    };
+    const buddyProfiles = {
+        companion: {
+            id: 'companion', name: '陪考小暖', shortName: '小暖', role: '心态陪伴', tone: 'warm',
+            introduction: '我是陪考小暖，你的专属心态陪伴。请放心将备考路上的心事交给我，我们一起慢慢梳理~',
+            tagline: '先接住你的心情，再陪你坚定向前。', welcome: '今天的你，感觉怎么样？',
+            description: '紧张、失落，或者只是想说几句话，都可以在这里慢慢聊。',
+            placeholder: '说说你现在的心情…', label: '想对小暖说的话',
+            chat: '/api/companion/chat', reset: '/api/companion/reset',
+            starters: ['明天就要面试了，我有点紧张。', '刚才没有答好，有点受挫。', '我想先整理一下现在的心情。']
         },
+        coach: {
+            id: 'coach', name: '通考小师', shortName: '小师', role: '备考教练', tone: 'study',
+            introduction: '我是通考小师，你的专属备考教练。请放心将知识疑问与学习困惑交给我，我们一起把难点弄懂~',
+            tagline: '把不会的弄懂，把下一步走清楚。', welcome: '哪一个问题，让你停住了？',
+            description: '一个没弄懂的知识点，一道答不好的题，或一份不知从哪开始的学习计划，我们一点点拆开。',
+            placeholder: '把卡住的问题贴过来，也可以告诉我你的目标岗位和基础…', label: '想问小师的问题',
+            chat: '/api/coach/chat', reset: '/api/coach/reset',
+            starters: ['能用一个简单例子解释数据库事务隔离吗？', '怎样用 STAR 结构讲清我的项目贡献？', '我想梳理备考方向，应该先告诉你哪些信息？']
+        }
+    };
+    const BuddyAvatar = {
+        props: ['tone'],
+        template: `<svg :class="['buddy-avatar',tone]" viewBox="0 0 64 64" aria-hidden="true">
+<template v-if="tone==='warm'"><rect x="1" y="1" width="62" height="62" rx="21" fill="#fff0de"/><g stroke="#d8954d" stroke-width="2.3" stroke-linecap="round"><path d="M32 7v4M32 53v4M7 32h4M53 32h4M14 14l3 3M47 47l3 3M14 50l3-3M47 17l3-3"/></g><circle cx="32" cy="32" r="18" fill="#f5ce8b"/><g fill="#87603c"><circle cx="26" cy="30" r="1.6"/><circle cx="38" cy="30" r="1.6"/></g><path d="M26 37q6 6 12 0" fill="none" stroke="#a66b40" stroke-width="2" stroke-linecap="round"/><ellipse cx="21" cy="36" rx="3" ry="1.8" fill="#eaa992"/><ellipse cx="43" cy="36" rx="3" ry="1.8" fill="#eaa992"/></template>
+<template v-else><rect x="1" y="1" width="62" height="62" rx="21" fill="#eaf0ff"/><path d="M15 57q1-15 17-15t17 15" fill="#9eb8df"/><circle cx="32" cy="31" r="16" fill="#f4ddbb"/><path d="M12 19l20-10 20 10-20 9z" fill="#6685b4"/><path d="M21 23v-5q11-7 22 0v5" fill="#7f9bc7"/><path d="M50 20v13" fill="none" stroke="#6685b4" stroke-width="2"/><g fill="none" stroke="#60799f" stroke-width="1.6"><rect x="21" y="29" width="9" height="7" rx="3"/><rect x="34" y="29" width="9" height="7" rx="3"/><path d="M30 32h4"/></g><path d="M28 40q4 3 8 0" fill="none" stroke="#a77f5b" stroke-width="1.8" stroke-linecap="round"/><path d="M24 49l8 3 8-3v10H24z" fill="#fafcff"/><path d="M32 52v7" stroke="#b6c7df"/></template>
+</svg>`
+    };
+    const BuddyLinks = {
+        data: () => ({ profiles: Object.values(buddyProfiles) }),
+        methods: { open: goBuddy },
+        template: `<div class="buddy-links" role="group" aria-label="陪考搭档快捷入口"><button v-for="buddy in profiles" :key="buddy.id" :class="['buddy-link',buddy.tone]" :aria-label="buddy.name+'，'+buddy.role" :aria-pressed="store.token?store.view===buddy.id:store.authDestination===buddy.id" @click="open(buddy.id)"><buddy-avatar :tone="buddy.tone"/><span><strong>{{buddy.name}}</strong><small>{{buddy.role}}</small></span></button></div>`
+    };
+    const AuthPanel = {
+        data: () => ({ tab: 'login', username: '', password: '', confirmation: '', show: false, loading: false, error: '' }),
         methods: {
-            switchTab(t) { this.tab = t; this.error = ''; },
-            clearError() { this.error = ''; },
-            async doLogin() {
-                if (!this.loginUser || !this.loginPwd) { this.error = '请输入用户名和密码'; return; }
+            async submit() {
+                if (this.loading) return;
+                this.error = '';
+                if (this.tab === 'register' && this.password !== this.confirmation) {
+                    this.error = '两次输入的密码不一致。'; return;
+                }
                 this.loading = true;
                 try {
-                    const r = await api('/api/auth/login', 'POST', { username: this.loginUser, password: this.loginPwd });
-                    await handleAuthSuccess(r);
-                } catch (e) { this.error = e.message; }
+                    const result = await api('/api/auth/' + this.tab, 'POST', {
+                        username: this.username.trim(), password: this.password
+                    });
+                    const destination = store.authDestination;
+                    resetAccount();
+                    store.token = result.token; store.username = result.username;
+                    store.view = destination || 'prepare';
+                    nextTick(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+                    [refreshJd, refreshResume, loadHistory, loadWeak, loadQuota, loadSettings]
+                        .forEach(fn => fn().catch(error => notify(error, true)));
+                } catch (error) { if (!error.stale) this.error = error.message; }
                 finally { this.loading = false; }
-            },
-            async doRegister() {
-                if (!this.regUser || !this.regPwd) { this.error = '请输入用户名和密码'; return; }
-                if (this.regPwd !== this.regPwd2) { this.error = '两次密码不一致'; return; }
-                this.loading = true;
-                try {
-                    const r = await api('/api/auth/register', 'POST', { username: this.regUser, password: this.regPwd });
-                    await handleAuthSuccess(r);
-                } catch (e) { this.error = friendlyRegisterError(e); }
-                finally { this.loading = false; }
-            },
+            }
         },
         template: `
-<div class="auth-overlay">
-    <div class="auth-card" role="dialog" aria-modal="true">
-        <h1 class="authTitle">AI 模拟面试</h1>
-        <div class="auth-tabs" role="tablist">
-            <button type="button" :class="['auth-tab', tab==='login'?'active':'']" @click="switchTab('login')">登录</button>
-            <button type="button" :class="['auth-tab', tab==='register'?'active':'']" @click="switchTab('register')">注册</button>
-        </div>
-        <form v-if="tab==='login'" class="auth-form" @submit.prevent="doLogin">
-            <input v-model="loginUser" type="text" placeholder="用户名（≥4 字符）" @input="clearError">
-            <div class="pwdWrap">
-                <input v-model="loginPwd" :type="showLoginPwd?'text':'password'" placeholder="密码（≥6 字符）" @input="clearError">
-                <button type="button" class="pwdToggle" @click="showLoginPwd=!showLoginPwd">{{showLoginPwd?'隐藏':'显示'}}</button>
-            </div>
-            <button type="submit" class="primary big" :disabled="loading">{{loading?'登录中…':'登录'}}</button>
-        </form>
-        <form v-else class="auth-form" @submit.prevent="doRegister">
-            <input v-model="regUser" type="text" placeholder="用户名（4-32 字符）" @input="clearError">
-            <div class="pwdWrap">
-                <input v-model="regPwd" :type="showRegPwd?'text':'password'" placeholder="密码（6-128 字符）" @input="clearError">
-                <button type="button" class="pwdToggle" @click="showRegPwd=!showRegPwd">{{showRegPwd?'隐藏':'显示'}}</button>
-            </div>
-            <div class="pwdWrap">
-                <input v-model="regPwd2" :type="showRegPwd2?'text':'password'" placeholder="再输一遍密码" @input="clearError">
-                <button type="button" class="pwdToggle" @click="showRegPwd2=!showRegPwd2">{{showRegPwd2?'隐藏':'显示'}}</button>
-            </div>
-            <button type="submit" class="primary big" :disabled="loading">{{loading?'注册中…':'注册'}}</button>
-        </form>
-        <p v-if="error" class="auth-error">{{error}}</p>
-        <p class="auth-hint">令牌仅保存在浏览器内存中，刷新页面需重新登录</p>
-    </div>
+<div class="welcome">
+  <header class="welcome-top"><a class="brand" href="/" aria-label="AI 模拟面试首页"><span class="brand-mark"><app-icon name="spark"/></span>面试练习室<span class="brand-en">INTERVIEW STUDIO</span></a><buddy-links/></header>
+  <main class="welcome-main">
+    <section class="welcome-copy">
+      <span class="eyebrow">全流程 AI 陪考 · 心态有依靠，学习有方向</span>
+      <h1>你只管坚定向前，<br>备考这一路，<span>我们陪你。</span></h1>
+      <p class="welcome-description">先一点点稳住心态，再每天慢慢进步。<br>从心态陪伴、知识答疑，到面试模拟与成长复盘，<br class="desktop-break">这里有接住你心情的小暖，也有陪你弄懂难点的小师。</p>
+      <div class="buddy-cards"><button class="buddy-card warm" @click="goBuddy('companion')"><buddy-avatar tone="warm"/><span><span class="buddy-card-label">陪考小暖 · 心态陪伴</span><strong>先把心放稳，再向前。</strong><small>紧张时聊一聊，失落时缓一缓。<br>你的心事，可以慢慢说。</small></span><app-icon name="arrow"/></button><button class="buddy-card study" @click="goBuddy('coach')"><buddy-avatar tone="study"/><span><span class="buddy-card-label">通考小师 · 备考教练</span><strong>把不会的，一点点弄懂。</strong><small>讲清知识，拆解难题，梳理方向。<br>每一步，都更有底气。</small></span><app-icon name="arrow"/></button></div>
+      <div class="journey-strip" aria-label="全流程陪考"><span>稳住心态</span><i>→</i><span>弄懂知识</span><i>→</i><span>模拟实战</span><i>→</i><span>看见成长</span></div>
+      <p class="welcome-promise">把此刻的心情说给小暖，把卡住的问题交给小师。<br>让练习与复盘留下成长的足迹，愿这里成为你走向面试场时，<strong>安心的后盾。</strong></p>
+    </section>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <span class="eyebrow">让每一次出发，都有人陪</span><h2 id="auth-title">{{tab==='login'?'欢迎回到练习室':'开启你的面试练习'}}</h2><p class="quiet">先安顿心情，再为下一步积累底气。</p>
+      <div class="segmented auth-tabs"><button type="button" :aria-pressed="tab==='login'" @click="tab='login';error=''" :disabled="loading">登录</button><button type="button" :aria-pressed="tab==='register'" @click="tab='register';error=''" :disabled="loading">注册账号</button></div>
+      <p v-if="tab==='register'" class="auth-selection">新用户注册即赠 100 积分，陪你开始第一段练习。</p>
+      <p v-if="store.notice" :class="store.notice.error?'inline-error':'auth-selection'" :role="store.notice.error?'alert':'status'">{{store.notice.message}}</p>
+      <form @submit.prevent="submit" class="auth-form">
+        <label>用户名<input v-model="username" autocomplete="username" required minlength="4" maxlength="32" placeholder="输入 4–32 字符的用户名" :disabled="loading"></label>
+        <label>密码<span class="password-field"><input v-model="password" aria-label="密码" :type="show?'text':'password'" :autocomplete="tab==='login'?'current-password':'new-password'" required minlength="6" maxlength="128" placeholder="至少 6 个字符" :disabled="loading"><button type="button" @click="show=!show" :aria-label="show?'隐藏密码':'显示密码'">{{show?'隐藏':'显示'}}</button></span></label>
+        <label v-if="tab==='register'">确认密码<input v-model="confirmation" :type="show?'text':'password'" autocomplete="new-password" required minlength="6" maxlength="128" placeholder="再次输入密码" :disabled="loading"></label>
+        <p v-if="error" class="inline-error" role="alert">{{error}}</p>
+        <button class="primary large" :disabled="loading">{{loading?'正在连接练习室…':tab==='login'?'进入练习室':'注册并开始练习'}}<app-icon name="arrow"/></button>
+      </form>
+      <p class="auth-footnote">登录状态仅保留在当前页面，刷新后需要重新登录。</p>
+    </section>
+  </main><footer class="welcome-footer"><span>陪考小暖 × 通考小师 · 你不是一个人在准备这场面试。</span><span>温柔陪伴，认真成长。</span></footer>
 </div>`
     };
-
-    function friendlyRegisterError(err) {
-        const m = err.message || '';
-        if (m.includes('用户名')) return '用户名已被占用';
-        if (m.includes('密码')) return '密码长度需 6-128 字符';
-        return m;
-    }
-
-    async function handleAuthSuccess(r) {
-        store.token = r.token;
-        store.username = r.username;
-        await loadBusinessData();
-    }
-
-    async function loadBusinessData() {
-        await Promise.all([refreshJd(), loadHistory(), loadWeak(), loadQuota(), loadUserSettings()]);
-    }
-
-    async function loadUserSettings() {
-        try {
-            const s = await api('/api/settings');
-            store.keyMode = s.keyMode || 'PLATFORM';
-            store.byokStatus = s.byokMasked || '';
-            store.chatProvider = s.chatProvider || 'DEEPSEEK';
-        } catch (e) { /* 忽略 */ }
-    }
-
-    // ==================== 组件：准备区 ====================
     const PreparePanel = {
-        data() {
-            return {
-                jdText: '', jdTag: '',
-                resumeText: '',
-                docTitle: '', docText: '',
-                noteText: '',
-                realInterviewText: '', realInterviewList: [],
-                roles: { tech: true, project: false, behavior: false },
-                maxQuestions: 8,
-                tip: '', tipBad: false,
-            };
-        },
-        computed: {
-            selectedJd() {
-                return store.jdList.find(j => j.jdId === store.jdId);
-            },
-            quotaRemaining() { return store.quota ? formatPoints(store.quota.remainingTokens) : '—'; },
-            quotaTotal() { return store.quota ? formatPoints(store.quota.totalTokens) : '—'; },
-            quotaUsed() { return store.quota ? formatPoints(store.quota.usedTokens) : '—'; },
-        },
+        data: () => ({ jdText: '', jdTag: '', uploading: false, resumeBusy: false,
+            roles: ['技术深挖官'], roleOptions: [
+                { name: '技术深挖官', desc: '从原理到实践，检验理解深度' },
+                { name: '项目质疑官', desc: '围绕项目决策，追问真实细节' },
+                { name: '行为面试官', desc: '用 STAR 结构讲清经历与贡献' }
+            ] }),
+        computed: { selectedJd() { return store.jdList.find(jd => jd.jdId === store.jdId); } },
         methods: {
-            setTip(msg, bad) { this.tip = msg; this.tipBad = !!bad; },
+            async refresh() {
+                try { await Promise.all([refreshJd(), refreshResume()]); } catch (error) { notify(error, true); }
+            },
             async uploadJd() {
-                if (!this.jdText.trim()) { this.setTip('JD 内容不能为空', true); return; }
+                if (this.uploading || !this.jdText.trim()) return;
+                this.uploading = true;
                 try {
-                    const r = await api('/api/jd', 'POST', { text: this.jdText, sameTypeTag: this.jdTag });
-                    store.jdId = r.jdId;
+                    const rows = await api('/api/jd', 'POST', { rawText: this.jdText.trim(), sameTypeTag: this.jdTag.trim() });
                     await refreshJd();
+                    store.jdId = rows[0].jdId;
                     this.jdText = ''; this.jdTag = '';
-                    this.setTip('JD 已上传，解析出 ' + (r.keywords ? r.keywords.length : 0) + ' 个考点');
-                } catch (e) { this.setTip(e.message, true); }
+                    notify('岗位已准备好，可以开始练习了。');
+                    loadQuota().catch(error => notify(error, true));
+                } catch (error) { notify(error, true); }
+                finally { this.uploading = false; }
             },
-            async uploadResume() {
-                if (!this.resumeText.trim()) { this.setTip('简历内容不能为空', true); return; }
+            async selectResume() {
+                if (store.resumeId == null) return;
+                this.resumeBusy = true;
                 try {
-                    const r = await api('/api/resume', 'POST', { content: this.resumeText });
-                    store.resumeId = r.resumeId;
-                    this.resumeText = '';
-                    this.setTip('简历版本已保存');
-                } catch (e) { this.setTip(e.message, true); }
+                    await api('/api/resume/' + store.resumeId + '/activate', 'POST');
+                    await refreshResume();
+                } catch (error) { if (!error.stale) store.resumeId = null; notify(error, true); }
+                finally { this.resumeBusy = false; }
             },
-            async uploadDoc() {
-                if (!this.docTitle.trim() || !this.docText.trim()) { this.setTip('标题和内容都不能为空', true); return; }
+            async start() {
+                if (store.busy || store.interviewActive || this.uploading || this.resumeBusy) return;
+                if (!store.jdId) { notify('请先准备或选择一个岗位 JD。', true); return; }
+                if (!this.roles.length) { notify('请至少选择一位面试官。', true); return; }
+                store.busy = true; waitFor('starting'); store.view = 'interview';
+                store.notice = null; store.messages = []; store.liveReport = null;
+                store.currentTurn = null; store.mainCount = 0; store.sessionId = null;
+                store.awaiting = false; seen = new Set(); submitted = new Set();
                 try {
-                    await api('/api/project-doc', 'POST', { title: this.docTitle, content: this.docText });
-                    this.docTitle = ''; this.docText = '';
-                    this.setTip('项目文档已上传');
-                } catch (e) { this.setTip(e.message, true); }
-            },
-            async saveNote() {
-                if (!this.noteText.trim()) return;
-                try {
-                    await api('/api/note', 'POST', { content: this.noteText });
-                    this.noteText = '';
-                    this.setTip('笔记已存入 RAG');
-                } catch (e) { this.setTip(e.message, true); }
-            },
-            async saveRealInterview() {
-                if (!this.realInterviewText.trim()) { this.setTip('记录内容不能为空', true); return; }
-                try {
-                    await api('/api/real-interview', 'POST', { content: this.realInterviewText });
-                    this.realInterviewText = '';
-                    await this.loadRealInterview();
-                    this.setTip('真实面试记录已保存');
-                } catch (e) { this.setTip(e.message, true); }
-            },
-            async loadRealInterview() {
-                try { this.realInterviewList = await api('/api/real-interview'); }
-                catch (e) { /* 忽略 */ }
-            },
-            async switchKeyMode(mode) {
-                store.keyMode = mode;
-                try { await api('/api/settings/key-mode', 'POST', { keyMode: mode }); }
-                catch (e) { this.setTip(e.message, true); }
-            },
-            async saveByok() {
-                if (!store.byokKey.trim()) { this.setTip('请输入 DeepSeek API Key', true); return; }
-                try {
-                    const r = await api('/api/settings/byok', 'POST', { apiKey: store.byokKey });
-                    store.byokStatus = r.masked || '';
-                    store.byokKey = '';
-                    this.setTip('Key 已保存并切换为 BYOK');
-                } catch (e) { this.setTip(e.message, true); }
-            },
-            async deleteByok() {
-                try {
-                    await api('/api/settings/byok', 'DELETE');
-                    store.byokStatus = '';
-                    store.keyMode = 'PLATFORM';
-                    this.setTip('已删除自带 Key，切回平台额度');
-                } catch (e) { this.setTip(e.message, true); }
-            },
-            async startInterview() {
-                if (!store.jdId) { this.setTip('请先选择或上传 JD', true); return; }
-                const roleList = [];
-                if (this.roles.tech) roleList.push('技术深挖官');
-                if (this.roles.project) roleList.push('项目质疑官');
-                if (this.roles.behavior) roleList.push('行为面试官');
-                if (!roleList.length) { this.setTip('至少选择一个面试官角色', true); return; }
-                try {
-                    store.chatMessages = [];
-                    store.report = null;
-                    rendered = new Set();
-                    const r = await api('/api/interview/start', 'POST', {
-                        jdId: store.jdId, resumeId: store.resumeId || null,
-                        roles: roleList, maxQuestions: this.maxQuestions
+                    const result = await api('/api/interview/start', 'POST', {
+                        jdId: store.jdId, resumeId: store.resumeId,
+                        roles: this.roleOptions.filter(role => this.roles.includes(role.name)).map(role => role.name),
+                        maxQuestions: store.maxQuestions
                     });
-                    store.sessionId = r.sessionId;
-                    store.interviewActive = true;
-                    store.stateText = '面试官出题中…';
-                    openStream(r.sessionId);
-                } catch (e) { this.setTip(e.message, true); }
-            },
-        },
-        mounted() { this.loadRealInterview(); },
-        template: `
-<aside class="panel">
-    <h2>1. 准备</h2>
-
-    <div class="block keyblock">
-        <div class="row"><span class="lb">模型调用方式</span><span class="keybadge">{{store.keyMode==='PLATFORM'?'平台额度':'自带 Key'}}</span></div>
-        <div class="modeswitch" role="radiogroup">
-            <label class="modeopt"><input type="radio" name="keyMode" value="PLATFORM" :checked="store.keyMode==='PLATFORM'" @change="switchKeyMode('PLATFORM')"> <span>平台额度</span></label>
-            <label class="modeopt"><input type="radio" name="keyMode" value="BYOK" :checked="store.keyMode==='BYOK'" @change="switchKeyMode('BYOK')"> <span>自带 Key</span></label>
-        </div>
-        <div class="quotaLine">积分：<b>{{quotaRemaining}}</b> / <span>{{quotaTotal}}</span> <small>（已用 {{quotaUsed}}）</small></div>
-        <div v-if="store.keyMode==='BYOK'" class="keybox">
-            <div class="keyStatus" v-if="store.byokStatus">已有 Key：{{store.byokStatus}}</div>
-            <div class="pwdWrap">
-                <input v-model="store.byokKey" type="password" placeholder="DeepSeek API Key（sk-…）">
-            </div>
-            <div class="row">
-                <button class="primary" @click="saveByok">保存并切换</button>
-                <button class="warn" @click="deleteByok">删除并切回平台</button>
-            </div>
-            <small class="keyhint">Key 经 AES-GCM 加密存服务端，页面只显示末 4 位。</small>
-        </div>
-    </div>
-
-    <div class="block">
-        <label class="lb">岗位 JD（粘贴后点上传）</label>
-        <textarea v-model="jdText" rows="6" placeholder="粘贴招聘 JD 原文…"></textarea>
-        <div class="row">
-            <input v-model="jdTag" type="text" placeholder="同类标签（可选）">
-            <button class="primary" @click="uploadJd">上传 JD</button>
-        </div>
-        <div class="row">
-            <select v-model.number="store.jdId">
-                <option :value="null">— 选择已有 JD —</option>
-                <option v-for="j in store.jdList" :key="j.jdId" :value="j.jdId">#{{j.jdId}} {{j.jobType}}{{j.sameTypeTag?' · '+j.sameTypeTag:''}}</option>
-            </select>
-            <button class="ghost" @click="refreshJd">刷新</button>
-        </div>
-        <div v-if="selectedJd && selectedJd.keywords && selectedJd.keywords.length" class="jdKeywords">
-            <div class="kwTitle">考点预览：</div>
-            <span v-for="k in selectedJd.keywords" :key="k" class="kwChip">{{k}}</span>
-        </div>
-    </div>
-
-    <div class="block">
-        <label class="lb">简历（md）</label>
-        <textarea v-model="resumeText" rows="4" placeholder="# 张三&#10;Java 后端…"></textarea>
-        <button class="ghost" @click="uploadResume">上传新简历版本</button>
-        <div class="row">
-            <select v-model.number="store.resumeId">
-                <option :value="null">— 选择历史简历 —</option>
-            </select>
-            <button class="ghost">刷新</button>
-        </div>
-    </div>
-
-    <div class="block">
-        <label class="lb">项目文档（标题 + 详解）</label>
-        <input v-model="docTitle" type="text" placeholder="项目名">
-        <textarea v-model="docText" rows="4" placeholder="项目详解…"></textarea>
-        <button class="ghost" @click="uploadDoc">上传项目文档</button>
-    </div>
-
-    <div class="block">
-        <label class="lb">笔记（可选）</label>
-        <textarea v-model="noteText" rows="3" placeholder="随手写的学习笔记"></textarea>
-        <button class="ghost" @click="saveNote">存笔记</button>
-    </div>
-
-    <div class="block">
-        <label class="lb">真实面试记录（可选）</label>
-        <textarea v-model="realInterviewText" rows="4" placeholder="记录真实面试经历…"></textarea>
-        <div class="row">
-            <button class="ghost" @click="saveRealInterview">保存记录</button>
-            <button class="ghost" @click="loadRealInterview">刷新</button>
-        </div>
-        <div class="recList">
-            <div v-for="r in realInterviewList" :key="r.recordId" class="recItem">
-                <small>{{fmtTime(r.createdAt)}}</small>
-                <p>{{r.content}}</p>
-            </div>
-        </div>
-    </div>
-
-    <div class="block">
-        <span class="lb">面试官角色</span>
-        <label class="chk"><input type="checkbox" v-model="roles.tech"> 技术深挖官</label>
-        <label class="chk"><input type="checkbox" v-model="roles.project"> 项目质疑官</label>
-        <label class="chk"><input type="checkbox" v-model="roles.behavior"> 行为面试官</label>
-        <div class="row">
-            <label class="chk">主问题数</label>
-            <select v-model.number="maxQuestions">
-                <option :value="3">快速 3 题</option>
-                <option :value="5">标准 5 题</option>
-                <option :value="8">完整 8 题</option>
-            </select>
-        </div>
-        <button class="primary big" @click="startInterview">开始模拟面试</button>
-    </div>
-
-    <p :class="['tip', tipBad?'bad':'']">{{tip}}</p>
-</aside>`
-    };
-
-    // ==================== 组件：面试区 ====================
-    const InterviewPanel = {
-        data() {
-            return { answer: '', providerMenuOpen: false };
-        },
-        computed: {
-            canAnswer() { return store.awaiting && store.interviewActive; },
-        },
-        methods: {
-            async submitAnswer() {
-                if (!this.canAnswer || !this.answer.trim()) return;
-                store.awaiting = false;
-                store.chatMessages.push({ cls: 'me', title: '我', body: this.answer });
-                const text = this.answer;
-                this.answer = '';
-                try {
-                    await api('/api/interview/' + store.sessionId + '/answer', 'POST', { answer: text });
-                } catch (e) {
-                    store.chatMessages.push({ cls: 'err', title: '提交失败', body: e.message });
-                    store.awaiting = true;
+                    store.sessionId = result.sessionId; store.interviewActive = true;
+                    openStream();
+                } catch (error) {
+                    if (error.stale) return;
+                    store.busy = false; store.phase = 'idle'; store.pendingSince = null;
+                    store.view = 'prepare'; notify(error, true);
                 }
-            },
-            async endInterview() {
-                if (!confirm('确定结束并生成报告？')) return;
-                store.awaiting = false;
-                store.interviewActive = false;
-                try {
-                    const r = await api('/api/interview/' + store.sessionId + '/end', 'POST');
-                    renderReport(r);
-                    loadWeak(); loadHistory(); loadQuota();
-                } catch (e) {
-                    store.chatMessages.push({ cls: 'err', title: '结束失败', body: e.message });
-                }
-            },
-            async switchProvider(p) {
-                store.chatProvider = p;
-                this.providerMenuOpen = false;
-                try { await api('/api/settings/chat-provider', 'POST', { provider: p }); }
-                catch (e) { /* 忽略 */ }
-            },
-            onKey(e) {
-                if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); this.submitAnswer(); }
-            },
+            }
         },
         template: `
-<section class="panel main">
-    <h2>2. 面试</h2>
-    <div class="chat" ref="chatBox">
-        <p v-if="!store.chatMessages.length" class="placeholder">左侧上传 JD 后点「开始模拟面试」，题目会通过 SSE 实时推过来。</p>
-        <div v-for="(m, i) in store.chatMessages" :key="i" :class="['msg', m.cls]">
-            <div class="msgTitle" v-html="m.title"></div>
-            <div class="msgBody" v-html="m.html || esc(m.body)"></div>
-        </div>
+<section>
+  <div class="page-heading"><div><span class="eyebrow">从目标出发</span><h1>开始一场新练习</h1><p>准备一个目标岗位，剩下的，我们一起练。</p></div><span class="soft-label"><app-icon name="clock"/>按自己的节奏来</span></div>
+  <div class="prepare-grid">
+    <div class="surface preparation">
+      <div class="section-heading"><span class="step-number">01</span><div><h2>你想面试什么岗位？</h2><p>粘贴招聘 JD，让提问更有针对性。</p></div></div>
+      <label for="existing-jd" class="field-label">选择已有岗位</label><div class="input-action"><select id="existing-jd" v-model="store.jdId" :disabled="store.busy || store.interviewActive"><option :value="null">选择已保存的 JD</option><option v-for="jd in store.jdList" :key="jd.jdId" :value="jd.jdId">{{jd.jobType || '未命名岗位'}}{{jd.sameTypeTag?' · '+jd.sameTypeTag:''}} · #{{jd.jdId}}</option></select><button class="icon-button" @click="refresh" aria-label="刷新岗位与简历列表"><app-icon name="refresh"/></button></div>
+      <details class="jd-entry" :open="!selectedJd"><summary>添加一个新岗位 JD <span aria-hidden="true">+</span></summary>
+      <label for="jd-text" class="field-label">岗位描述</label><textarea id="jd-text" v-model="jdText" rows="7" placeholder="在这里粘贴岗位职责、任职要求…&#10;&#10;越具体的岗位信息，越有针对性的面试问题。" :disabled="uploading || store.interviewActive"></textarea>
+      <div class="input-action jd-submit"><label class="grow sr-only" for="jd-tag">岗位备注</label><input id="jd-tag" v-model="jdTag" placeholder="添加备注，如：产品经理 · 目标公司（可选）" :disabled="uploading"><button class="secondary" @click="uploadJd" :disabled="!jdText.trim() || uploading || store.interviewActive">{{uploading?'正在解析岗位…':'保存并解析 JD'}}<app-icon name="plus" v-if="!uploading"/></button></div>
+      <p class="field-note">解析岗位会使用平台额度；保存后可以反复选择。</p></details>
+      <div v-if="selectedJd" class="selected-jd"><span class="eyebrow">已选岗位 · {{selectedJd.jobType || '目标岗位'}}</span><div class="tags" v-if="selectedJd.keywords?.length"><span v-for="word in selectedJd.keywords" :key="word">{{word}}</span></div><p v-else class="field-note">岗位已保存，面试官将参考 JD 原文提问。</p></div>
     </div>
-    <div class="answer">
-        <textarea v-model="answer" rows="3" placeholder="你的回答（Ctrl + Enter 提交）" :disabled="!canAnswer" @keydown="onKey"></textarea>
-        <div class="row">
-            <button class="primary" :disabled="!canAnswer" @click="submitAnswer">提交回答</button>
-            <button class="warn" :disabled="!store.interviewActive" @click="endInterview">结束并出报告</button>
-            <span class="state">{{store.stateText}}</span>
-            <span style="flex:1 1 auto"></span>
-            <div style="position:relative;display:inline-block">
-                <button type="button" @click="providerMenuOpen=!providerMenuOpen" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;font-size:13px;border-radius:6px">
-                    <span>{{store.chatProvider==='DEEPSEEK'?'DeepSeek':'通义千问'}}</span>
-                    <span style="font-size:10px;color:var(--accent2)">▾</span>
-                </button>
-                <div v-if="providerMenuOpen" style="position:absolute;right:0;bottom:calc(100% + 4px);z-index:30;min-width:168px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px">
-                    <button type="button" @click="switchProvider('DEEPSEEK')" style="display:flex;justify-content:space-between;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);text-align:left;cursor:pointer">
-                        <span>DeepSeek</span><span v-if="store.chatProvider==='DEEPSEEK'" style="color:var(--accent)">✓</span>
-                    </button>
-                    <button type="button" @click="switchProvider('QWEN')" style="display:flex;justify-content:space-between;width:100%;padding:7px 10px;border:none;border-radius:6px;background:transparent;color:var(--text);text-align:left;cursor:pointer">
-                        <span>通义千问</span><span v-if="store.chatProvider==='QWEN'" style="color:var(--accent)">✓</span>
-                    </button>
-                </div>
-            </div>
-        </div>
+    <div class="prepare-aside">
+      <div class="surface session-options"><div class="section-heading"><span class="step-number">02</span><div><h2>定制这次练习</h2><p>少量开始，也是一种进步。</p></div></div>
+        <fieldset :disabled="store.busy || store.interviewActive || resumeBusy"><legend>简历版本 <span class="optional">可选</span></legend><select v-model="store.resumeId" aria-label="本次简历版本" @change="selectResume"><option :value="null">暂不指定简历版本</option><option v-for="resume in store.resumeList" :key="resume.resumeId" :value="resume.resumeId">版本 #{{resume.resumeId}} · {{fmtTime(resume.createdAt)}}{{resume.isActive?' · 已启用':''}}</option></select><button class="text-button" @click="store.view='materials'">管理我的资料 <span aria-hidden="true">↗</span></button><p class="field-note">版本用于本次留痕；检索仍可能参考你已入库的其他资料。</p></fieldset>
+        <fieldset :disabled="store.busy || store.interviewActive"><legend>参与面试官</legend><label class="role-option" v-for="role in roleOptions" :key="role.name"><input type="checkbox" v-model="roles" :value="role.name"><span><strong>{{role.name}}</strong><small>{{role.desc}}</small></span></label></fieldset>
+        <fieldset :disabled="store.busy || store.interviewActive"><legend>主问题数量</legend><div class="segmented"><button v-for="count in [3,5,8]" :key="count" @click="store.maxQuestions=count" :aria-pressed="store.maxQuestions===count">{{count}} 题</button></div><p class="field-note">面试官可能继续追问，每题最多两层。</p></fieldset>
+        <button class="primary large" @click="start" :disabled="!store.jdId || !roles.length || store.busy || store.interviewActive || uploading || resumeBusy">{{store.interviewActive?'本场练习进行中':'开始模拟面试'}}<app-icon name="arrow"/></button>
+        <p v-if="!store.jdId" class="start-hint">先准备一个岗位，即可开始。</p><button v-if="store.interviewActive" class="text-button" @click="store.view='interview'">返回正在进行的练习</button>
+      </div><div class="gentle-note"><app-icon name="leaf"/><p>这里允许停顿，也允许答得不完美。<br>练习，就是为下一次多准备一点。</p></div>
     </div>
+  </div>
 </section>`
     };
-
-    // ==================== 组件：报告区 ====================
-    const ReportPanel = {
-        data() {
-            return { showTurns: false, turns: [], showTrend: false, trendData: [], _histTimer: null };
-        },
-        computed: {
-            r() { return store.report; },
-            hasFilter() {
-                const f = store.histFilter;
-                return !!(f.keyword || f.status || f.minScore || f.maxScore);
+    const MaterialsPanel = {
+        data: () => ({ type: 'resume', content: '', title: '', busy: false, reading: false,
+            records: { resume: [], 'project-doc': [], note: [], 'real-interview': [] },
+            types: [{ id: 'resume', label: '简历版本' }, { id: 'project-doc', label: '项目文档' },
+                { id: 'note', label: '学习笔记' }, { id: 'real-interview', label: '真实面经' }] }),
+        computed: { label() { return this.types.find(type => type.id === this.type).label; } },
+        methods: {
+            async refresh() {
+                const type = this.type;
+                try {
+                    this.records[type] = await api('/api/' + type);
+                    if (type === 'resume') store.resumeList = [...this.records.resume].sort((a, b) => b.resumeId - a.resumeId);
+                } catch (error) { notify(error, true); }
             },
+            changeType(type) {
+                if (this.busy || this.reading) return;
+                if (this.content.trim() && !confirm('切换资料类型会清空尚未保存的内容，是否继续？')) return;
+                this.type = type; this.content = ''; this.title = ''; this.refresh();
+            },
+            async readFile(event) {
+                const epoch = store.accountEpoch;
+                const file = event.target.files[0];
+                if (!file) return;
+                if (!/\.(md|txt)$/i.test(file.name) || file.size > 1024 * 1024) {
+                    notify('请选择不超过 1 MB 的 .md 或 .txt 文本文件。', true); event.target.value = ''; return;
+                }
+                if (this.content.trim() && !confirm('导入文件将替换当前未保存的内容，是否继续？')) { event.target.value = ''; return; }
+                this.reading = true;
+                try {
+                    const text = await file.text();
+                    if (epoch !== store.accountEpoch) throw staleError();
+                    if (text.includes(String.fromCharCode(0))) throw new Error('这个文件不是可读取的文本，请改用 UTF-8 文本。');
+                    this.content = text;
+                    if (this.type === 'project-doc' && !this.title) this.title = file.name.replace(/\.[^.]+$/, '');
+                    notify('文件已读取，请检查内容后确认保存。');
+                } catch (error) { notify(error, true); }
+                finally { this.reading = false; event.target.value = ''; }
+            },
+            async save() {
+                if (this.busy || !this.content.trim()) return;
+                if (this.type === 'project-doc' && !this.title.trim()) { notify('请填写项目标题。', true); return; }
+                this.busy = true;
+                try {
+                    const result = await api('/api/' + this.type, 'POST', {
+                        content: this.content.trim(), ...(this.type === 'project-doc' ? { title: this.title.trim() } : {})
+                    });
+                    if (this.type === 'resume') store.resumeId = result.resumeId;
+                    this.content = ''; this.title = '';
+                    await this.refresh(); await loadQuota();
+                    notify(this.label + '已保存。');
+                } catch (error) { notify(error, true); }
+                finally { this.busy = false; }
+            }
+        },
+        mounted() { this.refresh(); },
+        template: `
+<section><div class="page-heading"><div><span class="eyebrow">让提问更了解你</span><h1>我的资料</h1><p>收好真实的经历，让每次练习更有依据。</p></div><button class="secondary" @click="store.view='prepare'">去练习<app-icon name="arrow"/></button></div>
+<div class="surface"><div class="material-tabs"><button v-for="item in types" :key="item.id" @click="changeType(item.id)" :aria-pressed="type===item.id" :disabled="busy || reading">{{item.label}}</button></div>
+<div class="material-grid"><div><div class="section-heading"><div><h2>添加{{label}}</h2><p>直接粘贴，或先导入文本再确认。</p></div></div>
+<label v-if="type==='project-doc'">项目标题<input v-model="title" placeholder="给这个项目起一个容易辨认的名字" :disabled="busy"></label>
+<label class="field-label" for="material-content">资料内容</label><textarea id="material-content" v-model="content" rows="12" :placeholder="'在这里粘贴'+label+'…'" :disabled="busy || reading"></textarea>
+<div class="row wrap"><label class="file-button"><app-icon name="folder"/>{{reading?'正在读取…':'导入 .md / .txt'}}<input type="file" accept=".md,.txt,text/plain,text/markdown" @change="readFile" :disabled="busy || reading"></label><span class="field-note">不超过 1 MB · UTF-8 文本</span><span class="spacer"></span><button class="primary" @click="save" :disabled="!content.trim() || busy || reading">{{busy?'正在保存与索引…':'确认保存'}}</button></div>
+<p class="field-note">当前支持文本内容；PDF、Word 请先复制正文。保存后资料会用于检索，生成内容可能参考多个版本。</p></div>
+<aside class="material-library"><div class="section-heading"><h2>已保存的{{label}}</h2><button class="icon-button" @click="refresh" aria-label="刷新资料"><app-icon name="refresh"/></button></div><p v-if="!records[type].length" class="empty-copy">这里还没有资料。<br>添加后，面试官会更了解你的经历。</p><div class="record" v-for="(record,index) in records[type]" :key="record.resumeId || record.docId || record.noteId || record.recordId || index"><strong>{{record.title || (type==='resume'?'简历版本 #'+record.resumeId:label+' '+(index+1))}}</strong><span>{{fmtTime(record.createdAt || record.updatedAt)}}{{record.isActive?' · 已启用':''}}</span><p v-if="record.content">{{record.content}}</p></div></aside></div></div></section>`
+    };
+    const InterviewPanel = {
+        data: () => ({ answer: '', ending: false, error: '' }),
+        computed: {
+            canAnswer() { return store.interviewActive && store.awaiting && store.connOk && !store.busy; },
+            statusText() { return ({ idle: '准备就绪后，即可开始', starting: '面试官正在准备第一题',
+                thinking: '正在评估回答并准备下一题', reporting: '正在整理本场报告',
+                answer: '轮到你了，慢慢说清楚', blocked: '出题暂未完成，可以结束本场并查看报告',
+                done: '本场练习已完成' })[store.phase]; }
+        },
+        watch: {
+            'store.messages.length'() {
+                nextTick(() => { if (this.$refs.chat) this.$refs.chat.scrollTop = this.$refs.chat.scrollHeight; });
+            },
+            'store.sessionId'() { this.answer = ''; this.error = ''; }
         },
         methods: {
-            loadHistory() { loadHistory(); },
-            loadHistoryDebounced() { clearTimeout(this._histTimer); this._histTimer = setTimeout(loadHistory, 300); },
-            viewHistoryReport(sid) { viewHistoryReport(sid); },
-            row(label, value) {
-                return value ? '<div class="kv"><span class="k">' + label + '</span><span class="v">' + esc(value) + '</span></div>' : '';
+            reconnect() { openStream(); },
+            async submit() {
+                if (!this.canAnswer || !this.answer.trim()) return;
+                const text = this.answer.trim(), turn = store.currentTurn, sessionId = store.sessionId;
+                this.error = ''; store.awaiting = false; store.busy = true; submitted.add(turn); waitFor('thinking');
+                const message = { kind: 'answer', seq: turn, text };
+                store.messages.push(message); this.answer = '';
+                try {
+                    await api('/api/interview/' + sessionId + '/answer', 'POST', { answer: text });
+                    if (store.sessionId !== sessionId) return;
+                    loadQuota().catch(error => notify(error, true));
+                } catch (error) {
+                    if (error.stale || store.sessionId !== sessionId) return;
+                    this.answer = text;
+                    // A lost HTTP response may still have committed. Keep submission paused until SSE confirms.
+                    if (!error.status || error.status === 409) {
+                        this.error = '处理结果尚未确认，回答已保留。请重新连接接收结果，避免重复提交。';
+                        openStream(); return;
+                    }
+                    if (store.currentTurn === turn && store.interviewActive && !store.liveReport) {
+                        const index = store.messages.indexOf(message);
+                        if (index >= 0) store.messages.splice(index, 1);
+                        submitted.delete(turn); store.busy = false; store.awaiting = true;
+                        store.phase = 'answer'; store.pendingSince = null;
+                    }
+                    this.error = error.message;
+                }
             },
-            listHtml(title, arr) {
-                if (!arr || !arr.length) return '';
-                return '<h3>' + title + '</h3><ul class="lst">' + arr.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>';
+            async end() {
+                if (store.busy || !store.interviewActive || this.ending) return;
+                if (!confirm('结束本场练习并生成报告？已提交的回答会保留。')) return;
+                const sessionId = store.sessionId;
+                this.error = ''; this.ending = true;
+                store.busy = true; store.awaiting = false; waitFor('reporting');
+                try {
+                    const report = await api('/api/interview/' + sessionId + '/end', 'POST');
+                    if (store.sessionId !== sessionId) return;
+                    acceptReport(report, sessionId);
+                    store.interviewActive = false; store.phase = 'done'; store.pendingSince = null;
+                    closeStream(); store.connText = '本场已结束'; refreshAfterInterview();
+                } catch (error) {
+                    if (error.stale || store.sessionId !== sessionId) return;
+                    this.error = error.message;
+                    store.phase = 'answer'; store.awaiting = true; store.pendingSince = null;
+                } finally { if (store.token && store.sessionId === sessionId) store.busy = false; this.ending = false; }
             },
-            behaviorCard(br) {
-                if (!br || typeof br !== 'object') return '';
-                const dims = br.dimensions && typeof br.dimensions === 'object' ? br.dimensions : null;
-                const suggestions = Array.isArray(br.suggestions) ? br.suggestions : [];
-                if (!dims && !br.summary && !suggestions.length) return '';
-                const dimHtml = dims ? '<div class="behDims">' + Object.entries(dims).map(([k, v]) =>
-                    '<span class="behDim">' + esc(k) + ' <b>' + esc(v) + '</b>/2</span>').join('') + '</div>' : '';
-                const sugHtml = suggestions.length ? '<ul class="lst">' + suggestions.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
-                return '<h3>行为面试评估</h3><div class="behCard">' + dimHtml +
-                    (br.summary ? '<p class="notes">' + esc(br.summary) + '</p>' : '') + sugHtml + '</div>';
+            showReport() {
+                store.report = store.liveReport; store.reportSessionId = store.sessionId; store.view = 'history';
             },
-            reportHtml() {
-                if (!this.r) return '<p class="placeholder">结束后这里出报告：匹配度、逐轮讲解、答崩点、表述问题、提醒。</p>';
-                const turns = Array.isArray(this.r.perTurnReview) ? this.r.perTurnReview : [];
-                const collapsed = Array.isArray(this.r.collapsedPoints) ? this.r.collapsedPoints : [];
-                const issues = Array.isArray(this.r.expressionIssues) ? this.r.expressionIssues : [];
-                const reminders = Array.isArray(this.r.reminders) ? this.r.reminders : [];
-                const turnHtml = turns.map(t =>
-                    '<details class="turn"><summary>第 ' + esc(t.turnSeq) + ' 轮 · ' + esc(t.score) + '/8 · ' +
-                    (t.track === 'behavior' ? '<span class="trackBadge">行为</span> ' : '') +
-                    esc(String(t.question || '').slice(0, 40)) + '</summary>' +
-                    this.row('讲解', t.explanation) + this.row('纠正', t.correction) +
-                    this.row('知识补充', t.knowledgeSupplement) + this.row('示范回答', t.exemplarAnswer) +
-                    '</details>').join('');
-                return '<div class="match">匹配度 <b>' + esc(this.r.matchScore == null ? '—' : this.r.matchScore) + '</b> / 100</div>' +
-                    this.behaviorCard(this.r.behaviorReview) +
-                    (turnHtml ? '<h3>逐轮讲解</h3>' + turnHtml : '') +
-                    this.listHtml('答崩点', collapsed) +
-                    (issues.length ? '<h3>表述问题</h3>' + issues.map(i =>
-                        '<div class="issue"><b>' + esc(i.issue) + '</b><div>' + esc(i.guide) + '</div></div>').join('') : '') +
-                    (this.r.overallNotes ? '<h3>整体注意事项</h3><p class="notes">' + esc(this.r.overallNotes) + '</p>' : '') +
-                    this.listHtml('必要提醒', reminders);
+            recoverReport
+        },
+        template: `
+<section><div class="page-heading"><div><span class="eyebrow">专注当下的这一题</span><h1>面试练习</h1><p>不用急着给出完美答案，先把你的思路说清楚。</p></div><span class="soft-label">{{store.mainCount}} / {{store.maxQuestions}} 道主问题</span></div>
+<div class="surface interview-room"><div class="room-top"><span class="room-label"><span :class="['status-dot',{'online':store.connOk}]"></span>{{store.connText}}</span><button v-if="store.interviewActive && !store.connOk" class="text-button" @click="reconnect">重新连接</button><span class="spacer"></span><span class="quiet">{{store.chatProvider==='QWEN'?'通义千问':'DeepSeek'}}</span></div>
+<div class="chat" ref="chat" role="log" aria-label="面试问答记录" aria-live="polite" aria-relevant="additions">
+<div v-if="!store.messages.length" class="empty-state"><span class="empty-symbol"><app-icon name="interview"/></span><h2>{{store.phase==='starting'?'正在为你准备第一题':'给下一次面试，多一点底气'}}</h2><p>{{store.phase==='starting'?'面试官正在参考岗位和你的资料，请稍候。':'先选择一个目标岗位，开启属于你的练习。'}}</p><button v-if="store.phase==='idle'" class="primary" @click="store.view='prepare'">准备岗位<app-icon name="arrow"/></button></div>
+<article v-for="(message,index) in store.messages" :key="index" :class="['message',message.kind]"><div class="message-caption"><span class="message-avatar" v-if="message.kind==='question'"><app-icon name="spark"/></span><strong>{{message.kind==='question'?message.role:message.kind==='answer'?'我的回答':message.kind==='score'?'本轮反馈':'处理提示'}}</strong><span v-if="message.seq" class="quiet">第 {{message.seq}} 轮{{message.layer?' · 追问 '+message.layer:''}}</span><span v-if="message.track==='behavior'" class="tag">行为评分</span></div><div v-if="message.kind==='score'" class="score-line"><b>{{message.score ?? '—'}}</b><span>/ 8</span><span class="score-track"><i :style="{width:Math.max(0,Math.min(100,(message.score || 0)/8*100))+'%'}"></i></span></div><p v-if="message.text">{{message.text}}</p></article>
+</div>
+<div class="answer-area"><div class="processing-status" role="status"><span v-if="store.busy" class="spinner"></span><span>{{statusText}}</span><span v-if="store.pendingSince" class="quiet">· {{store.elapsed}} 秒{{store.elapsed>=20?' · 模型仍在处理，你可以先浏览其他页面':''}}</span></div>
+<p v-if="error" class="inline-error" role="alert">{{error}}</p>
+<div v-if="store.phase==='done'" class="completion"><div><strong>又完成了一次练习。</strong><p>看看这次的收获，再决定下一步。</p></div><button class="primary" v-if="store.liveReport" @click="showReport">查看本场报告<app-icon name="arrow"/></button><button v-else class="secondary" @click="recoverReport">获取报告</button></div>
+<template v-else><label class="sr-only" for="answer-input">你的回答</label><textarea id="answer-input" v-model="answer" rows="4" placeholder="在这里写下你的回答…可以从背景、做法和结果说起。" :disabled="!canAnswer" @keydown.ctrl.enter.prevent="submit" @keydown.meta.enter.prevent="submit"></textarea><div class="answer-actions"><button class="primary" @click="submit" :disabled="!canAnswer || !answer.trim()">提交回答<app-icon name="arrow"/></button><span class="keyboard-hint">Ctrl / ⌘ + Enter</span><span class="spacer"></span><button class="text-button" @click="end" :disabled="!store.interviewActive || store.busy || ending">结束并出报告</button></div></template>
+</div></div></section>`
+    };
+    const ReportPanel = {
+        data: () => ({ loading: false, error: '', showTurns: false, turns: [], trend: null, trendOpen: false, timer: null, selection: 0 }),
+        computed: { report() { return store.report; }, reportTurns() { return store.report?.perTurnReview || []; } },
+        watch: {
+            'store.reportSessionId'() { this.turns = []; this.showTurns = false; this.selection++; },
+            'store.report'() { this.turns = []; this.showTurns = false; }
+        },
+        beforeUnmount() { clearTimeout(this.timer); },
+        methods: {
+            async refresh() { try { await loadHistory(); } catch (error) { this.error = error.message; } },
+            filter() { clearTimeout(this.timer); this.timer = setTimeout(() => this.refresh(), 300); },
+            async select(sessionId) {
+                const selection = ++this.selection;
+                this.loading = true; this.error = '';
+                try {
+                    const result = await api('/api/interview/' + sessionId + '/report');
+                    if (selection === this.selection) {
+                        store.report = result; store.reportSessionId = sessionId;
+                    }
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { if (selection === this.selection || store.reportSessionId === sessionId) this.loading = false; }
             },
             async exportMd() {
-                if (!store.reportSessionId) return;
                 try {
-                    const res = await fetch('/api/interview/' + store.reportSessionId + '/report.md', {
-                        headers: { 'Authorization': 'Bearer ' + store.token }
-                    });
-                    const text = await res.text();
-                    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = '面试报告_' + store.reportSessionId + '.md';
-                    a.click();
-                    URL.revokeObjectURL(url);
-                } catch (e) { alert('导出失败：' + e.message); }
+                    const text = await api('/api/interview/' + store.reportSessionId + '/report.md', 'GET', undefined, true);
+                    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+                    const anchor = document.createElement('a');
+                    anchor.href = url; anchor.download = '面试报告_' + store.reportSessionId + '.md'; anchor.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch (error) { notify(error, true); }
             },
             async toggleTurns() {
-                if (!store.reportSessionId) return;
                 if (this.showTurns) { this.showTurns = false; return; }
+                const sessionId = store.reportSessionId;
                 try {
-                    this.turns = await api('/api/interview/' + store.reportSessionId + '/turns');
-                    this.showTurns = true;
-                } catch (e) { alert(e.message); }
+                    const turns = await api('/api/interview/' + sessionId + '/turns');
+                    if (store.reportSessionId === sessionId) { this.turns = turns; this.showTurns = true; }
+                } catch (error) { notify(error, true); }
             },
             async toggleTrend() {
-                if (this.showTrend) { this.showTrend = false; return; }
-                try {
-                    this.trendData = await api('/api/interview/trend');
-                    this.showTrend = true;
-                } catch (e) { alert(e.message); }
-            },
-            trendSvg() {
-                const data = this.trendData;
-                if (!data || !data.length) return '';
-                const W = 400, H = 160, pad = { l: 32, r: 12, t: 12, b: 22 };
-                const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-                const n = data.length;
-                const xAt = (i) => pad.l + (n <= 1 ? iw / 2 : (iw * i) / (n - 1));
-                const yAt = (v) => pad.t + ih - (ih * v) / 100;
-                let grid = '';
-                for (let g = 0; g <= 4; g++) {
-                    const y = pad.t + (ih * g) / 4;
-                    grid += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y + '" stroke="#2a3650" stroke-dasharray="2,3"/>' +
-                        '<text x="' + (pad.l - 4) + '" y="' + (y + 3) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + (100 - g * 25) + '</text>';
+                this.trendOpen = !this.trendOpen;
+                if (this.trendOpen) {
+                    try { this.trend = await api('/api/interview/trend'); } catch (error) { notify(error, true); }
                 }
-                const pts = data.map((d, i) => xAt(i) + ',' + yAt(d.matchScore)).join(' ');
-                let dots = '';
-                data.forEach((d, i) => {
-                    dots += '<circle cx="' + xAt(i) + '" cy="' + yAt(d.matchScore) + '" r="3" fill="#5b9dff"><title>#' + d.sessionId + ' · ' + fmtTime(d.createdAt) + ' · ' + d.matchScore + '分</title></circle>';
-                });
-                const xLabel = '<text x="' + pad.l + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9">' + esc(fmtTime(data[0].createdAt)) + '</text>' +
-                    '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" fill="#6b7a99" font-size="9" text-anchor="end">' + esc(fmtTime(data[n - 1].createdAt)) + '</text>';
-                return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + grid +
-                    '<polyline points="' + pts + '" fill="none" stroke="#5b9dff" stroke-width="2"/>' + dots + xLabel + '</svg>';
-            },
+            }
         },
         template: `
-<div>
-    <h2>3. 历史面试</h2>
-    <div class="row">
-        <button class="ghost" @click="loadHistory">刷新历史</button>
-        <button class="ghost" @click="toggleTrend">分数趋势</button>
-        <span class="state">最近 20 场，点有报告的回看</span>
-    </div>
-    <div class="histFilters">
-        <input v-model="store.histFilter.keyword" type="text" placeholder="搜索 JD 关键词…" @input="loadHistoryDebounced">
-        <select v-model="store.histFilter.status" @change="loadHistory">
-            <option value="">全部状态</option>
-            <option value="DONE">已结束</option>
-            <option value="INTERVIEWING">进行中</option>
-        </select>
-        <input v-model="store.histFilter.minScore" type="number" min="0" max="100" placeholder="最低分" @input="loadHistoryDebounced">
-        <input v-model="store.histFilter.maxScore" type="number" min="0" max="100" placeholder="最高分" @input="loadHistoryDebounced">
-    </div>
-    <div class="history">
-        <p v-if="!store.historyList.length" class="placeholder">{{hasFilter?'没有匹配的历史面试。':'还没有历史面试。'}}</p>
-        <button v-for="s in store.historyList" :key="s.sessionId" :class="['histItem', s.hasReport?'':'noReport']" :disabled="!s.hasReport" @click="s.hasReport && viewHistoryReport(s.sessionId)">
-            #{{s.sessionId}} {{s.jobType||'面试'}}{{s.sameTypeTag?' · '+s.sameTypeTag:''}}
-            <span>{{fmtTime(s.createdAt)}} · {{s.matchScore==null?'未评分':s.matchScore+' 分'}}{{s.hasReport?'':' · '+s.status}}</span>
-        </button>
-    </div>
-    <div v-if="showTrend" class="trendChart" v-html="trendSvg()"></div>
-
-    <h2>4. Critic 报告</h2>
-    <div class="row reportActions">
-        <button class="ghost" :disabled="!store.report" @click="exportMd">导出 MD</button>
-        <button class="ghost" :disabled="!store.report" @click="toggleTurns">逐轮回看</button>
-    </div>
-    <div class="report" v-html="reportHtml()"></div>
-    <div v-if="showTurns" class="turnsReplay">
-        <div v-for="t in turns" :key="t.turnId" class="turnItem">
-            <div class="turnMeta">第 {{t.seq}} 轮{{t.layer?' · L'+t.layer:''}}</div>
-            <div class="turnQ">{{t.question}}</div>
-            <div class="turnA">{{t.answer}}</div>
-        </div>
-    </div>
-</div>`
+<section><div class="page-heading"><div><span class="eyebrow">每次练习，都有收获</span><h1>报告与成长</h1><p>找到最值得改进的一点，带进下一次练习。</p></div><button class="secondary" @click="toggleTrend"><app-icon name="report"/>{{trendOpen?'收起趋势':'查看分数趋势'}}</button></div>
+<div v-if="trendOpen" class="surface trend-surface"><h2>历次匹配度</h2><p v-if="!trend?.length" class="empty-copy">完成有评分的面试后，在这里查看变化。</p><ol v-else class="trend-bars"><li v-for="item in trend" :key="item.sessionId"><span>{{fmtTime(item.createdAt)}} · {{item.jobType || '面试'}}</span><span class="trend-track"><i :style="{width:Math.max(0,Math.min(100,item.matchScore))+'%'}"></i></span><b>{{item.matchScore}} / 100</b></li></ol></div>
+<div class="report-grid"><aside class="surface history-surface"><div class="section-heading"><h2>练习记录</h2><button class="icon-button" @click="refresh" aria-label="刷新历史"><app-icon name="refresh"/></button></div>
+<label class="sr-only" for="history-keyword">搜索 JD 关键词</label><input id="history-keyword" v-model="store.histFilter.keyword" placeholder="搜索 JD 关键词" @input="filter"><div class="history-filters"><select v-model="store.histFilter.status" @change="refresh" aria-label="筛选练习状态"><option value="">全部状态</option><option value="DONE">已结束</option><option value="QUESTIONING">作答中</option><option value="SCORING">评分中</option><option value="INIT">准备中</option></select><input v-model="store.histFilter.minScore" type="number" min="0" max="100" placeholder="最低分" aria-label="最低分" @input="filter"><input v-model="store.histFilter.maxScore" type="number" min="0" max="100" placeholder="最高分" aria-label="最高分" @input="filter"></div>
+<p v-if="!store.historyList.length" class="empty-copy">没有找到练习记录。<br>完成第一次练习后，来这里看看收获。</p><div class="history-list"><button v-for="session in store.historyList" :key="session.sessionId" :class="['history-item',{selected:store.reportSessionId===session.sessionId}]" :disabled="!session.hasReport" @click="select(session.sessionId)"><span><strong>{{session.jobType || '模拟面试'}}</strong><small>{{fmtTime(session.createdAt)}} · #{{session.sessionId}}</small><small v-if="session.sameTypeTag">{{session.sameTypeTag}}</small></span><span class="history-score">{{session.matchScore ?? '—'}}<small>{{session.hasReport?'查看报告':'暂无报告'}}</small></span></button></div></aside>
+<article class="surface report-surface" :aria-busy="loading"><p v-if="error" class="inline-error" role="alert">{{error}}</p><p v-if="loading" role="status">正在读取报告…</p>
+<div v-if="!report" class="empty-state"><span class="empty-symbol"><app-icon name="report"/></span><h2>你的进步，会留在这里</h2><p>选择一份历史报告，或先完成一次练习。</p><button class="secondary" @click="store.view='prepare'">开始练习<app-icon name="arrow"/></button></div>
+<template v-else><div class="report-top"><div><span class="eyebrow">Critic 报告 · #{{store.reportSessionId}}</span><h2>这一次，离目标更近了多少？</h2></div><button class="secondary compact" @click="exportMd">导出 Markdown</button></div><div class="report-summary"><div class="match-score"><b>{{report.matchScore ?? '—'}}</b><span>/ 100<br>岗位匹配度</span></div><p>{{report.overallNotes || '查看逐轮反馈，发现下一步的练习方向。'}}</p></div>
+<section class="report-section" v-if="report.collapsedPoints?.length"><h3>优先补强</h3><ul class="takeaways"><li v-for="point in report.collapsedPoints" :key="point">{{point}}</li></ul><button class="text-button" @click="store.view='weak'">去错题本巩固<app-icon name="arrow"/></button></section>
+<section class="report-section" v-if="report.behaviorReview"><h3>行为面试评估</h3><div class="behavior-dimensions"><span v-for="(value,key) in report.behaviorReview.dimensions" :key="key">{{key}}<b>{{value}} / 2</b></span></div><p>{{report.behaviorReview.summary}}</p><ul><li v-for="suggestion in report.behaviorReview.suggestions" :key="suggestion">{{suggestion}}</li></ul></section>
+<section class="report-section"><div class="section-heading"><h3>逐轮反馈</h3><button class="text-button" @click="toggleTurns">{{showTurns?'收起原始问答':'查看原始问答'}}</button></div><p v-if="!reportTurns.length" class="field-note">本场暂无逐轮讲解；如报告生成失败，请保留原始问答。</p>
+<details v-for="turn in reportTurns" :key="turn.turnSeq" class="turn"><summary><span class="turn-number">{{String(turn.turnSeq).padStart(2,'0')}}</span><span class="grow">{{turn.question}}<small v-if="turn.track==='behavior'">行为面试</small></span><b>{{turn.score}} / 8</b></summary><div class="turn-detail"><template v-for="field in [{key:'explanation',label:'讲解'},{key:'correction',label:'纠正'},{key:'knowledgeSupplement',label:'知识补充'},{key:'exemplarAnswer',label:'示范回答'}]" :key="field.key"><div v-if="turn[field.key]"><h4>{{field.label}}</h4><p>{{turn[field.key]}}</p></div></template></div></details>
+<div v-if="showTurns" class="turns-replay"><article v-for="turn in turns" :key="turn.seq"><h4>第 {{turn.seq}} 轮{{turn.layer?' · 追问 '+turn.layer:''}}</h4><strong>{{turn.question}}</strong><p>{{turn.answer || '本轮未作答'}}</p></article></div></section>
+<section v-if="report.expressionIssues?.length" class="report-section"><h3>表达改进</h3><div v-for="(issue,index) in report.expressionIssues" :key="index" class="expression-issue"><strong>{{issue.issue}}</strong><p>{{issue.guide}}</p></div></section><section v-if="report.reminders?.length" class="report-section"><h3>带到下一次的提醒</h3><ul><li v-for="reminder in report.reminders" :key="reminder">{{reminder}}</li></ul></section></template></article></div></section>`
     };
-
-    // ==================== 组件：错题本 ====================
     const WeakPanel = {
-        data() {
-            return { reviewPanel: false, reviewQueue: [], reviewIdx: 0, reviewQuestion: '', reviewAnswer: '', reviewResult: null, _detailCache: {} };
-        },
+        data: () => ({ details: {}, loadingDetail: {}, error: '', review: false, queue: [], index: 0,
+            question: '', answer: '', result: null, busy: false }),
         methods: {
-            loadWeak() { loadWeak(); },
-            stageText(w) { return w.resolved ? '已掌握' : 'stage ' + (w.reviewStage || 0); },
-            async loadDetail(w) {
-                if (this._detailCache[w.weakPointId]) return;
+            async refresh() { try { await loadWeak(); } catch (error) { notify(error, true); } },
+            async detail(item, event) {
+                if (!event.target.open || this.details[item.weakPointId] || this.loadingDetail[item.weakPointId]) return;
+                this.loadingDetail[item.weakPointId] = true;
+                try { this.details[item.weakPointId] = await api('/api/weak-point/' + item.weakPointId); }
+                catch (error) { notify(error, true); }
+                finally { this.loadingDetail[item.weakPointId] = false; }
+            },
+            async start() {
+                if (this.busy) return;
+                if (this.review) { this.review = false; return; }
+                this.busy = true; this.error = '';
                 try {
-                    const d = await api('/api/weak-point/' + w.weakPointId);
-                    this._detailCache[w.weakPointId] = d;
-                } catch (e) { /* 忽略 */ }
+                    this.queue = await api('/api/weak-point/due');
+                    this.index = 0; this.review = true;
+                    if (this.queue.length) await this.loadQuestion();
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
             },
-            async startReview() {
-                if (this.reviewPanel) { this.reviewPanel = false; return; }
+            async loadQuestion() {
+                this.question = ''; this.answer = ''; this.result = null;
+                const result = await api('/api/weak-point/' + this.queue[this.index].weakPointId + '/review/question', 'POST');
+                this.question = result.question;
+            },
+            async submit() {
+                if (this.busy || !this.question || !this.answer.trim()) return;
+                this.busy = true; this.error = '';
                 try {
-                    this.reviewQueue = await api('/api/weak-point/due');
-                    if (!this.reviewQueue.length) { this.reviewPanel = true; return; }
-                    this.reviewIdx = 0;
-                    this.reviewPanel = true;
-                    this.loadReviewItem();
-                } catch (e) { alert(e.message); }
+                    this.result = await api('/api/weak-point/' + this.queue[this.index].weakPointId + '/review/answer', 'POST',
+                        { question: this.question, answer: this.answer.trim() });
+                    await loadWeak(); await loadQuota();
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
             },
-            async loadReviewItem() {
-                this.reviewResult = null;
-                this.reviewAnswer = '';
-                try {
-                    const w = this.reviewQueue[this.reviewIdx];
-                    const r = await api('/api/weak-point/' + w.weakPointId + '/review/question', 'POST');
-                    this.reviewQuestion = r.question;
-                } catch (e) { alert('出题失败：' + e.message); }
-            },
-            async submitReview() {
-                if (!this.reviewAnswer.trim()) return;
-                try {
-                    const w = this.reviewQueue[this.reviewIdx];
-                    this.reviewResult = await api('/api/weak-point/' + w.weakPointId + '/review/answer', 'POST',
-                        { question: this.reviewQuestion, answer: this.reviewAnswer });
-                    loadWeak();
-                } catch (e) { alert(e.message); }
-            },
-            nextReview() {
-                this.reviewIdx++;
-                if (this.reviewIdx >= this.reviewQueue.length) { this.reviewPanel = false; return; }
-                this.loadReviewItem();
-            },
+            async next() {
+                if (this.busy) return;
+                if (this.index + 1 >= this.queue.length) { this.review = false; return; }
+                this.busy = true; this.error = ''; this.index++;
+                try { await this.loadQuestion(); } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
+            }
         },
         template: `
-<div>
-    <h2>5. 错题本（间隔重复）</h2>
-    <div class="row">
-        <button class="ghost" @click="loadWeak">刷新</button>
-        <button class="ghost" @click="startReview">复习模式</button>
-        <label class="chk"><input type="checkbox" v-model="store.dueOnly" @change="loadWeak"> 只看今日到期</label>
-    </div>
-    <div class="weak">
-        <p v-if="!store.weakList.length" class="placeholder">答崩的知识点会自动进这里，按 [1,3,7,15] 天阶梯排复习。</p>
-        <details v-for="w in store.weakList" :key="w.weakPointId" @toggle.open="loadDetail(w)">
-            <summary>
-                <span class="wpKp">{{w.knowledgePoint}}</span>
-                <span class="wpMeta">{{stageText(w)}} · 错 {{w.wrongCount||0}} 次{{w.nextReviewAt?' · 下次 '+fmtTime(w.nextReviewAt):''}}</span>
-            </summary>
-            <div v-if="_detailCache[w.weakPointId]" class="wpDetail">
-                <div v-if="_detailCache[w.weakPointId].latest">
-                    <div class="wpScene"><b>最近答崩现场：</b>{{_detailCache[w.weakPointId].latest.question}}</div>
-                    <div class="wpSceneAnswer">你的回答：{{_detailCache[w.weakPointId].latest.answer}}</div>
-                    <div v-if="_detailCache[w.weakPointId].latest.explanation" class="wpExp">讲解：{{_detailCache[w.weakPointId].latest.explanation}}</div>
-                </div>
-            </div>
-        </details>
-    </div>
-    <div v-if="reviewPanel" class="reviewPanel">
-        <p v-if="!reviewQueue.length" class="placeholder">今天没有到期的复习项。</p>
-        <template v-else>
-            <div v-if="!reviewResult">
-                <div class="rvKp">知识点：{{reviewQueue[reviewIdx].knowledgePoint}}（{{reviewIdx+1}}/{{reviewQueue.length}}）</div>
-                <div class="rvQ">{{reviewQuestion}}</div>
-                <textarea v-model="reviewAnswer" placeholder="在此作答…"></textarea>
-                <div class="rvActions">
-                    <button class="primary" @click="submitReview">提交判分</button>
-                    <button class="ghost" @click="nextReview">跳过</button>
-                </div>
-            </div>
-            <div v-else class="rvResult">
-                <div class="rvScore">{{reviewResult.score}} / 8</div>
-                <div>{{reviewResult.explanation}}</div>
-                <div style="margin-top:6px;color:var(--muted);font-size:12px">{{reviewResult.resolved?'已掌握，出队 ✓':'stage '+reviewResult.newStage+' · 下次复习 '+fmtTime(reviewResult.nextReviewAt)}}</div>
-                <div class="rvActions"><button class="primary" @click="nextReview">{{reviewIdx+1<reviewQueue.length?'下一题':'完成复习'}}</button></div>
-            </div>
-        </template>
-    </div>
-</div>`
+<section><div class="page-heading"><div><span class="eyebrow">把薄弱点练成底气</span><h1>错题与复习</h1><p>按 1、3、7、15 天的节奏，巩固还不熟悉的知识。</p></div><button class="primary" @click="start" :disabled="busy">{{review?'返回错题列表':'开始今日复习'}}<app-icon name="arrow"/></button></div>
+<p v-if="error" class="inline-error" role="alert">{{error}}</p><div v-if="review" class="surface review-surface"><p v-if="!queue.length" class="empty-copy">今天没有到期的复习项，可以放心开始新的练习。</p><template v-else><span class="eyebrow">今日复习 · {{index+1}} / {{queue.length}}</span><h2>{{queue[index].knowledgePoint}}</h2><p v-if="busy" role="status">正在处理，请稍候…</p><p class="review-question">{{question}}</p><template v-if="!result"><label for="review-answer" class="field-label">你的回答</label><textarea id="review-answer" rows="5" v-model="answer" :disabled="busy || !question" placeholder="再试一次，看看这次能否说得更清楚。"></textarea><div class="row"><button class="primary" @click="submit" :disabled="busy || !question || !answer.trim()">提交判分</button><button class="text-button" @click="next" :disabled="busy">跳过</button></div></template><div v-else class="review-result"><strong>{{result.score}} / 8</strong><p>{{result.explanation}}</p><p class="quiet">{{result.resolved?'已掌握，本题已出队。':'下次复习：'+fmtTime(result.nextReviewAt)}}</p><button class="primary" @click="next" :disabled="busy">{{index+1<queue.length?'下一题':'完成复习'}}</button></div></template></div>
+<div v-else class="surface"><div class="section-heading"><h2>待巩固的知识点</h2><div class="row"><label class="checkbox-label"><input type="checkbox" v-model="store.dueOnly" @change="refresh">只看今日到期</label><button class="icon-button" aria-label="刷新错题" @click="refresh"><app-icon name="refresh"/></button></div></div><div v-if="!store.weakList.length" class="empty-state"><span class="empty-symbol"><app-icon name="leaf"/></span><h2>慢慢积累，不急于一次掌握</h2><p>练习中需要巩固的知识点，会自动收进这里。</p></div><details v-for="item in store.weakList" :key="item.weakPointId" class="weak-point" @toggle="detail(item,$event)"><summary><span class="grow"><strong>{{item.knowledgePoint}}</strong><small>错 {{item.wrongCount || 0}} 次 · {{item.resolved?'已掌握':'复习阶段 '+(item.reviewStage || 0)}}{{item.nextReviewAt?' · '+fmtTime(item.nextReviewAt):''}}</small></span><span class="quiet">查看详情</span></summary><div class="weak-detail"><p v-if="loadingDetail[item.weakPointId]">正在读取…</p><template v-else-if="details[item.weakPointId]?.latest"><h4>最近一次练习</h4><strong>{{details[item.weakPointId].latest.question}}</strong><p>你的回答：{{details[item.weakPointId].latest.answer}}</p><template v-if="details[item.weakPointId].latest.review"><h4>反馈与纠正</h4><p>{{details[item.weakPointId].latest.review.explanation}}</p><p>{{details[item.weakPointId].latest.review.correction}}</p></template></template><p v-else>暂时没有可回看的原始问答。</p></div></details></div></section>`
     };
-
-    // ==================== 组件：心理陪伴（F10） ====================
     const CompanionPanel = {
-        data() {
-            return { messages: [], input: '', loading: false };
-        },
+        props: { mode: { type: String, default: 'companion' } },
+        data: () => ({ messages: [], input: '', busy: false, error: '' }),
+        computed: { profile() { return buddyProfiles[this.mode] || buddyProfiles.companion; } },
         methods: {
-            async send() {
-                const text = this.input.trim();
-                if (!text || this.loading) return;
-                this.messages.push({ role: 'user', text });
-                this.input = '';
-                this.loading = true;
+            async send(text) {
+                text = typeof text === 'string' ? text : this.input.trim();
+                if (!text || this.busy) return;
+                this.error = ''; this.busy = true; this.input = '';
+                let message = this.messages.at(-1);
+                if (message?.failed && message.text === text) message.failed = false;
+                else { message = { role: 'user', text, failed: false }; this.messages.push(message); }
                 try {
-                    const r = await api('/api/companion/chat', 'POST', { message: text });
-                    this.messages.push({ role: 'companion', text: r.reply, safe: r.safe });
-                } catch (e) {
-                    this.messages.push({ role: 'companion', text: '抱歉，我现在有点累，等会儿再陪你聊好吗？' });
-                } finally { this.loading = false; }
+                    const result = await api(this.profile.chat, 'POST', { message: text });
+                    this.messages.push({ role: 'assistant', text: result.reply, safe: result.safe === true });
+                    loadQuota().catch(error => notify(error, true));
+                } catch (error) {
+                    if (!error.stale) { this.error = error.message; this.input = text; message.failed = true; }
+                } finally {
+                    this.busy = false;
+                    nextTick(() => { if (this.$refs.chat) this.$refs.chat.scrollTop = this.$refs.chat.scrollHeight; });
+                }
             },
-            reset() {
-                this.messages = [];
-                api('/api/companion/reset', 'POST').catch(() => {});
+            async reset() {
+                if (this.busy || !confirm('清空与' + this.profile.name + '的本次对话？')) return;
+                this.busy = true;
+                try { await api(this.profile.reset, 'POST'); this.messages = []; this.input = ''; this.error = ''; }
+                catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
             },
+            back() { store.view = store.buddyReturnView || (store.interviewActive ? 'interview' : 'prepare'); }
         },
         template: `
-<div class="companion">
-    <h2>6. 心理陪伴</h2>
-    <p class="companionIntro">我是小暖，一个愿意听你说话的陪伴者。有什么想说的都可以告诉我。</p>
-    <div class="companionChat">
-        <div v-for="(m, i) in messages" :key="i" :class="['cMsg', m.role]">
-            <span class="cRole">{{m.role==='user'?'我':'小暖'}}</span>
-            <p :class="{'cSafe': m.safe}">{{m.text}}</p>
-        </div>
-        <p v-if="loading" class="cLoading">小暖正在想…</p>
-    </div>
-    <div class="companionInput">
-        <textarea v-model="input" rows="2" placeholder="说点什么…（Ctrl+Enter 发送）" @keydown.ctrl.enter="send"></textarea>
-        <div class="row">
-            <button class="primary" :disabled="loading" @click="send">发送</button>
-            <button class="ghost" @click="reset">清空对话</button>
-        </div>
-    </div>
-</div>`
+<section :class="['buddy-page',profile.tone]"><div class="page-heading"><div><span class="eyebrow">{{profile.role}} · 备考路上的 AI 搭档</span><h1>{{profile.name}}</h1><p>{{profile.tagline}}</p></div><button class="secondary" @click="back">返回刚才的页面<app-icon name="arrow"/></button></div>
+<div class="buddy-introduction"><buddy-avatar :tone="profile.tone"/><div><span class="eyebrow">{{profile.name}} · {{profile.role}}</span><p>{{profile.introduction}}</p></div></div>
+<div class="companion-grid"><div class="surface companion-room"><div class="companion-heading"><buddy-avatar :tone="profile.tone"/><div><h2>{{profile.shortName}}在这里</h2><p>{{mode==='coach'?'把卡住的知识点说给我听。':profile.tagline}}</p></div><span class="spacer"></span><button class="text-button" @click="reset" :disabled="busy">清空对话</button></div>
+<div class="companion-chat" ref="chat" role="log" :aria-label="'与'+profile.shortName+'的对话'" aria-live="polite" aria-relevant="additions"><div v-if="!messages.length" class="companion-welcome"><h2>{{profile.welcome}}</h2><p>{{profile.description}}</p><div class="starter-list"><button v-for="starter in profile.starters" :key="starter" @click="send(starter)" :disabled="busy">{{starter}}<app-icon name="arrow"/></button></div></div><article v-for="(message,index) in messages" :key="index" :class="['companion-message',message.role,{'safety-message':message.safe}]"><strong>{{message.role==='user'?'我':profile.shortName}}</strong><p>{{message.text}}</p><small v-if="message.failed" class="danger-text">暂未获得回复，问题已保留在输入框。</small></article><p v-if="busy" class="quiet" role="status">{{profile.shortName}}正在回应…</p></div>
+<div class="companion-compose"><p v-if="error" class="inline-error" role="alert">{{error}}</p><label class="sr-only" :for="'buddy-input-'+profile.id">{{profile.label}}</label><textarea :id="'buddy-input-'+profile.id" v-model="input" rows="3" maxlength="6000" :placeholder="profile.placeholder" :disabled="busy" @keydown.ctrl.enter.prevent="send()" @keydown.meta.enter.prevent="send()"></textarea><div class="row"><span class="field-note">Ctrl / ⌘ + Enter 发送</span><span class="spacer"></span><button class="primary" @click="send()" :disabled="busy || !input.trim()">发送<app-icon name="arrow"/></button></div></div></div>
+<aside class="companion-aside"><template v-if="mode==='companion'"><span class="eyebrow">不急，我们慢慢来</span><h2>先照顾好自己，<br>再面对下一题。</h2><p>小暖提供倾听与心态陪伴。也欢迎你把感受说给身边信任的人听，一起找到支持。</p><p class="buddy-boundary">AI 陪伴不替代专业心理支持，不做诊断。对话不会自动加入资料库；服务重启后历史清空。</p><hr><h3>想把难点弄明白？</h3><p>让小师陪你讲清知识、拆解题目，找到下一步的学习方向。</p><button class="secondary" @click="goBuddy('coach')"><buddy-avatar tone="study"/>去找通考小师<app-icon name="arrow"/></button></template>
+<template v-else><span class="eyebrow">一点点弄懂，就在进步</span><h2>不怕暂时不会，<br>我们从这里开始。</h2><p>告诉小师你卡住的知识点，或者目标岗位、当前基础和可用时间，一起理清学习方向。</p><p class="buddy-boundary">小师只参考你发送的内容。需要结合报告时，可以复制相关片段；短期对话不承诺永久记忆。</p><button class="text-button" @click="store.view='history'">查看我的练习报告<app-icon name="arrow"/></button><hr><h3>累了，先缓一缓</h3><p>学不进去时也不必苛责自己。小暖在另一边，愿意听你说。</p><button class="secondary" @click="goBuddy('companion')"><buddy-avatar tone="warm"/>去找陪考小暖<app-icon name="arrow"/></button></template></aside></div></section>`
     };
 
-    // ==================== 主应用 ====================
-    const App = {
-        components: { AuthPanel, PreparePanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel },
-        computed: {
-            loggedIn() { return !!store.token; },
-        },
+    const SettingsPanel = {
+        data: () => ({ key: '', busy: false, usage: [], loaded: false, error: '' }),
         methods: {
-            logout() {
-                store.token = null;
-                store.username = null;
-                closeStream();
+            async update(field, value) {
+                if (this.busy) return;
+                this.busy = true; this.error = '';
+                try {
+                    const result = await api('/api/user/settings', 'PUT', { [field]: value });
+                    store.keyMode = result.keyMode; store.chatProvider = result.chatProvider;
+                    notify('设置已保存。');
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
             },
+            async saveKey() {
+                if (this.busy || !this.key.trim()) return;
+                this.busy = true; this.error = '';
+                try {
+                    const result = await api('/api/user/api-key', 'PUT', { apiKey: this.key.trim() });
+                    store.hasKey = result.hasKey; store.last4 = result.last4; this.key = '';
+                    const settings = await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
+                    store.keyMode = settings.keyMode; store.chatProvider = settings.chatProvider;
+                    notify('Key 已保存，已切换为自带 Key 模式。');
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
+            },
+            async removeKey() {
+                if (this.busy || !confirm('删除自带 Key 并切回平台额度？')) return;
+                this.busy = true; this.error = '';
+                try {
+                    await api('/api/user/api-key', 'DELETE'); this.key = '';
+                    store.hasKey = false; store.last4 = ''; store.keyMode = 'PLATFORM';
+                    notify('自带 Key 已删除。');
+                } catch (error) { if (!error.stale) this.error = error.message; }
+                finally { this.busy = false; }
+            },
+            async refresh() {
+                this.error = '';
+                try {
+                    await Promise.all([loadSettings(), loadQuota()]);
+                    this.usage = await api('/api/user/usage'); this.loaded = true;
+                } catch (error) { if (!error.stale) this.error = error.message; }
+            }
+        },
+        template: `
+<section><div class="page-heading"><div><span class="eyebrow">按你的方式练习</span><h1>账号与设置</h1><p>管理模型、额度和调用方式。</p></div><button class="secondary" @click="refresh"><app-icon name="refresh"/>刷新设置与用量</button></div><p v-if="error" class="inline-error" role="alert">{{error}}</p>
+<div class="settings-grid"><section class="surface"><h2>对话模型</h2><p class="quiet">切换后用于后续调用，当前正在处理的请求不受影响。</p><div class="setting-choices"><button v-for="provider in [{id:'DEEPSEEK',name:'DeepSeek'},{id:'QWEN',name:'通义千问'}]" :key="provider.id" :aria-pressed="store.chatProvider===provider.id" @click="update('chatProvider',provider.id)" :disabled="busy"><strong>{{provider.name}}</strong><app-icon v-if="store.chatProvider===provider.id" name="check"/></button></div>
+<h3>调用方式</h3><div class="segmented"><button :aria-pressed="store.keyMode==='PLATFORM'" @click="update('keyMode','PLATFORM')" :disabled="busy">平台额度</button><button :aria-pressed="store.keyMode==='BYOK'" @click="update('keyMode','BYOK')" :disabled="busy">自带 DeepSeek Key</button></div><p class="field-note">通义千问始终使用平台额度。自带 Key 仅适用于 DeepSeek；资料向量化仍使用平台额度。</p>
+<h3>DeepSeek API Key</h3><p class="field-note">{{store.hasKey?'已保存，末四位 '+store.last4:'尚未保存自带 Key'}}</p><label for="byok-key" class="sr-only">DeepSeek API Key</label><input id="byok-key" v-model="key" type="password" autocomplete="off" placeholder="输入 sk- 开头的 Key" :disabled="busy"><div class="row wrap"><button class="primary" @click="saveKey" :disabled="busy || !key.trim()">{{busy?'正在保存…':'保存并启用自带 Key'}}</button><button class="text-button danger-text" v-if="store.hasKey" @click="removeKey" :disabled="busy">删除 Key</button></div><p class="field-note">Key 加密保存在服务端，保存后不再显示明文。</p></section>
+<section class="surface quota-surface"><span class="eyebrow">我的积分</span><div class="quota-value">{{formatPoints(store.quota?.remainingTokens)}}<span>积分</span></div><p class="quiet">累计使用 {{formatPoints(store.quota?.usedTokens)}} 积分 / 总积分 {{formatPoints(store.quota?.totalTokens)}}</p><hr><h3>积分如何使用？</h3><p>新用户注册赠送 100 积分。使用平台模型，按实际用量折算扣除积分；小额用量也会如实记录。</p><p>自带 DeepSeek Key：每次模型调用收取 1 积分服务费，模型费用由你的 Key 支付。一轮面试可能包含出题、判分等多次调用。</p><p>通义千问与资料向量化始终按平台实际用量扣积分。</p><quota-contact/></section></div>
+<section class="surface usage-surface"><div class="section-heading"><h2>积分明细</h2><button class="text-button" @click="refresh">{{loaded?'刷新':'加载用量'}}</button></div><p v-if="!usage.length" class="empty-copy">{{loaded?'暂无积分使用记录。':'点击加载，查看最近的模型调用和积分扣减。'}}</p><div v-else class="table-scroll"><table><thead><tr><th>时间</th><th>场景</th><th>模型</th><th>计费方式</th><th>扣除积分</th></tr></thead><tbody><tr v-for="row in usage" :key="row.id"><td>{{fmtTime(row.createdAt)}}</td><td>{{row.scene}}</td><td>{{row.model}}</td><td>{{row.keyMode==='BYOK'?'自带 Key 服务费':'平台用量'}}</td><td>{{formatPoints(row.chargedTokens)}}</td></tr></tbody></table></div></section></section>`
+    };
+    const QuotaContact = {
+        template: `<div class="quota-contact"><p>平台目前处于内测阶段，请联系工作人员补充额度。</p><div class="support-wechat"><span>工作人员微信</span><strong>13481264947</strong></div></div>`
+    };
+    const App = {
+        components: { AuthPanel, PreparePanel, MaterialsPanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel, SettingsPanel },
+        data: () => ({ timer: null, navigation: [
+            { id: 'prepare', name: '开始练习', icon: 'practice', caption: '准备你的下一场面试' },
+            { id: 'interview', name: '面试工作区', icon: 'interview', caption: '专注回答，从容表达' },
+            { id: 'history', name: '报告与成长', icon: 'report', caption: '看见每一次进步' },
+            { id: 'weak', name: '错题本', icon: 'leaf', caption: '把薄弱点练成底气' },
+            { id: 'materials', name: '我的资料', icon: 'folder', caption: '让练习更了解你' },
+            { id: 'companion', name: '陪考小暖', icon: 'spark', caption: '给自己留一点空间' },
+            { id: 'coach', name: '通考小师', icon: 'practice', caption: '把不会的，一点点弄懂' },
+            { id: 'settings', name: '账号与设置', icon: 'settings', caption: '按你的方式练习' }
+        ] }),
+        computed: { currentNav() { return this.navigation.find(item => item.id === store.view) || this.navigation[0]; } },
+        watch: {
+            'store.view'() { nextTick(() => window.scrollTo({ top: 0, behavior: 'auto' })); },
+            'store.quotaOpen'(open) {
+                if (open) nextTick(() => this.$refs.quotaDialog?.showModal());
+            }
         },
         mounted() {
-            // 点击额度弹窗确定按钮
-            const btn = document.getElementById('btnQuotaOk');
-            if (btn) btn.addEventListener('click', hideQuotaModal);
-            // 默认展示登录
-            if (!store.token) showAuthModal('login');
+            this.timer = setInterval(() => {
+                if (store.pendingSince) store.elapsed = Math.floor((Date.now() - store.pendingSince) / 1000);
+            }, 1000);
+        },
+        beforeUnmount() { clearInterval(this.timer); closeStream(); },
+        methods: {
+            navigate(view) {
+                if (['companion', 'coach'].includes(view)) goBuddy(view);
+                else store.view = view;
+            },
+            logout() {
+                if ((store.interviewActive || store.busy) && !confirm('本场练习仍在进行，退出会关闭当前连接。确认退出？')) return;
+                resetAccount();
+            },
+            closeQuota() { store.quotaOpen = false; store.view = 'settings'; }
         },
         template: `
-<div>
-    <auth-panel v-if="!loggedIn"></auth-panel>
-    <div v-else id="appShell">
-        <header class="topbar">
-            <div class="brand">AI 模拟面试<span class="sub">贴 JD → 角色追问 → Critic 报告 + 错题本</span></div>
-            <div class="topbar-right">
-                <div class="conn">
-                    <span :class="['dot', store.connOk?'online':'offline']"></span>
-                    <span>{{store.connText}}</span>
-                </div>
-                <div class="user-area">
-                    <span class="user-avatar">{{store.username ? store.username[0].toUpperCase() : '?'}}</span>
-                    <span class="user-name">{{store.username}}</span>
-                    <button class="ghost" @click="logout">登出</button>
-                </div>
-            </div>
-        </header>
-        <nav class="viewTabs">
-            <button :class="['vt', store.view==='prepare'?'active':'']" @click="store.view='prepare'">准备</button>
-            <button :class="['vt', store.view==='interview'?'active':'']" @click="store.view='interview'">面试</button>
-            <button :class="['vt', store.view==='history'?'active':'']" @click="store.view='history'">报告</button>
-            <button :class="['vt', store.view==='weak'?'active':'']" @click="store.view='weak'">错题本</button>
-            <button :class="['vt', store.view==='companion'?'active':'']" @click="store.view='companion'">心理陪伴</button>
-        </nav>
-        <main class="layout">
-            <prepare-panel v-show="store.view==='prepare'"></prepare-panel>
-            <interview-panel v-show="store.view==='interview'"></interview-panel>
-            <aside v-show="store.view==='history'" class="panel side">
-                <report-panel></report-panel>
-            </aside>
-            <aside v-show="store.view==='weak'" class="panel side">
-                <weak-panel></weak-panel>
-            </aside>
-            <aside v-show="store.view==='companion'" class="panel side">
-                <companion-panel></companion-panel>
-            </aside>
-        </main>
-    </div>
+<div><auth-panel v-if="!store.token"/>
+<div v-else class="app-shell" :key="store.accountEpoch">
+  <aside class="sidebar"><a href="#" class="brand" @click.prevent="store.view='prepare'"><span class="brand-mark"><app-icon name="spark"/></span><span>面试练习室<small>INTERVIEW STUDIO</small></span></a><span class="sidebar-label">我的练习空间</span><nav aria-label="主导航"><button v-for="item in navigation" :key="item.id" :class="['nav-item',{active:store.view===item.id}]" :aria-label="item.name" :aria-current="store.view===item.id?'page':null" @click="navigate(item.id)"><app-icon :name="item.icon"/><span>{{item.name}}</span><span v-if="item.id==='interview' && store.interviewActive" class="nav-dot" aria-label="面试进行中"></span></button></nav><div class="sidebar-bottom"><div class="sidebar-quote"><span class="eyebrow">一点点，更从容</span><p>最好的准备，<br>是再练习一次。</p></div><div class="account"><span class="avatar">{{store.username.slice(0,1).toUpperCase()}}</span><span class="grow"><strong>{{store.username}}</strong><small>我的练习账号</small></span><button class="icon-button" aria-label="退出登录" @click="logout"><app-icon name="logout"/></button></div></div></aside>
+  <div class="workspace"><header class="workspace-header"><span>我的练习空间 <span class="breadcrumb-slash">/</span><strong>{{currentNav.name}}</strong></span><div class="header-tools"><buddy-links/><button class="balance-pill" @click="store.view='settings'"><span class="status-dot online"></span>{{formatPoints(store.quota?.remainingTokens)}}<small>积分</small></button></div></header>
+  <main id="main-content" class="workspace-content"><div v-if="store.notice" :class="['notice',{'notice-error':store.notice.error}]" :role="store.notice.error?'alert':'status'"><span>{{store.notice.message}}</span><button class="icon-button" aria-label="关闭提示" @click="store.notice=null">×</button></div>
+    <prepare-panel v-show="store.view==='prepare'"/><materials-panel v-show="store.view==='materials'"/><interview-panel v-show="store.view==='interview'"/><report-panel v-show="store.view==='history'"/><weak-panel v-show="store.view==='weak'"/><companion-panel v-show="store.view==='companion'" mode="companion"/><companion-panel v-show="store.view==='coach'" mode="coach"/><settings-panel v-show="store.view==='settings'"/>
+    <footer class="workspace-footer"><span>每一次练习，都算数。</span><span>AI 反馈供练习参考，请结合真实岗位要求判断。</span></footer>
+  </main></div>
+</div>
+<dialog v-if="store.quotaOpen" ref="quotaDialog" class="quota-dialog" aria-labelledby="quota-title" @cancel="store.quotaOpen=false"><span class="eyebrow">先休息一下</span><h2 id="quota-title">本次调用的积分不足</h2><p>回答草稿会保留，补充积分后可以继续练习。自带 Key 每次模型调用需要 1 积分。</p><quota-contact/><button class="primary large" @click="closeQuota" autofocus>查看积分与设置<app-icon name="arrow"/></button></dialog>
 </div>`
     };
-
-    // 暴露给组件内部调用的全局函数
     const app = createApp(App);
-    app.config.globalProperties.esc = esc;
-    app.config.globalProperties.fmtTime = fmtTime;
-    app.config.globalProperties.store = store;
+    app.component('quota-contact', QuotaContact);
+    app.component('app-icon', Icon);
+    app.component('buddy-avatar', BuddyAvatar);
+    app.component('buddy-links', BuddyLinks);
+    Object.assign(app.config.globalProperties, { store, fmtTime, formatPoints, goBuddy });
     app.mount('#app');
 })();

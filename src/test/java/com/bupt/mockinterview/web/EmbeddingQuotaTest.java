@@ -75,7 +75,7 @@ class EmbeddingQuotaTest {
         JsonNode body = mapper.readTree(
                 actions.andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(body.get("code").asText()).isEqualTo("QUOTA_EXHAUSTED");
-        assertThat(body.get("message").asText()).contains("充值");
+        assertThat(body.get("message").asText()).contains("内测阶段", "联系工作人员补充额度", "13481264947");
         // 预检发生在发 embed 之前：0 余额时厂商一次都不能被调
         verify(embedder, never()).embed(anyString());
     }

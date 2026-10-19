@@ -15,7 +15,7 @@
   - **auth 白名单**：`POST /api/auth/register`、`POST /api/auth/login` 不放令牌。
 - 时间：ISO-8601 字符串
 - 错误码：HTTP 状态码 + `{code, message}`
-  - 400 参数错误 / 401 未登录或 JWT 失效 / 402 token 额度耗尽（PLATFORM/BYOK 余额不足，见 §7）/ 403 非 ADMIN 调管理接口（R2）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
+  - 400 参数错误 / 401 未登录或 JWT 失效 / 402 积分不足（PLATFORM/BYOK 余额不足，见 §7）/ 403 非 ADMIN 调管理接口（R2）/ 404 资源不存在 / 409 状态冲突（如会话已 DONE 再回答、用户名已注册、切 BYOK 但未存 key）/ 500 内部错误 / 504 LLM 超时（走降级）
 - 环境探活（非业务）：`GET /api/health/deps` → `{ database:{ok}, redis:{ok}, deepseek:{source:"ENV",configured}, embedder:{ provider, vectorChunks, ping:{ok,dim} } }`。JWT 白名单（健康检查无身份）。R1-3 起 deepseek 只反映平台 key（env）是否配置；用户 BYOK key 不在此暴露。R4 起 `vectorChunks` 是 **Lucene 落盘索引的全局存活 doc 总数（跨用户、不含已逻辑删除待合并的旧 replace 版本，仅作粗监控，不是当前用户块数）**。
 
 ## 2. 认证（R1-1 新增）
@@ -26,7 +26,7 @@
 - `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
 - `password`：≥6 字符，BCrypt 加密存储
 - resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
-- **R2-T0 起注册恒为 role=USER**（「首个注册者=ADMIN」规则已删除——任何公开注册都拿不到管理员，杜绝抢注首个账号）；同时为该用户创建 quota 并赠送 token 额度（`app.quota.signup-bonus-tokens`，默认 500000）；新用户 key_mode=PLATFORM。
+- **R2-T0 起注册恒为 role=USER**（「首个注册者=ADMIN」规则已删除——任何公开注册都拿不到管理员，杜绝抢注首个账号）；同时为该用户创建 quota 并赠送 100 积分（`app.quota.signup-bonus-tokens`，默认 50000 token 当量）；新用户 key_mode=PLATFORM。
 - **ADMIN 的唯一产生方式：env 引导器**（不开放任何 HTTP 接口）。启动时配置 `app.security.bootstrap-admin.username` / `password`（env `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`）：用户不存在则建 ADMIN（BCrypt + 赠额度）；已存在（含原 USER）则幂等升级为 ADMIN 并按配置更新密码、不重建额度；只配 username 不配 password 时首建生成随机密码并 WARN 回显一次；两项都不配则跳过（仅 WARN 指引，不影响启动）。
 - HTTP 201 Created
 
@@ -159,11 +159,11 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 
 > 平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
 > 每个登录用户有两个相互**独立**的设置维度：
-> - **调用方式 `keyMode`**：`PLATFORM`（默认，走平台 key）/ `BYOK`（走用户自己加密存储的 DeepSeek key，每次对话扣固定服务费，默认 1 token 当量，余额不足→**402**）。
+> - **调用方式 `keyMode`**：`PLATFORM`（默认，走平台 key）/ `BYOK`（走用户自己加密存储的 DeepSeek key，每次模型调用扣固定服务费，默认 1 积分 = 500 token 当量，余额不足→**402**）。一轮面试可包含出题、判分等多次模型调用。
 > - **对话模型厂商 `chatProvider`（R3-2 新增）**：`DEEPSEEK`（默认）/ `QWEN`（通义千问，DashScope OpenAI 兼容模式）。
 > - 两维正交，共 4 种组合。**QWEN 恒走平台 `DASHSCOPE_API_KEY` 并按 PLATFORM 实扣 token**——即使 keyMode=BYOK：BYOK 自带 key 体系只支持 DeepSeek，选 QWEN 时不读用户 key、不扣每次服务费（API 费由平台额度承担）。
 > - PLATFORM 下 DeepSeek 对话、Qwen 对话、DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
-> - 所有额度单位均为 **token**；注册赠送 `app.quota.signup-bonus-tokens`（默认 500000）。
+> - 页面统一显示**积分**，固定 **1 积分 = 500 token 当量**（沿用原换算）；数据库和 API 的 `*Tokens` 字段仍保留 token 单位，契约不变。积分最多显示 3 位小数，1 token = 0.002 积分，不整点取整。新用户赠送 `app.quota.signup-bonus-tokens`（默认 50000，即 100 积分）；已有用户总额、已用额与历史流水不重置、不迁移。
 > - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
 
 ### GET /api/user/settings
@@ -189,7 +189,8 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 删除自带 key；若当前 key_mode=BYOK，**自动回退 PLATFORM**。resp: `{ "hasKey": false, "last4": null, "keyMode": "PLATFORM" }`
 
 ### GET /api/user/quota
-`{ "totalTokens": 500000, "usedTokens": 1320, "remainingTokens": 498680 }`
+`{ "totalTokens": 50000, "usedTokens": 1320, "remainingTokens": 48680 }`
+- 上例页面显示：总额 100 积分，已用 2.64 积分，剩余 97.36 积分。
 - PLATFORM 每次 DeepSeek/Qwen 对话与 embedding 调用后按 usage 实增；BYOK 每次 **DeepSeek** 对话 +`byok-charge-per-call`（embedding 与 Qwen 对话按真实 token）。
 
 ### GET /api/user/usage?limit=50
@@ -202,6 +203,7 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 
 ### POST /api/admin/quota（R2 新增，仅 ADMIN）
 body: `{ "username": "alice", "grantTokens": 200000 }`（grantTokens 必须 > 0）
+- 管理 API 仍接收 token 当量：给用户加 N 积分时传 `grantTokens = N × 500`，上例为 400 积分。
 - 非 ADMIN → **403** `{code:"FORBIDDEN"}`；用户不存在 → **404** `{code:"USER_NOT_FOUND"}`。
 - resp: 充值后该用户的 quota 视图（同 GET /api/user/quota）。
 
@@ -220,8 +222,9 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 
 ### 402 语义
 任何触发计费调用（DeepSeek 对话 / embedding）的业务接口，预检发现额度为 0 时：
-- **PLATFORM** → **402** `{code:"QUOTA_EXHAUSTED",message:"Token 额度已用完，请联系管理员充值"}`
-- **BYOK** → **402** `{code:"QUOTA_EXHAUSTED",message:"服务点数已用完：删除你的 Key 切回平台模式，或联系管理员充值"}`
+- **PLATFORM** → **402** `{code:"QUOTA_EXHAUSTED",message:"积分已用完。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947"}`
+- **BYOK** → **402** `{code:"QUOTA_EXHAUSTED",message:"积分不足以支付本次自带 Key 服务费。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947；若仍有少量积分，可切回平台模式按用量使用"}`（低于 1 积分即拦截，并不一定余额为零）
+- 当前无在线支付接口；前端的积分不足弹窗和设置页都展示内测补额说明与工作人员微信，可选中号码复制。HTTP/SSE 错误使用相同补额引导，回答/聊天草稿保留。
 - 402 穿透所有「LLM/检索瞬时失败降级」边界直达全局异常处理，前端收到后刷新额度并按模式引导；条件 UPDATE 保证不超发，PLATFORM 最后一次实扣最多把 used clamp 到 total。
 
 ## 8. 契约边界
@@ -231,3 +234,24 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）
 - 报告与明细分离：响应均为「表达精炼、抓核心」的版本（关键内容不省）；检索引用/判分过程细节/token 等内部明细只在 DB（interview_turn），不进响应
+
+## 9. 双陪考搭档（2026-10-19）
+
+用户确认的产品角色：**陪考小暖**负责心态与情绪陪伴；**通考小师**负责知识答疑与学习方向。新增小师能力不改变小暖已有接口。
+
+### POST /api/companion/chat / POST /api/companion/reset（既有实现补记）
+- chat body：`{ "message": "..." }`；resp：`{ "reply": "...", "safe": false }`，safe=true 表示触发已有安全支持回复。
+- reset 无 body，返回 `{ "ok": true }`，仅清空本人的小暖上下文。
+- 2026-10-19 小暖初步优化：FAST 非思考档不变，按用户具体处境回应、尊重只倾诉的意愿、需要时给一个小步骤；不强制一两句话，不用固定追问结束。上下文仍仅保留本人最近 8 次成功问答、重启清空。
+- 模型失败/空正文不写入成功历史；空正文沿用 **504 LLM_UNAVAILABLE**，前端保留输入供重试，不再以固定安慰伪装成功。`safe=true` 安全支持跳过模型/计费，不返回未经核实的硬编码热线。
+
+### POST /api/coach/chat（新增）
+- JWT 必需；body：`{ "message": "..." }`，非空、最多 6000 字符；返回 `{ "reply": "..." }`。
+- 小师通过现有 LlmPort/LlmService 路由与计费收口，FAST 非思考档；402/409/504 沿用通用错误语义，不吞掉费用或模型错误。
+- 仅参考用户本次发送的文本及本人短期对话，不自动读取简历、报告或小暖的聊天，不承诺自动提醒或永久记忆。
+- 小师上下文独立于小暖，按当前 JWT userId 隔离；最多保留最近 8 个成功问答，闲置 30 分钟后下次访问重新开始，服务重启清空。
+- 同账号已有小师请求处理中 → 409；模型失败/空正文不写入对话历史；空正文 → 504。
+
+### POST /api/coach/reset（新增）
+- JWT 必需，无 body；返回 `{ "ok": true }`，仅清空本人的小师上下文，不影响小暖。
+- 重置期间如存在旧请求，其结果不再进入下一次对话的上下文。

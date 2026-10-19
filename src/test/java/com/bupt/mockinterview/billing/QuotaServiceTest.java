@@ -32,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @SpringBootTest
 class QuotaServiceTest {
 
+    private static final long POINT = QuotaProperties.TOKENS_PER_POINT;
+
     @Autowired
     private QuotaService quotaService;
     @Autowired
@@ -64,28 +66,28 @@ class QuotaServiceTest {
 
     @Test
     void byokCharge_neverOverdrafts_andGrantIfAbsentIdempotent() {
-        User user = newUserWithQuota("quota-edge-user-r2", 2);
+        User user = newUserWithQuota("quota-edge-user-r2", 2 * POINT);
 
         assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
-        assertThat(quotaService.getByUser(user.getId()).remaining()).isEqualTo(1);
+        assertThat(quotaService.getByUser(user.getId()).remaining()).isEqualTo(POINT);
         assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
         assertThat(quotaService.getByUser(user.getId()).remaining()).isZero();
 
-        // 第三次：条件更新不命中 → false，used 仍为 2（不会负数/超发）
+        // 第三次：条件更新不命中 → false，used 仍为 2 积分（不会负数/超发）
         assertThat(quotaService.chargeForByokCall(user.getId())).isFalse();
         Quota reread = quotaRepo.findByUserId(user.getId()).orElseThrow();
-        assertThat(reread.getUsedTokens()).isEqualTo(2);
+        assertThat(reread.getUsedTokens()).isEqualTo(2 * POINT);
         assertThat(reread.remaining()).isZero();
 
         // 幂等补建：已有额度时不动 total
-        assertThat(quotaService.grantIfAbsent(user).getTotalTokens()).isEqualTo(2);
+        assertThat(quotaService.grantIfAbsent(user).getTotalTokens()).isEqualTo(2 * POINT);
     }
 
     @Test
     void grantForNewUser_givesConfiguredSignupBonusTokens() {
         User user = userRepo.save(new User("quota-bonus-user-r2", "hash"));
         Quota quota = quotaService.grantForNewUser(user);
-        assertThat(quota.getTotalTokens()).isEqualTo(500_000L);
+        assertThat(quota.getTotalTokens()).isEqualTo(100 * POINT);
         assertThat(quota.getUsedTokens()).isZero();
     }
 
@@ -129,7 +131,7 @@ class QuotaServiceTest {
         User user = newUserWithQuota("quota-zero-user", 0);
         assertThatThrownBy(() -> quotaService.ensureAvailable(user.getId(), KeyMode.PLATFORM))
                 .isInstanceOf(QuotaExhaustedException.class)
-                .hasMessageContaining("联系管理员充值");
+                .hasMessageContaining("内测阶段").hasMessageContaining("13481264947");
         assertThatThrownBy(() -> quotaService.ensureAvailable(user.getId(), KeyMode.BYOK))
                 .isInstanceOf(QuotaExhaustedException.class)
                 .hasMessageContaining("切回平台模式");
@@ -137,7 +139,7 @@ class QuotaServiceTest {
 
     @Test
     void byokChat_recordsRealUsageButChargesServiceFeeOnce() {
-        User user = newUserWithQuota("quota-byok-log-user", 100);
+        User user = newUserWithQuota("quota-byok-log-user", 100 * POINT);
         assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
 
         // 用户 key 上真实烧了 1234 token，平台只记流水、不再扣额度
@@ -145,11 +147,30 @@ class QuotaServiceTest {
                 1000, 234, 1234, false);
 
         Quota q = quotaRepo.findByUserId(user.getId()).orElseThrow();
-        assertThat(q.getUsedTokens()).isEqualTo(1);            // 只有服务费
+        assertThat(q.getUsedTokens()).isEqualTo(POINT);        // 只有 1 积分服务费
         var log = quotaService.recentUsage(user.getId(), 1).get(0);
         assertThat(log.getKeyMode()).isEqualTo(KeyMode.BYOK);
         assertThat(log.getTotalTokens()).isEqualTo(1234);      // 真实用量展示
-        assertThat(log.getChargedTokens()).isEqualTo(1);       // 实际扣减
+        assertThat(log.getChargedTokens()).isEqualTo(POINT);   // 实际扣减
+    }
+
+    @Test
+    void byokFractionalBalance_cannotPayOnePoint_butPlatformCanUseRemainder() {
+        User user = newUserWithQuota("quota-fractional-user", POINT - 1);
+        assertThat(quotaService.chargeForByokCall(user.getId())).isFalse();
+        assertThat(quotaService.getByUser(user.getId()).getUsedTokens()).isZero();
+        quotaService.ensureAvailable(user.getId(), KeyMode.PLATFORM);
+        quotaService.settlePlatformCall(user.getId(), UsageScene.CHAT, "deepseek-flash", 1, 0, 1, false);
+        assertThat(quotaService.getByUser(user.getId()).remaining()).isEqualTo(POINT - 2);
+    }
+
+    @Test
+    void existingBalance_isPreservedWhenSignupBonusChanges() {
+        User user = newUserWithQuota("quota-existing-bonus-user", 500_000L);
+        quotaService.settlePlatformCall(user.getId(), UsageScene.CHAT, "deepseek-flash", 30, 20, 50, false);
+        Quota unchanged = quotaService.grantIfAbsent(user);
+        assertThat(unchanged.getTotalTokens()).isEqualTo(500_000L);
+        assertThat(unchanged.getUsedTokens()).isEqualTo(50L);
     }
 
     @Test
@@ -208,20 +229,20 @@ class QuotaServiceTest {
 
     /**
      * R2-T0 批 4（C1）并发实证增强：50 线程 × 3 轮栅栏同发 = 150 次混合扣减，
-     * PLATFORM（每次实扣 7，含透支→clamp）与 BYOK（每次服务费 1，条件更新失败即 false）
-     * 各 75 次；总需求 75×7+75=600 远超额度 300。
-     * 不变量：无异常逃逸；任何已提交状态 used≤total/remaining≥0；最终恰好扣满 300；
-     * 流水数 = PLATFORM 调用数 75（clamp 照记真实用量）；BYOK 成功次数 + 平台实扣 = 300；
+     * PLATFORM（每次实扣 7 积分，含透支→clamp）与 BYOK（每次服务费 1 积分，条件更新失败即 false）
+     * 各 75 次；总需求 75×7+75=600 积分远超额度 300 积分。
+     * 不变量：无异常逃逸；任何已提交状态 used≤total/remaining≥0；最终恰好扣满 300 积分；
+     * 流水数 = PLATFORM 调用数 75（clamp 照记真实用量）；BYOK 服务费 + 平台实扣 = 300 积分；
      * 旁观的第二用户额度与流水零变化（无串号/交叉更新）。
      */
     @Test
     void concurrentMixed_50threads_3rounds_neverOverdrafts() throws InterruptedException {
-        User user = newUserWithQuota("quota-concurrent-mixed-r2t0", 300);
+        User user = newUserWithQuota("quota-concurrent-mixed-r2t0", 300 * POINT);
         User bystander = newUserWithQuota("quota-concurrent-bystander-r2t0", 500);
 
         int threads = 50;
         int rounds = 3;
-        long platformCost = 7L;
+        long platformCost = 7L * POINT;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CyclicBarrier barrier = new CyclicBarrier(threads);
         CountDownLatch done = new CountDownLatch(threads);
@@ -273,9 +294,9 @@ class QuotaServiceTest {
         assertThat(byokAttempts.get()).isEqualTo(75);
 
         Quota q = quotaRepo.findByUserId(user.getId()).orElseThrow();
-        assertThat(q.getUsedTokens()).isLessThanOrEqualTo(300L);
+        assertThat(q.getUsedTokens()).isLessThanOrEqualTo(300 * POINT);
         assertThat(q.remaining()).isGreaterThanOrEqualTo(0L);
-        assertThat(q.getUsedTokens()).isEqualTo(300L);   // 透支窗口由 clamp 兜底，恰好扣满
+        assertThat(q.getUsedTokens()).isEqualTo(300 * POINT);   // 透支窗口由 clamp 兜底，恰好扣满
         assertThat(q.remaining()).isZero();
 
         // 恒等式：BYOK 成功扣的服务费 + 平台实扣（含 clamp）= 总额度
@@ -283,8 +304,8 @@ class QuotaServiceTest {
                 .mapToLong(com.bupt.mockinterview.domain.LlmUsageLog::getTotalTokens)
                 .sum();
         assertThat(recordedRealUsage).isEqualTo(75L * platformCost);   // 75 次平台调用流水齐
-        // 透支不追讨：平台流水真实用量 525 ≥ 平台实际扣减（=300−BYOK服务费），差额被 clamp 吸收
-        assertThat(recordedRealUsage).isGreaterThanOrEqualTo(q.getUsedTokens() - byokSuccess.get());
+        // 透支不追讨：平台流水折算 525 积分 ≥ 平台实际扣减（=300 积分−BYOK服务费），差额被 clamp 吸收
+        assertThat(recordedRealUsage).isGreaterThanOrEqualTo(q.getUsedTokens() - byokSuccess.get() * POINT);
         assertThat(byokSuccess.get()).isLessThanOrEqualTo(75);
 
         // 旁观者零变化
