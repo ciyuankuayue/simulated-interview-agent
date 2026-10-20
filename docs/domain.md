@@ -300,7 +300,7 @@
 - strict（prod profile，`app.tenant.strict=true`）：上下文缺失时 resolver **直接抛异常 fail-closed**，不依赖 Hibernate 对 null 的默认行为。
 - 非 strict（dev/test）：上下文缺失回退固定兜底租户 **0L——是受过滤的普通租户**（查询仍带 `tenant_id=0`），不是 root。
 
-**入口传播**：JWT 新增 `tid` claim（=userId），`JwtAuthFilter` 同时填 UserContext/TenantContext；无 tid 的旧 token 取 `sub` 派生（签名有效即可信）。白名单内的 register/login（无身份）由 controller 入口置系统租户 0L、finally clear；注册编排收口 `web/RegistrationService`（规约见下）。REQUIRES_NEW 同线程传播 ThreadLocal；当前无 @Async；SSE `/events` 只订阅内存事件不查库（SseBroker 不得持有任何 Repository/EntityManager/JdbcTemplate 字段）。
+**入口传播**：JWT 新增 `tid` claim（=userId），`JwtAuthFilter` 同时填 UserContext/TenantContext；无 tid 的旧 token 取 `sub` 派生（签名有效即可信）。2026-10-20 修复：页面/静态资源、健康检查及 register/login 等既有公开路径在过滤器内先显式置系统分区 0L，再进入 MVC/OSIV，finally 清理；只在 controller 内 set 对 OSIV 创建 Session 已太晚。0L 不是 root，不代表已认证；受保护 API 仍必须有效 JWT，缺上下文持久化仍 fail-closed。register/login 保留 controller 内的系统租户约束与 finally 清理；注册编排收口 `web/RegistrationService`（规约见下）。REQUIRES_NEW 同线程传播 ThreadLocal；当前无 @Async；SSE `/events` 只订阅内存事件不查库（SseBroker 不得持有任何 Repository/EntityManager/JdbcTemplate 字段）。
 
 **白名单无身份路径事务规约（批 2 锁定，register/未来任何匿名写路径照此办理）**
 1. controller 方法首行 `TenantContext.set(FALLBACK_TENANT_ID /*0L*/)`，finally `clear()`；方法本身**不加** `@Transactional`。

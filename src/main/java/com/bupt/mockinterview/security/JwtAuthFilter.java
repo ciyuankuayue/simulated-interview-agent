@@ -43,15 +43,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String path = request.getRequestURI();
 
-        // 非 /api/ 路径（页面、静态资源）放行
-        if (!path.startsWith("/api/")) {
-            chain.doFilter(request, response);
-            return;
-        }
-
-        // auth 白名单 + 健康检查放行
-        if (isWhitelisted(request, path)) {
-            chain.doFilter(request, response);
+        // 公开请求也会经过 MVC 的 OpenEntityManagerInViewInterceptor。
+        // 必须在创建 Session 前提供显式系统分区；Controller 内 set 已经太晚。
+        // 0L 是受过滤的普通分区，不是 root；受保护 API 仍必须解析有效 JWT。
+        if (!path.startsWith("/api/") || isWhitelisted(request, path)) {
+            UserContext.clear();
+            TenantContext.set(CurrentTenantResolver.FALLBACK_TENANT_ID);
+            try {
+                chain.doFilter(request, response);
+            } finally {
+                UserContext.clear();
+                TenantContext.clear();
+            }
             return;
         }
 
