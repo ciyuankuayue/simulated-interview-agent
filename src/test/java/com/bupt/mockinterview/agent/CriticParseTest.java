@@ -192,12 +192,71 @@ class CriticParseTest {
     }
 
     @Test
-    void brief里没有的turnSeq保留解析值() {
+    void brief里没有的turnSeq不能进入报告() {
         CriticService.Payload modelSaid = new CriticService.Payload(50,
                 java.util.List.of(turn(9, "behavior")),
                 java.util.List.of(), java.util.List.of(), "n", java.util.List.of(), null);
         CriticService.Payload fixed = service.applyAuthoritativeTracks(modelSaid,
                 java.util.List.of(brief(1, "tech")));
-        assertEquals("behavior", fixed.perTurnReview().get(0).get("track"), "对齐不上的轮次保留模型值");
+        assertTrue(fixed.perTurnReview().isEmpty(), "模型捏造的轮次不能进入报告");
+    }
+
+    @Test
+    void 重复轮次只保留一次且原题评分赛道按实际轮次恢复() {
+        java.util.Map<String, Object> first = turn(1, "behavior");
+        first.put("question", "模型改写的题目");
+        first.put("score", 8);
+        first.put("explanation", "第一份复盘");
+        java.util.Map<String, Object> duplicate = turn(1, "tech");
+        duplicate.put("explanation", "重复复盘");
+        CriticService.Payload modelSaid = new CriticService.Payload(50,
+                java.util.List.of(turn(2, "tech"), first, duplicate, turn(99, "behavior")),
+                java.util.List.of(), java.util.List.of(), "n", java.util.List.of(), null);
+
+        CriticService.Payload fixed = service.applyAuthoritativeTracks(modelSaid,
+                java.util.List.of(new CriticService.TurnBrief(1, "真实技术题", "a", 3, "tech"),
+                        new CriticService.TurnBrief(2, "真实行为题", "a", 6, "behavior")));
+
+        assertEquals(2, fixed.perTurnReview().size());
+        assertEquals(1, fixed.perTurnReview().get(0).get("turnSeq"), "报告顺序遵循实际轮次");
+        assertEquals("真实技术题", fixed.perTurnReview().get(0).get("question"));
+        assertEquals(3, fixed.perTurnReview().get(0).get("score"));
+        assertEquals("tech", fixed.perTurnReview().get(0).get("track"));
+        assertEquals("第一份复盘", fixed.perTurnReview().get(0).get("explanation"));
+        assertEquals("behavior", fixed.perTurnReview().get(1).get("track"));
+        assertEquals(6, fixed.perTurnReview().get(1).get("score"));
+    }
+
+    @Test
+    void 未评分及未作答轮次不能被模型补成正常低分() {
+        CriticService.Payload modelSaid = service.parse("""
+                {"matchScore":30,"perTurnReview":[
+                  {"turnSeq":1,"score":0,"question":"模型补写"},
+                  {"turnSeq":2,"score":8,"question":"模型补写"}],
+                 "collapsedPoints":[],"expressionIssues":[],"overallNotes":"n","reminders":[]}
+                """);
+        CriticService.Payload fixed = service.applyAuthoritativeTracks(modelSaid,
+                java.util.List.of(new CriticService.TurnBrief(1, "判分失败题", "已回答", null, "behavior"),
+                        new CriticService.TurnBrief(2, "未作答题", null, null, "tech")));
+
+        assertNull(fixed.perTurnReview().get(0).get("score"));
+        assertNull(fixed.perTurnReview().get(1).get("score"));
+        assertEquals("behavior", fixed.perTurnReview().get(0).get("track"));
+        assertEquals("未作答题", fixed.perTurnReview().get(1).get("question"));
+    }
+
+    @Test
+    void 模型空评分或缺评分解析为null而非零且非法轮次不冒充真实轮次() {
+        CriticService.Payload parsed = service.parse("""
+                {"perTurnReview":[{"turnSeq":1,"score":null},
+                  {"turnSeq":2},{"turnSeq":"1","score":0},{"turnSeq":1.5,"score":0}]}
+                """);
+        assertNull(parsed.perTurnReview().get(0).get("score"));
+        assertNull(parsed.perTurnReview().get(1).get("score"));
+        assertNull(parsed.perTurnReview().get(2).get("turnSeq"));
+        assertNull(parsed.perTurnReview().get(3).get("turnSeq"));
+        CriticService.Payload fixed = service.applyAuthoritativeTracks(parsed,
+                java.util.List.of(brief(1, "tech"), brief(2, "tech")));
+        assertEquals(2, fixed.perTurnReview().size());
     }
 }

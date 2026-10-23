@@ -1,0 +1,28 @@
+{
+  "startedUtc": "2026-10-20T15:54:32.515864300Z",
+  "java": "21.0.12.1",
+  "os": "Windows 11 amd64",
+  "processors": 16,
+  "fixtureSha256": "0ed81b54c5d6bbb2194a329147e967808b6a609b0b434290ae922b6c9ce6e5fc",
+  "model": "deepseek-flash",
+  "embeddingModel": "qwen3.7-text-embedding-flash",
+  "maxTokens": 8192,
+  "design": "6 synthetic cases x 2 repeats x 2 modes; paired interleaved order; 1 warmup per mode",
+  "endpoint": "real loopback POST /api/interview/start; H2; RAM Lucene; test identity; no browser/WAN/MySQL",
+  "timing": "nanoTime; providerMs includes network/retries/response parse, not server-only inference; API waits for complete first question",
+  "qualityRubric": "predeclared 0-2 each: relevance, jobFit, depth, evidenceDiscipline; acceptable=sum>=6 and each>=1; evaluator must disclose identity",
+  "limits": "pilot, no historical before/after or proven quality non-inferiority; no streaming TTFT; no price estimate without tariff; setup excluded",
+  "gitHead": "90445b5b682e23ffb6f4ce33281c8eb4fdef521b",
+  "sourceHashes": {
+    "src/test/java/com/bupt/mockinterview/measurement/InterviewMeasurementTest.java": "e016dc3bf6d9b31809d32cbfb1bec9305a7e929087237bebe1cebf6ce59f5458",
+    "src/main/java/com/bupt/mockinterview/agent/InterviewOrchestrator.java": "ede816065ced7b466dbd054667c396b01049a7a7ba18859de130d7bd8c93dcab",
+    "src/main/java/com/bupt/mockinterview/llm/LlmService.java": "bc8db2a6d4d710844b098085acaa708bbe29893672be8a6c13b17d3813315af8",
+    "src/main/java/com/bupt/mockinterview/llm/chat/DeepSeekChatProvider.java": "45bb4844c3027f2b307cca104955f7baf30134296535f63bc266b67403ae654a"
+  },
+  "timingCaveats": [
+    "Test-only Mockito spies add observer overhead, especially relevant for search-only milliseconds.",
+    "Fresh local HTTP client per request; no browser render or WAN time.",
+    "Modes are requested thinking flags on the same configured model; reasoning text is not retained.",
+    "Only first question is measured, not answer-scoring-followup or full report."
+  ]
+}

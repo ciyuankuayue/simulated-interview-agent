@@ -58,13 +58,21 @@ public class DeepSeekChatProvider implements ChatProvider {
         }
         Map<String, Object> body = buildRequestBody(req);
         JsonNode root = callWithRetry(body, apiKey);
+        return toResponse(root);
+    }
+
+    /** 响应映射：完整保留工具请求，供上层有限 ReAct 循环使用。 */
+    ChatResponse toResponse(JsonNode root) {
+        if (root == null) {
+            throw new LlmException("DeepSeek 响应为空");
+        }
         JsonNode msg = root.path("choices").path(0).path("message");
-        if (msg.isMissingNode()) {
+        if (!msg.isObject()) {
             throw new LlmException("DeepSeek 响应缺少 choices[0].message: " + root);
         }
         String content = msg.path("content").asText("");
         String reasoning = msg.path("reasoning_content").asText(null);
-        return new ChatResponse(content, reasoning, root.path("usage"));
+        return new ChatResponse(content, reasoning, root.path("usage"), ToolCallParser.parse(msg, mapper));
     }
 
     /** 组装 DeepSeek 请求体（包可见便于单测锁定形状）。 */

@@ -92,13 +92,16 @@ public class QwenChatProvider implements ChatProvider {
 
     /** 响应映射（包可见便于单测）：OpenAI 兼容形状，思维链取 reasoning_content。 */
     ChatResponse toResponse(JsonNode root) {
+        if (root == null) {
+            throw new LlmException("通义千问响应为空");
+        }
         JsonNode msg = root.path("choices").path(0).path("message");
-        if (msg.isMissingNode()) {
+        if (!msg.isObject()) {
             throw new LlmException("通义千问响应缺少 choices[0].message: " + root);
         }
         String content = msg.path("content").asText("");
         String reasoning = msg.path("reasoning_content").asText(null);
-        return new ChatResponse(content, reasoning, root.path("usage"));
+        return new ChatResponse(content, reasoning, root.path("usage"), ToolCallParser.parse(msg, mapper));
     }
 
     // ---------- HTTP + 重试（与 DeepSeekChatProvider 同骨架） ----------

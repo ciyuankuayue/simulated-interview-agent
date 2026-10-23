@@ -3,6 +3,11 @@ package com.bupt.mockinterview.domain.repository;
 import com.bupt.mockinterview.domain.InterviewSession;
 import com.bupt.mockinterview.domain.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
+import org.springframework.data.repository.query.Param;
+import jakarta.persistence.LockModeType;
 
 import java.util.List;
 import java.util.Optional;
@@ -17,4 +22,10 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     List<InterviewSession> findByUserOrderByIdDesc(User user);
     List<InterviewSession> findByUser(User user);
     Optional<InterviewSession> findByIdAndUserId(Long id, Long userId);
+
+    /** Serialize answer/end across application instances; always bind the explicit owner predicate. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@jakarta.persistence.QueryHint(name = "jakarta.persistence.lock.timeout", value = "0"))
+    @Query("select s from InterviewSession s where s.id = :id and s.user.id = :userId")
+    Optional<InterviewSession> findForUpdateByIdAndUserId(@Param("id") Long id, @Param("userId") Long userId);
 }

@@ -4,7 +4,7 @@
 
 ## Context（背景与目标）
 
-本地运行的 AI 模拟面试官：贴 JD → 自动解析考点 → Agent 角色轮番追问你（技术深挖 / 项目质疑 / R7 起行为面试官走 STAR 软素质题）→ Critic 出报告（含行为维度）+ 错题本（间隔重复）。你的资料（简历多版本 / 笔记 / 项目文档 / 真实面试记录）全部入库，越用越懂你。
+本地运行的 AI 模拟面试官：贴 JD → Agent 结合本场资料与回答动态选考点、角色和追问（技术 / 项目 / STAR 行为题），按需调用只读工具 → Critic 出报告（含行为维度）+ 错题本（间隔重复）。你的资料（简历多版本 / 笔记 / 项目文档 / 真实面试记录）全部入库，越用越懂你。
 
 **文件原则**：给你看的东西（报告、状态）精简；系统内部明细（检索引用、判分过程、每轮耗时 token）详细存 DB，不摊成长文件。
 
@@ -12,6 +12,7 @@
 - 技术栈与项目形态：（规划文档，仓库外，不随本仓库发布；以本仓库代码与 pom.xml 为准）
 - 领域模型：`./docs/domain.md`
 - API 契约：`./docs/api.md`
+- Agent 决策与兼容边界：`./docs/agent-decision-runtime.md`（2026-10-21 用户确认重构方向；新场 Agent、旧场兼容）
 - 会话交接：`./docs/handoff.md`
 
 ## Agent（协作者角色）
@@ -47,7 +48,7 @@
 - LLM：
   - 生成/追问：DeepSeek `deepseek-flash`（非思考型用于追问，思考型用于判分）
   - **多模型（R3 起）**：对话厂商用户级可选 DeepSeek / 通义千问（`app_user.chat_provider`，前端设置即时生效）。路由收口 `llm/chat/ModelRouter`（user=null 走 `app.llm.default-provider`），HTTP 差异收口各 ChatProvider。**Qwen（DashScope 兼容模式）差异**：思考开关是顶层布尔 `enable_thinking`（DeepSeek 是 `thinking:{type}` 对象）、思维链回 `reasoning_content`；模型名配在 dashscope 块 `chat-model-fast`（默认 qwen3.8-flash）/`chat-model-reasoner`（默认 qwen3.7-plus，**模型代际迭代快，以百炼控制台实测为准**）；思考静默期长，QwenChatProvider 显式 connect/read/call = 10s/60s/90s。**Qwen key 恒平台 `DASHSCOPE_API_KEY` 且按 PLATFORM 实扣 token——任何用户（含 BYOK）选 QWEN 都不读用户 key、不收每次服务费**。流水 model 写 `provider:model`（`deepseek:*`/`qwen:*`，历史裸名并存不回填，详见 docs/domain.md §8）
-  - `max_tokens`：追问 / 判分 / Critic **不卡 800**；判分与 Critic 输出长，放宽到 ≥ 4096（或按需更大、彻底不传该参数）。仍**必须校验输出非空**（思考型 reasoning 与正文共用额度，超了正文可能变空串）
+  - `max_tokens`：追问 / 判分 / Critic **不卡 800**；判分与 Critic 输出长，放宽到 ≥ 4096（或按需更大、彻底不传该参数）。终结回复**必须校验输出非空**；原生工具调用允许正文为空，但 `tool_calls` 的 id/name/arguments 必须合法（思考型 reasoning 与正文共用额度，超了正文可能变空串）
   - Embedding：阿里通义 `qwen3.7-text-embedding-flash`（OpenAI 兼容，baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1），key 只从环境变量 `DASHSCOPE_API_KEY` 读（embedding 永远平台 key，与用户模式无关）
   - **密钥体系（R1-3 起，替代旧页面保险箱）**：平台 key（DeepSeek/DashScope）**只从环境变量**读，运维配置，不再有 vault.json/页面保存。运行时取对话 key 一律走 `security/KeyResolver.resolveForChat(user, providerId)`（R3 起两参）：deepseek+PLATFORM→env；deepseek+BYOK→解密该用户 `user_api_key`（AES-GCM，KEK 走 env `APP_DATA_KEY`，未配则启动生成临时密钥并 WARN）；**qwen（任何用户）→平台 DASHSCOPE_API_KEY、模式 PLATFORM**；user 为 null（测试 profile）→ env。**禁止在业务代码直接读 `LlmProperties.apiKey` 绕过路由**。embedding key 直接 `DashscopeProperties::getApiKey`
   - **积分 / token 计费（R2 起，2026-10-19 调整）**：页面统一积分，固定 1 积分 = 500 token 当量，最多显示 3 位小数；DB 与 API 保留 token 单位，存量余额不重置。注册赠 `app.quota.signup-bonus-tokens`（默认 50000 = 100 积分）。**PLATFORM**：对话（DeepSeek/Qwen，R3 起）+ DashScope embedding 都先预检余额（=0 抛 QuotaExhaustedException→402，不发请求），调用后按厂商 usage.total_tokens 实扣（缺失按字符 1:1 估算兜底）；最后一次可透支、clamp 到 total。**BYOK**：API 费用户自付，**DeepSeek** 每次模型调用前扣固定服务费 `app.quota.byok-charge-per-call`（默认 500 token 当量 = 1 积分；一轮面试可能多次调用）；**BYOK 用户选 QWEN 时按 PLATFORM 走平台 key 实扣 token、不收服务费**；embedding 恒走平台 key 按 token 扣。扣减+`llm_usage_log` 流水走 REQUIRES_NEW 独立事务（业务回滚不退款）；条件 UPDATE 防超发，不引 @Version/Redis。唯一计费收口：LLM 对话在 `LlmService.chat`，embedding 在 `RagService`；402/409 必须穿透所有降级 catch（parseJd/index/编排器/Critic）。ADMIN 可经 `POST /api/admin/quota` 充值（非 ADMIN→403）
@@ -55,7 +56,7 @@
   - **静态资源 `Cache-Control: no-cache`**（application.yml `spring.web.resources`，T12）：前端更新后不靠用户手动 Ctrl+F5；配 Last-Modified 协商，未变走 304
 - 包结构（分层；**领域逻辑不准直接调 LLM**，统一走 llm 层）：
   - `web/`       controller，SSE 流式推送
-  - `agent/`     角色编排（技术深挖官 / 项目质疑官 / 行为面试官（R7：STAR 行为题，ScoreTrack.BEHAVIOR 四维判分）/ Critic）。**逐轮赛道 track 以出题角色为准（落 score_json），Critic 报告的 per-turn track 用 TurnBrief 权威值覆盖模型自报**
+  - `agent/`     `InterviewAgentRuntime` 手写原生tools循环：模型选择ASK_MAIN/PROBE/CLARIFY/END和启用角色；代码守住角色/两层/题量/重复题及调用/工具/token/时间预算，观测先向约26000字符压缩、messages上限48000字符，不删DB原文。`app.interview.agent-enabled`默认true只控制新场；agent_state=NULL旧场legacy。V5幂等检测列后增session.agent_state/turn.agent_metadata LONGTEXT，保存JD/所选简历快照、计划、实际角色与有限证据；项目等取证时留片段，非全资料冻结。**track以实际出题角色为准；Critic过滤伪造/重复轮次并恢复真实问题/评分（含null）/track。** 工具绑本人本场，get_interview_turns可选本场turnSeq，其余不接受owner参数。answer对402/409业务异常noRollbackFor，保留已保存回答评分；同场guard与hint=0行锁不等于完整重试幂等，多实例/MySQL NOWAIT需实测。详见决策说明。
   - `rag/`       检索（解析 / 分块 / 向量化 / 检索排序）。**VectorStore 抽象 + LuceneVectorStore（FSDirectory 落盘，唯一生产实现）+ InMemoryVectorStore（离线/实验）；向量检索按 userId pre-filter，删除必须 BooleanQuery AND（严禁 deleteDocuments(Term...) 的 OR 语义）**
   - `llm/`       LlmService（路由/计费收口 + parseScore/verifyApiKey；发 `tools` 字段做 function calling）+ `llm/chat/`（R3：ChatProvider 接口、ModelRole/ChatRequest/ChatResponse、ModelRouter、DeepSeekChatProvider/QwenChatProvider——HTTP 调用都在 provider 内）。**LLM HTTP 调用统一用 OkHttp（单例 OkHttpClient + 单 ConnectionPool，provider 以 newBuilder 派生只覆盖超时），不混用 JDK HttpClient**（决策于 L3 对比实验阶段确立）
   - `memory/`    跨轮记忆 + 错题本 + 间隔重复调度

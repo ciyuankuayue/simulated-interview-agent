@@ -6,6 +6,9 @@ spring:
     enabled: false
 
 app:
+  interview:
+    # Historical suites exercise legacy sessions; dedicated Agent suites explicitly enable the new runtime.
+    agent-enabled: false
   auth:
     jwt-enabled: false
   tenant:

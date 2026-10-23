@@ -2,6 +2,7 @@ package com.bupt.mockinterview.web;
 
 import com.bupt.mockinterview.agent.AgentEvent;
 import com.bupt.mockinterview.agent.InterviewOrchestrator;
+import com.bupt.mockinterview.agent.InterviewRequestGuard;
 import com.bupt.mockinterview.domain.CriticReport;
 import com.bupt.mockinterview.domain.InterviewSession;
 import com.bupt.mockinterview.domain.InterviewTurn;
@@ -57,11 +58,12 @@ public class InterviewController {
     private final ResumeVersionRepository resumeRepo;
     private final ObjectMapper mapper;
     private final CurrentUserService currentUser;
+    private final InterviewRequestGuard requestGuard;
 
     public InterviewController(InterviewOrchestrator orchestrator, SseBroker broker,
                                InterviewSessionRepository sessionRepo, InterviewTurnRepository turnRepo,
                                CriticReportRepository reportRepo, ResumeVersionRepository resumeRepo,
-                               ObjectMapper mapper, CurrentUserService currentUser) {
+                               ObjectMapper mapper, CurrentUserService currentUser, InterviewRequestGuard requestGuard) {
         this.orchestrator = orchestrator;
         this.broker = broker;
         this.sessionRepo = sessionRepo;
@@ -70,6 +72,7 @@ public class InterviewController {
         this.resumeRepo = resumeRepo;
         this.mapper = mapper;
         this.currentUser = currentUser;
+        this.requestGuard = requestGuard;
     }
 
     // ---------- start ----------
@@ -194,9 +197,11 @@ public class InterviewController {
         if (!sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId()).isPresent()) {
             throw new IllegalArgumentException("会话不存在: " + sessionId);
         }
-        List<AgentEvent> events = orchestrator.answer(sessionId, text);
-        broker.publish(sessionId, events);
-        return Map.of("accepted", true);
+        return requestGuard.execute(currentUser.currentUserId(), sessionId, () -> {
+            List<AgentEvent> events = orchestrator.answer(sessionId, text);
+            broker.publish(sessionId, events);
+            return Map.of("accepted", true);
+        });
     }
 
     // ---------- SSE ----------
@@ -214,6 +219,10 @@ public class InterviewController {
     /** 主动结束：触发 Critic 出报告。已结束时幂等返回既有报告。 */
     @PostMapping("/{sessionId}/end")
     public Map<String, Object> end(@PathVariable Long sessionId) {
+        return requestGuard.execute(currentUser.currentUserId(), sessionId, () -> endGuarded(sessionId));
+    }
+
+    private Map<String, Object> endGuarded(Long sessionId) {
         User user = currentUser.currentUser();
         InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));

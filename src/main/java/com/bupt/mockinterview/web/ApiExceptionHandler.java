@@ -50,6 +50,12 @@ public class ApiExceptionHandler {
         return body(HttpStatus.CONFLICT, "CONFLICT", e.getMessage());
     }
 
+    /** An overlapping instance must fail before model calls instead of queueing a stale answer. */
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException.class)
+    public ResponseEntity<Map<String, Object>> concurrentWrite(org.springframework.dao.PessimisticLockingFailureException e) {
+        return body(HttpStatus.CONFLICT, "CONFLICT", "本场面试正在处理，请等待当前操作完成");
+    }
+
     @ExceptionHandler({
             MethodArgumentNotValidException.class,
             MissingServletRequestParameterException.class,

@@ -27,6 +27,11 @@ public interface LlmPort {
      */
     ScoreResult score(ScoreTrack track, String question, String answer);
 
+    /** 带本场资料、前序问答等参考证据的评分；旧测试桩保持兼容。 */
+    default ScoreResult score(ScoreTrack track, String question, String answer, String context) {
+        return score(track, question, answer);
+    }
+
     /**
      * 通用 chat，供 Critic 报告等需要自定义 prompt 的场景。
      *

@@ -1,7 +1,7 @@
 # 迭代纪律手册
 
 > 本手册对应 vibe-coding 实战手册第 **18.2** 节：把原子 Task 交给 Cursor / Trae 的纪律。  
-> 适用于将 `docs/tasks.md` 中的原子任务交给外部 AI 编码工具（Cursor、Trae、Windsurf 等）执行的场景。
+> 适用于将 [当前迭代计划](product-experience-iteration-plan.md) 中的原子任务交给 AI 编码工具执行；tasks.md 已改为旧任务入口。
 
 ## 流程总览
 
@@ -14,7 +14,7 @@
 ## 给 AI 编码工具的 prompt 模板
 
 ```text
-任务：<从 tasks.md 复制这一个 task 的 目标+验收标准+依赖>
+任务：<从当前迭代计划复制这一个 task 的 目标+验收标准+依赖>
 范围限制：只做本 task，不夹带任何额外重构 / 优化 / 新功能
 契约前置：先读本仓库 docs/api.md 和 docs/domain.md；动接口先改这两份，再改实现
 上下文：本仓库是 Spring Boot 3.3.5 + Java 17(编译) / JDK 21(构建)，用 .\mvnw.cmd 构建，NEVER 用 Git Bash 跑 mvn
@@ -63,7 +63,7 @@ git diff master..feature/xxx --stat
 - 确认只改了本 task 该改的文件。
 - 警惕「顺手重构」：如果 diff 里出现无关文件的大规模改动，立刻叫停。
 
-### 2. 对照 `docs/tasks.md` 验收标准逐条过
+### 2. 对照当前迭代计划的验收标准逐条过
 
 - 打开该 task 的「验收」。
 - 每条验收必须有测试或真实运行证据覆盖，不能只有代码看起来对。
@@ -113,7 +113,7 @@ git diff master..feature/xxx --stat
 ### 8. 合并与回写
 
 - 只有你确认全部通过，才允许把 feature 分支 merge 到 `main`。
-- merge 后更新 `docs/handoff.md` 和 `docs/tasks.md` 状态。
+- merge 后更新 `docs/handoff.md` 和 `docs/product-experience-iteration-plan.md` 状态。
 - 再回答 Trea「可以推进下一个 task 了」。
 
-> **R1-1 本次实测样例**：`feature/R1-1` 分支，3 个 commits，全量 `mvnw test` **59 tests, 0 failures, 0 errors, 0 skipped**，`BUILD SUCCESS`。但 JWT 密钥、用户隔离边界、前端 SSE 的 `?jwt=` 参数仍需你在真机 / 浏览器下复核。
+> 历史批次验证见 [迭代摘要](archive/iteration-history.md)。本轮代码改动必须报告当次测试范围/日期/skip，不沿用旧“全绿”数字。

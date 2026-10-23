@@ -76,6 +76,8 @@ docs/deployment-pitfalls.md
 docs/r2-iteration-plan.md
 docs/deployment-runbook.md
 docs/sidechat-prompt.md
+# 文档压缩前完整备份（含本地过程记录，仅本机恢复，不发布）
+docs/archive/local/
 
 # ===== 根目录个人面经/网申/协作规划文档（本地资料，不入库；AGENTS.md/README.md 已跟踪不受影响） =====
 AI协作项目-模拟面试Agent.md

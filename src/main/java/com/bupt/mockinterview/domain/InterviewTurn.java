@@ -42,6 +42,10 @@ public class InterviewTurn {
     @Column(columnDefinition = "TEXT") // JSON：{score, breakdown, missed_points, followup}（内部，决定是否追问；不向用户全量展示）
     private String scoreJson;
 
+    /** Actual role/action/goal, bounded evidence and tool observations; no model reasoning chain. */
+    @Column(columnDefinition = "LONGTEXT")
+    private String agentMetadata;
+
     private Long elapsedMs;
 
     private Integer tokens;

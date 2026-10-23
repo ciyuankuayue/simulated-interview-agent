@@ -40,11 +40,12 @@ import java.util.Map;
  * end    → report → done
  * </pre>
  *
+ * 新会话由 InterviewAgentRuntime 建立计划、按需取证并选择下一行动，实际角色随问题落库。
  * 三条硬约束：
- * 1. **追问封顶 2 层**（domain.md §4）：8=S 不追问｜6-7=A 1 层｜≤5=B/C/D 2 层。
+ * 1. **追问封顶 2 层**（domain.md §4）；新场不按分数强制追问，旧 NULL Agent 状态保留历史规则。
  * 2. **实时只追问或一句纠正**，讲解/示范归 Critic（domain.md §4.1）。
- * 3. **LLM 失败降级**：判分失败→跳过追问直接下一题；追问生成失败→直接下一题；
- *    Critic 失败→占位报告。任何单点失败都不让整场面试中断。
+ * 3. 新场评分失败保留未评分状态，决策失败保留已存回答供恢复；402/409保持业务错误。
+ *    旧场仍走历史降级。Critic 失败占位报告的恢复策略留待独立专项。
  */
 @Service
 public class InterviewOrchestrator {
@@ -63,12 +64,13 @@ public class InterviewOrchestrator {
     private final InterviewTurnRepository turnRepo;
     private final CriticReportRepository reportRepo;
     private final CurrentUserService currentUser;
+    private final InterviewAgentRuntime agentRuntime;
 
     public InterviewOrchestrator(LlmPort llm, RagService rag, CriticService critic, WeakPointMemoryService memory,
                                  ObjectMapper mapper, JdProfileRepository jdRepo,
                                  InterviewSessionRepository sessionRepo,
                                  InterviewTurnRepository turnRepo, CriticReportRepository reportRepo,
-                                 CurrentUserService currentUser) {
+                                 CurrentUserService currentUser, InterviewAgentRuntime agentRuntime) {
         this.llm = llm;
         this.rag = rag;
         this.critic = critic;
@@ -79,6 +81,7 @@ public class InterviewOrchestrator {
         this.turnRepo = turnRepo;
         this.reportRepo = reportRepo;
         this.currentUser = currentUser;
+        this.agentRuntime = agentRuntime;
     }
 
     public record StartResult(Long sessionId, String firstQuestion, List<AgentEvent> events) {}
@@ -101,7 +104,7 @@ public class InterviewOrchestrator {
      *
      * @param maxQuestions 主问题上限（不含追问），null 或越界时取默认 {@link #MAX_MAIN_QUESTIONS}，
      *                     合法区间 [1, {@link #MAX_MAIN_QUESTIONS}]
-     * @param resumeId     用户下拉选择的简历版本 id（仅留痕，null=未指定；不做语料隔离）
+     * @param resumeId     所选简历 id，Agent 新场固定原文快照；旧兼容路径仅留痕
      */
     @Transactional
     public StartResult start(Long jdId, List<String> roleNames, Integer maxQuestions, Long resumeId) {
@@ -118,6 +121,16 @@ public class InterviewOrchestrator {
         session.setMaxQuestions(normalizeMaxQuestions(maxQuestions));
         session.setResumeId(resumeId);
         session = sessionRepo.save(session);
+
+        if (agentRuntime.enabled()) {
+            agentRuntime.initialize(session);
+            InterviewAgentRuntime.Decision decision = agentRuntime.decide(session, List.of(), null);
+            InterviewTurn first = newAgentTurn(session, 1, 0, decision);
+            return new StartResult(session.getId(), first.getQuestion(), List.of(
+                    AgentEvent.of(AgentEvent.QUESTION, "turnSeq", first.getSeq(), "question", first.getQuestion(),
+                            "role", decision.role().displayName(), "layer", 0),
+                    AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", first.getSeq())));
+        }
 
         List<String> refs = new ArrayList<>();
         String context = retrieveContext(jd.getRawText(), refs);
@@ -145,9 +158,9 @@ public class InterviewOrchestrator {
     // ---------- answer ----------
 
     /** 提交回答：判分 → 决定追问还是下一题。 */
-    @Transactional
+    @Transactional(noRollbackFor = {QuotaExhaustedException.class, IllegalStateException.class})
     public List<AgentEvent> answer(Long sessionId, String answer) {
-        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
+        InterviewSession session = sessionRepo.findForUpdateByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
         if (session.getStatus() != SessionStatus.QUESTIONING) {
             throw new IllegalStateException("会话不在答题中，当前状态=" + session.getStatus());
@@ -157,6 +170,9 @@ public class InterviewOrchestrator {
             throw new IllegalStateException("会话还没有题目");
         }
         InterviewTurn current = turns.get(turns.size() - 1);
+        if (agentRuntime.active(session)) {
+            return answerWithAgent(session, turns, current, answer);
+        }
         if (current.getAnswer() != null && !current.getAnswer().isBlank()) {
             throw new IllegalStateException("本轮已作答，请等待下一题");
         }
@@ -233,10 +249,84 @@ public class InterviewOrchestrator {
 
     /** 本轮追问/纠正所属的角色（继承最近一道主问题的角色）。 */
     private Role currentRole(InterviewSession session, List<InterviewTurn> turns) {
+        InterviewTurn current = turns.get(turns.size() - 1);
+        if (current.getAgentMetadata() != null) return agentRuntime.roleOf(current);
         List<Role> roles = Role.parse(session.getRoles(), mapper);
         long mainCount = turns.stream().filter(t -> Integer.valueOf(0).equals(t.getLayer())).count();
         int idx = (int) ((mainCount - 1 + roles.size()) % roles.size());
         return roles.get(idx);
+    }
+
+    /** The model selects the next action; Java only enforces scope, limits and persistence. */
+    private List<AgentEvent> answerWithAgent(InterviewSession session, List<InterviewTurn> turns,
+                                           InterviewTurn current, String answer) {
+        List<AgentEvent> events = new ArrayList<>();
+        ScoreTrack track = trackOf(agentRuntime.roleOf(current));
+        String trackLabel = track.name().toLowerCase(java.util.Locale.ROOT);
+        ScoreResult score = null;
+        boolean answered = current.getAnswer() != null && !current.getAnswer().isBlank();
+        if (answered && !current.getAnswer().equals(answer)) {
+            throw new IllegalStateException("本轮已作答；恢复出题时请使用已保存的原回答");
+        }
+        if (!answered) {
+            long started = System.currentTimeMillis();
+            try {
+                score = llm.score(track, current.getQuestion(), answer, agentRuntime.assessmentContext(session, turns));
+                current.setScoreJson(mapper.writeValueAsString(scoreJsonOf(score, trackLabel)));
+            } catch (QuotaExhaustedException | IllegalStateException e) {
+                throw e;
+            } catch (Exception e) {
+                current.setScoreJson(toJson(Map.of("track", trackLabel, "error", "SCORE_FAILED")));
+                events.add(AgentEvent.of(AgentEvent.ERROR, "code", "SCORE_FAILED", "message", "本轮评分失败，回答已保留，本轮不计为有效低分"));
+            }
+            current.setAnswer(answer);
+            current.setElapsedMs(System.currentTimeMillis() - started);
+            turnRepo.save(current);
+            events.add(AgentEvent.of(AgentEvent.SCORE, "turnSeq", current.getSeq(), "score", score == null ? null : score.score(),
+                    "track", trackLabel, "oneLineCorrection", oneLineCorrection(score)));
+            if (score != null) {
+                try {
+                    memory.onTurnScored(session.getJdProfile(), topicOf(score, current.getQuestion()), score.score(),
+                            statusOf(score), Instant.now(), session.getId(), current.getSeq());
+                } catch (Exception e) {
+                    events.add(AgentEvent.of(AgentEvent.ERROR, "code", "WEAK_POINT_FAILED", "message", "错题记录暂时失败"));
+                }
+            }
+        }
+        long mainCount = turns.stream().filter(t -> Integer.valueOf(0).equals(t.getLayer())).count();
+        if (mainCount >= normalizeMaxQuestions(session.getMaxQuestions()) && current.getLayer() >= 2) {
+            events.addAll(finish(session, "MAX_QUESTIONS_REACHED"));
+            return events;
+        }
+        try {
+            InterviewAgentRuntime.Decision decision = agentRuntime.decide(session, turns, score);
+            if (decision.action() == InterviewAgentRuntime.Action.END) {
+                events.addAll(finish(session, null));
+            } else {
+                int layer = decision.action() == InterviewAgentRuntime.Action.ASK_MAIN ? 0 : current.getLayer() + 1;
+                InterviewTurn next = newAgentTurn(session, current.getSeq() + 1, layer, decision);
+                if (layer == 0) {
+                    events.add(AgentEvent.of(AgentEvent.QUESTION, "turnSeq", next.getSeq(), "question", next.getQuestion(),
+                            "role", decision.role().displayName(), "layer", 0));
+                } else {
+                    events.add(AgentEvent.of(AgentEvent.FOLLOWUP, "turnSeq", next.getSeq(), "question", next.getQuestion(), "layer", layer));
+                }
+                events.add(AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", next.getSeq()));
+            }
+        } catch (QuotaExhaustedException | IllegalStateException e) {
+            throw e;
+        } catch (com.bupt.mockinterview.llm.LlmException e) {
+            events.add(AgentEvent.of(AgentEvent.ERROR, "code", "QUESTION_FAILED", "message",
+                    "下一步生成失败，回答和评分已保存；可提交相同回答恢复出题，或结束面试。"));
+        }
+        return events;
+    }
+
+    private InterviewTurn newAgentTurn(InterviewSession session, int seq, int layer, InterviewAgentRuntime.Decision decision) {
+        InterviewTurn turn = newTurn(session, seq, layer, decision.question(), toJson(decision.evidenceIds()));
+        turn.setAgentMetadata(agentRuntime.metadata(decision));
+        turn.setScoreJson(toJson(Map.of("track", trackOf(decision.role()).name().toLowerCase(java.util.Locale.ROOT))));
+        return turnRepo.save(turn);
     }
 
     // ---------- 下一道主问题 ----------
@@ -293,7 +383,7 @@ public class InterviewOrchestrator {
      */
     @Transactional
     public List<AgentEvent> end(Long sessionId) {
-        InterviewSession session = sessionRepo.findByIdAndUserId(sessionId, currentUser.currentUserId())
+        InterviewSession session = sessionRepo.findForUpdateByIdAndUserId(sessionId, currentUser.currentUserId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
         return finish(session, null);
     }
@@ -331,9 +421,10 @@ public class InterviewOrchestrator {
             List<TurnBrief> briefs = new ArrayList<>();
             for (InterviewTurn t : turns) {
                 briefs.add(new TurnBrief(t.getSeq(), t.getQuestion(), t.getAnswer(), extractScore(t.getScoreJson()),
-                        extractTrack(t.getScoreJson())));
+                        extractTrack(t.getScoreJson()), t.getAgentMetadata()));
             }
-            String jdText = session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
+            String jdText = agentRuntime.active(session) ? agentRuntime.assessmentContext(session, turns)
+                    : session.getJdProfile() == null ? "" : nullToEmpty(session.getJdProfile().getRawText());
             Payload payload = critic.generate(session.getId(), jdText, briefs);
 
             CriticReport report = new CriticReport();

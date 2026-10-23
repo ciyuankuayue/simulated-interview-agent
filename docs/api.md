@@ -2,6 +2,7 @@
 
 > 对外契约唯一事实源。S4 契约优先产出。NEVER 未经确认修改本文件（改前先与用户确认）。
 > 传输：JSON；流式用 SSE（text/event-stream）。本地默认 http://localhost:8080。
+> 2026-10-21 用户确认内部 Agent 决策重构；本轮不新增 HTTP 请求/响应字段或 SSE 事件。下文更新新场与旧场的实际语义，内部模型、预算、V5迁移见 [运行时说明](agent-decision-runtime.md)。
 
 ## 1. 通用约定
 
@@ -79,11 +80,13 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 
 ### POST /api/interview/start
 开始一次模拟。
-- body: `{ "jdId": "...", "roles": ["技术深挖官"] , "resumeId": 12(可选，下拉选中的简历版本 id；仅落库留痕，RAG 当前检索全局语料不按版本隔离), "maxQuestions": 8(可选，主问题数，1-8，默认 8；不含追问) }`
-  - `roles` 取值：`技术深挖官` / `项目质疑官` / `行为面试官`（R7 新增；至少勾一个，按勾选顺序轮转，行为面试官出 STAR 行为题、不考技术知识点）。
+- body: `{ "jdId": "...", "roles": ["技术深挖官"] , "resumeId": 12(可选，下拉选中的简历版本 id), "maxQuestions": 8(可选，主问题上限，1-8，默认 8；不含追问) }`
+  - `roles` 取值：`技术深挖官` / `项目质疑官` / `行为面试官`（至少勾一个；行为面试官出 STAR 行为题、不考技术知识点）。新 Agent 按考察目标从启用集合选角色，追问/澄清继承当前角色；旧 legacy 场仍按勾选顺序轮转。
+  - 新场默认启用 Agent：开场保存本人 JD 与显式所选 resume 原文快照；未选简历为空，其他简历版本不参与本场。本人项目/笔记/真实面试记录按需检索并保存所取证据片段，未承诺全部材料开场冻结。旧 legacy 场 resumeId 仍仅留痕。
+  - `maxQuestions` 是上限；Agent 得到回答后可判断提前结束，也可在当前主问题剩余两层预算内继续追问/澄清。
 - resumeId 指向不存在的简历 → 404。
 - resp: `{ "sessionId", "firstQuestion": "..." , "status": "QUESTIONING" }`
-- 副作用：系统解析 JD + 检索你的资料，由勾选顺序的第一个角色产出首题（技术角色紧扣 JD 考点，行为面试官出行为面试题）
+- 副作用：新场 Agent 依据 JD/所选简历制定有限考察计划、按需检索并选择启用角色产出首题；首轮不能直接结束。首题仍同步返回。关闭新场Agent开关或旧NULL会话采用原流程。
 
 ### GET /api/interview/sessions
 历史会话（最近 20 场倒序，精简卡片，报告回看入口）：
@@ -91,11 +94,13 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 - `hasReport=true` 才可调 report 回看；进行中/未 end 的场次为 false。
 
 ### POST /api/interview/{sessionId}/answer
-提交本轮回答，触发判分 + 可能追问。
+提交本轮回答，触发判分及下一步决策（追问/澄清、换题或结束）。
 - body: `{ "answer": "..." }`
-- 结果经 SSE 推送（见 §5）；本接口仅返回受理 `{ "accepted": true }`
+- 结果经 SSE 推送（见 §5）；本接口返回 `{ "accepted": true }`。当前仍在本次请求完成编排后返回，未改为后台任务受理。
 - 冲突：session 非 QUESTIONING → 409
-- **自然结束（T12）**：当本轮回答后主问题计数达到 `maxQuestions`（含本轮追问链走完），同批 SSE 直接推送 `report` + `done(reason=MAX_QUESTIONS_REACHED)`，会话置 DONE 且 Critic 报告落库——前端无需再调 `/end`。
+- **自动结束**：Agent可根据考察情况选择END，或在题量/两层预算耗尽时结束；legacy按原题量规则自然结束。同批 SSE 直接推送 `report` + `done`，报告先于done，前端无需再调 `/end`。硬上限路径可带既有 `reason=MAX_QUESTIONS_REACHED`；Agent主动END与手动end均可不带reason。
+- Agent下一步生成发生非业务失败时，经既有 `error(code=QUESTION_FAILED)` 提示，已提交回答和评分保留。提交**完全相同的原回答**可恢复出题，不再次判分；不同回答不能覆盖已保存内容。恢复仍可能新调用决策模型/检索并产生费用。402/409作为业务错误透传；answer不因这两类异常回滚已保存回答/评分，判分后下一决策受阻不丢失已付费评分。
+- UI在QUESTION_FAILED后提供“继续生成下一步”，使用原回答调用同一answer接口，并提示新模型调用扣积分；也可选择结束查看已完成部分报告。未新增HTTP字段或恢复端点。
 
 ### GET /api/interview/{sessionId}/events  （SSE）
 订阅流式事件。事件类型见 §5。前端连上后等待 question/score/followup/report/done。
@@ -104,8 +109,10 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 ### POST /api/interview/{sessionId}/end
 主动结束（中途打断/放弃；自然结束已不需要调它）。与自然结束共用同一出报告逻辑。
 - **幂等**：已有 Critic 报告（含自然结束刚生成的）直接重放同一份，不重复调 LLM。
+- answer/end使用同场guard及数据库会话行锁（超时hint=0）；单实例guard/H2竞争已测，多实例/MySQL NOWAIT未实测，各数据库锁异常类型可能不同。尚无请求ID/持久后台任务，不能推广为全部并发重试完整幂等；失败降级报告仍可能被缓存，报告失败单独重试未实现。
 - resp: `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","track","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints":[...], "expressionIssues":[...], "overallNotes", "reminders", "behaviorReview" }`
   - `track`（R7）：`"tech"` / `"behavior"`，本轮判分赛道；老数据缺省按 `"tech"`。
+  - 新生成报告按真实轮次去重并恢复权威 question/score/track；未评分的score保持null，不作为正常0分。未知个人事实/数字的示范用占位符，overallNotes说明覆盖与未评估范围；字段形状保持原样。
   - `behaviorReview`（R7）：本场含行为轮时为行为维度对象（形状见下），纯技术场/老报告为 `null`。
 
 ### GET /api/interview/{sessionId}/report
@@ -124,11 +131,11 @@ JD 列表（精简）：`[{ "jdId", "jobType", "sameTypeTag", "createdAt" }]`
 | event | data | 含义 | 前端动作 |
 |---|---|---|---|
 | `question` | `{ "turnSeq", "question", "role" }` | 新一题（技术深挖官/项目质疑官/行为面试官） | 展示，等用户作答 |
-| `score` | `{ "turnSeq", "score", "track"?: "tech"\|"behavior", "oneLineCorrection" }` | 本轮评分（R7：`track=behavior` 为 STAR 四维行为分；仅概要 + 一句纠正，不展示 breakdown 全量；讲解归报告） | 展示评分与一句纠正（行为轮加角标） |
-| `followup` | `{ "turnSeq", "question", "layer" }` | 追问（layer 1/2，封顶 2；追问继承所属主问题角色与赛道） | 展示，等作答 |
+| `score` | `{ "turnSeq", "score", "track"?: "tech"\|"behavior", "oneLineCorrection" }` | 本轮评分（失败时score=null；`track=behavior` 为 STAR 四维行为分；仅概要 + 一句纠正，讲解归报告） | 展示评分与一句纠正（行为轮加角标） |
+| `followup` | `{ "turnSeq", "question", "layer" }` | 追问或澄清（layer 1/2，共用两层上限；继承所属主问题角色与赛道） | 展示，等作答 |
 | `await_answer` | `{ "turnSeq" }` | 等待本轮回答 | 调 answer 接口 |
 | `report` | `{ "reportId", "matchScore", "perTurnReview":[{ "turnSeq","question","score","track","explanation","correction","knowledgeSupplement","exemplarAnswer" }], "collapsedPoints", "expressionIssues", "overallNotes", "reminders", "behaviorReview" }` | Critic 报告（R7：含行为轮时多一个 behaviorReview 行为维度块） | 展示报告 |
-| `done` | `{ "sessionId", "reason"?: "MAX_QUESTIONS_REACHED" }` | 结束。自然结束（答满题量）带 `reason`；手动 `/end` 不带。`report` 事件保证先于 `done` | 关闭流（前端兜底：若收到 done 时还没渲染 report，补调一次幂等 `/end`） |
+| `done` | `{ "sessionId", "reason"?: "MAX_QUESTIONS_REACHED" }` | 结束。硬上限路径可带既有reason；Agent选择END/手动end可不带。`report`保证先于`done` | 关闭流（前端兜底：未渲染report时补调已有结果重放的`/end`） |
 | `error` | `{ "code", "message" }` | 异常（含 LLM 降级） | 提示 |
 
 事件流示例：
@@ -165,6 +172,7 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 > - PLATFORM 下 DeepSeek 对话、Qwen 对话、DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
 > - 页面统一显示**积分**，固定 **1 积分 = 500 token 当量**（沿用原换算）；数据库和 API 的 `*Tokens` 字段仍保留 token 单位，契约不变。积分最多显示 3 位小数，1 token = 0.002 积分，不整点取整。新用户赠送 `app.quota.signup-bonus-tokens`（默认 50000，即 100 积分）；已有用户总额、已用额与历史流水不重置、不迁移。
 > - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
+> - Agent工具循环可在一次决策中多次调用模型；每次均经现有路由和计费。DeepSeek BYOK每次模型调用扣服务费，资料搜索的embedding恒平台按token扣；恢复生成不是零费用重放，已存报告的直接重放不新调用模型。
 
 ### GET /api/user/settings
 `{ "keyMode": "PLATFORM|BYOK", "chatProvider": "DEEPSEEK|QWEN" }`

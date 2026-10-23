@@ -1,0 +1,21 @@
+Historical excerpt; source=eval_run_utf8.log; no rerun; UTF-8 copy of contiguous original lines.
+[ingest] 150 篇文档入库耗时 19307ms
+[embedding] 平均耗时 101.43333333333334ms/次（P95 123.0ms）
+
+[质量] 纯向量      recall@5=96.7%  MRR@10=0.824
+[质量] 纯 BM25   recall@5=86.7%  MRR@10=0.700
+[质量] 混合 RRF   recall@5=96.7%  MRR@10=0.825
+[延迟] 纯向量      检索 P95=0.0ms（平均 0.01ms）
+[延迟] 纯 BM25   检索 P95=1.0ms（平均 0.64ms）
+[延迟] 混合 RRF   检索 P95=2.0ms（平均 1.26ms）
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 23.88 s -- in com.bupt.mockinterview.rag.RunEval
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  37.671 s
+[INFO] Finished at: 2026-10-07T21:32:55+08:00

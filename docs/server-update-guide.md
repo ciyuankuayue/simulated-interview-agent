@@ -1,10 +1,12 @@
 # 服务器更新操作指南
 
-更新日期：2026-10-20。适用项目：模拟面试 Agent。
+更新日期：2026-10-21。适用项目：模拟面试 Agent。
 
 适用场景：Ubuntu 服务器 `/opt/app` 已通过 `docker-compose.prod.yml` 运行应用、MySQL、Redis 和 Caddy，现在升级已有站点。本文不是全新空库的首次部署教程。
 
 前端功能基线提交为 `4ac0a87`（前端、双陪考、积分及小暖优化）。2026-10-20 已发现该基线在 prod 下的公开请求租户上下文缺口，正式发布还须包含第 9 节所述的入口修复；以当次确认的完整修复提交为目标，不只检查 `4ac0a87`。本次还包含生产 profile、Flyway V4 和多租户改动，必须在启动新版前备份。
+
+2026-10-21 Agent重构目前未提交/部署；若将该批纳入发布，Flyway还会执行V5，新增会话agent_state/轮次agent_metadata两列（不回填旧场），新会话默认启用Agent。先备份数据库和索引，并在MySQL验证迁移；回退开关 `APP_INTERVIEW_AGENT_ENABLED=false` 只影响新场，已有Agent场仍需兼容运行时，不能把关开关等同于可直接回退旧镜像。完整范围见 [Agent方案](agent-decision-runtime.md)。
 
 ## 1. 先分清在哪里执行
 

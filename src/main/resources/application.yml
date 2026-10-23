@@ -82,6 +82,14 @@ jwt:
 
 # ---- R2 token 额度（PLATFORM 按 usage 实扣；BYOK 对话按次服务费；embedding 也计量） ----
 app:
+  interview:
+    # New sessions use bounded Agent decisions; existing sessions without agent_state retain compatibility.
+    agent-enabled: ${APP_INTERVIEW_AGENT_ENABLED:true}
+    max-model-calls: 3
+    max-tool-calls: 4
+    max-output-tokens: 4096
+    max-step-tokens: 64000
+    max-step-millis: 60000
   # ---- R3-2 对话模型路由 ----
   llm:
     default-provider: deepseek            # 无用户上下文（测试/内部调用）时的默认对话厂商；登录用户按其 settings 走

@@ -51,10 +51,14 @@ public class InterviewSession {
 
     /**
      * 本场关联的简历版本 id（纯 id，无外键约束；开始面试时由用户在下拉中选择）。
-     * null=未指定。当前 RAG 检索全局语料，不按简历版本隔离（隔离为后续迭代项），
-     * 该列仅留痕，供历史回看/未来按版本过滤使用。
+     * null=未指定。Agent 新场将该版本原文固定在 agentState，排除其他简历版本；
+     * 无 agentState 的旧场维持历史留痕语义。
      */
     private Long resumeId;
+
+    /** Agent runtime version, immutable JD/resume snapshot and current competency plan (internal JSON). */
+    @Column(columnDefinition = "LONGTEXT")
+    private String agentState;
 
     @CreationTimestamp
     @Column(updatable = false)

@@ -196,7 +196,7 @@
                 try {
                     const data = JSON.parse(event.data);
                     const text = data.code === 'QUESTION_FAILED'
-                        ? '下一题暂未准备成功。可以结束本场，查看已完成部分的报告。'
+                        ? '下一步暂未准备成功。已提交的回答会保留，你可以继续生成，或结束本场查看报告。'
                         : data.code === 'SCORE_FAILED' ? '本轮评分暂时不可用，系统会尝试继续练习。'
                         : data.message || '本轮处理出现异常。';
                     store.messages.push({ kind: 'error', text });
@@ -392,7 +392,7 @@
     </div>
     <div class="prepare-aside">
       <div class="surface session-options"><div class="section-heading"><span class="step-number">02</span><div><h2>定制这次练习</h2><p>少量开始，也是一种进步。</p></div></div>
-        <fieldset :disabled="store.busy || store.interviewActive || resumeBusy"><legend>简历版本 <span class="optional">可选</span></legend><select v-model="store.resumeId" aria-label="本次简历版本" @change="selectResume"><option :value="null">暂不指定简历版本</option><option v-for="resume in store.resumeList" :key="resume.resumeId" :value="resume.resumeId">版本 #{{resume.resumeId}} · {{fmtTime(resume.createdAt)}}{{resume.isActive?' · 已启用':''}}</option></select><button class="text-button" @click="store.view='materials'">管理我的资料 <span aria-hidden="true">↗</span></button><p class="field-note">版本用于本次留痕；检索仍可能参考你已入库的其他资料。</p></fieldset>
+        <fieldset :disabled="store.busy || store.interviewActive || resumeBusy"><legend>简历版本 <span class="optional">可选</span></legend><select v-model="store.resumeId" aria-label="本次简历版本" @change="selectResume"><option :value="null">暂不指定简历版本</option><option v-for="resume in store.resumeList" :key="resume.resumeId" :value="resume.resumeId">版本 #{{resume.resumeId}} · {{fmtTime(resume.createdAt)}}{{resume.isActive?' · 已启用':''}}</option></select><button class="text-button" @click="store.view='materials'">管理我的资料 <span aria-hidden="true">↗</span></button><p class="field-note">选择本次关联的简历；面试官也可参考你的项目、笔记和真实面经资料。</p></fieldset>
         <fieldset :disabled="store.busy || store.interviewActive"><legend>参与面试官</legend><label class="role-option" v-for="role in roleOptions" :key="role.name"><input type="checkbox" v-model="roles" :value="role.name"><span><strong>{{role.name}}</strong><small>{{role.desc}}</small></span></label></fieldset>
         <fieldset :disabled="store.busy || store.interviewActive"><legend>主问题数量</legend><div class="segmented"><button v-for="count in [3,5,8]" :key="count" @click="store.maxQuestions=count" :aria-pressed="store.maxQuestions===count">{{count}} 题</button></div><p class="field-note">面试官可能继续追问，每题最多两层。</p></fieldset>
         <button class="primary large" @click="start" :disabled="!store.jdId || !roles.length || store.busy || store.interviewActive || uploading || resumeBusy">{{store.interviewActive?'本场练习进行中':'开始模拟面试'}}<app-icon name="arrow"/></button>
@@ -473,7 +473,7 @@
             canAnswer() { return store.interviewActive && store.awaiting && store.connOk && !store.busy; },
             statusText() { return ({ idle: '准备就绪后，即可开始', starting: '面试官正在准备第一题',
                 thinking: '正在评估回答并准备下一题', reporting: '正在整理本场报告',
-                answer: '轮到你了，慢慢说清楚', blocked: '出题暂未完成，可以结束本场并查看报告',
+                answer: '轮到你了，慢慢说清楚', blocked: '出题暂未完成，可以继续生成或结束本场',
                 done: '本场练习已完成' })[store.phase]; }
         },
         watch: {
@@ -484,6 +484,21 @@
         },
         methods: {
             reconnect() { openStream(); },
+            async resumeNext() {
+                if (store.busy || !store.interviewActive || store.phase !== 'blocked') return;
+                const saved = [...store.messages].reverse().find(message => message.kind === 'answer' && message.seq === store.currentTurn);
+                if (!saved) { this.error = '未找到本轮原回答，请结束本场查看报告。'; return; }
+                const sessionId = store.sessionId;
+                this.error = ''; store.busy = true; store.awaiting = false; waitFor('thinking');
+                try {
+                    await api('/api/interview/' + sessionId + '/answer', 'POST', { answer: saved.text });
+                    if (store.sessionId === sessionId) loadQuota().catch(error => notify(error, true));
+                } catch (error) {
+                    if (error.stale || store.sessionId !== sessionId) return;
+                    store.busy = false; store.awaiting = false; store.phase = 'blocked'; store.pendingSince = null;
+                    this.error = error.status === 409 ? '本场暂不能继续生成，可稍后重试或结束查看报告。' : error.message;
+                }
+            },
             async submit() {
                 if (!this.canAnswer || !this.answer.trim()) return;
                 const text = this.answer.trim(), turn = store.currentTurn, sessionId = store.sessionId;
@@ -543,6 +558,7 @@
 </div>
 <div class="answer-area"><div class="processing-status" role="status"><span v-if="store.busy" class="spinner"></span><span>{{statusText}}</span><span v-if="store.pendingSince" class="quiet">· {{store.elapsed}} 秒{{store.elapsed>=20?' · 模型仍在处理，你可以先浏览其他页面':''}}</span></div>
 <p v-if="error" class="inline-error" role="alert">{{error}}</p>
+<div v-if="store.phase==='blocked'" class="row wrap"><button class="secondary" @click="resumeNext" :disabled="store.busy">继续生成下一步</button><span class="field-note">使用已保存的原回答继续生成；会按本次模型调用扣减积分。</span></div>
 <div v-if="store.phase==='done'" class="completion"><div><strong>又完成了一次练习。</strong><p>看看这次的收获，再决定下一步。</p></div><button class="primary" v-if="store.liveReport" @click="showReport">查看本场报告<app-icon name="arrow"/></button><button v-else class="secondary" @click="recoverReport">获取报告</button></div>
 <template v-else><label class="sr-only" for="answer-input">你的回答</label><textarea id="answer-input" v-model="answer" rows="4" placeholder="在这里写下你的回答…可以从背景、做法和结果说起。" :disabled="!canAnswer" @keydown.ctrl.enter.prevent="submit" @keydown.meta.enter.prevent="submit"></textarea><div class="answer-actions"><button class="primary" @click="submit" :disabled="!canAnswer || !answer.trim()">提交回答<app-icon name="arrow"/></button><span class="keyboard-hint">Ctrl / ⌘ + Enter</span><span class="spacer"></span><button class="text-button" @click="end" :disabled="!store.interviewActive || store.busy || ending">结束并出报告</button></div></template>
 </div></div></section>`

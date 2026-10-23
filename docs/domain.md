@@ -30,7 +30,7 @@
 - password_hash    # BCrypt 加密（10 轮）
 - key_mode         # PLATFORM（平台 key，默认）/ BYOK（用户自带 DeepSeek key）
 - chat_provider    # DEEPSEEK（默认）/ QWEN（通义千问）；R3-2 新增，VARCHAR(16) NOT NULL DEFAULT 'DEEPSEEK'，与 key_mode 正交
-- role             # ADMIN（库中首个注册账号）/ USER（其后注册者）；R1-3 仅持久化，管理接口 R 后续迭代用
+- role             # USER（公开注册恒为 USER）/ ADMIN（仅 env 引导器创建或升级，见 §9）
 - created_at
 
 > 表名用 `app_user` 避开 H2/MySQL `user` 保留字。密码 BCrypt，不存明文也不存加盐哈希——Spring Security 的 `BCryptPasswordEncoder` 自带盐值。
@@ -107,6 +107,9 @@
 - **user_id (FK, NOT NULL)**  # R1-1
 - jd_profile_id (FK)
 - roles            # 启用的角色数组，如 ["技术深挖官"] 或 ["技术深挖官","项目质疑官","行为面试官"]（R7 起支持行为面试官；支持部分启用；Critic 始终在）
+- max_questions    # 主问题上限 1–8，不含追问；Agent 可根据考察结果提前结束
+- resume_id        # 用户所选简历；新 Agent 场保存并使用该版本快照，旧场仅留痕
+- agent_state      # V5，LONGTEXT JSON：version、本场 JD/所选简历原文 snapshot、最新 plan、lastDecision（含END最后行动/证据）；NULL=legacy 兼容路径
 - status           # INIT / QUESTIONING / SCORING / DONE
 - match_score      # 本 JD 当前匹配度（Critic 填）
 - created_at
@@ -118,10 +121,14 @@
 - question          # 本轮问题
 - answer            # 用户回答
 - retrieve_refs      # 检索引用（JSON，知识块 id 列表）
-- score_json         # 判分 {track(R7: tech/behavior), score, breakdown, missed_points, followup}（内部用，决定是否追问；不向用户全量展示；track 只落此 JSON，interview_turn 不加 role 列）
+- score_json         # 判分 {track(tech/behavior), score, breakdown, missed_points, followup}；评分是Agent行动参考，失败不作为0分；不向用户全量展示
+- agent_metadata     # V5，LONGTEXT JSON：action、实际 role、question、goal、reason、plan、evidenceIds、有限证据片段/工具状态及modelCalls/toolCalls/elapsedMs/tokens；不存内部推理链，NULL=旧轮次
 - elapsed_ms         # 耗时
 - tokens             # token 消耗
 - seq               # 轮次序号（追问层数 ≤ 2）
+- layer             # 0=主问题，1/2=同考点追问或澄清；追问继承主问题角色和赛道
+
+> V5仅新增内部列，不新增HTTP字段/SSE事件；prod先备份，再由Flyway执行 `V5__interview_agent_state.sql`。迁移先查列是否存在，兼容本地mysql/ddl-auto:update已建列，原记录不回填。新场默认Agent，关闭开关只影响后续新场；已有Agent场按持久状态恢复。answer对402/409业务异常不回滚已保存回答/评分；并发guard/行锁与有限上下文边界见 [Agent运行时](agent-decision-runtime.md)。
 
 ### real_interview_record
 - id (PK)
@@ -151,7 +158,7 @@
 - expression_issues  # 表述问题 + 精简答案指导
 - overall_notes      # 整体注意事项
 - reminders          # 必要提醒面试者（如"你说用了 Redis，但没说 TTL 为什么这么设"）
-- behavior_review    # R7 新增（TEXT，可空）：行为维度 JSON {dimensions:{STAR结构,行动细节,结果与反思,表达与抗压 各0-2}, summary, suggestions[]}；无行为轮为 NULL，老数据不回填；生产 ddl-auto:none 需手跑 V3 迁移
+- behavior_review    # R7 新增（TEXT，可空）：行为维度 JSON {dimensions:{STAR结构,行动细节,结果与反思,表达与抗压 各0-2}, summary, suggestions[]}；无行为轮为 NULL，老数据不回填；prod由Flyway管理迁移
 - match_score        # 匹配度（单一 0-100；含行为轮时软素质由 Critic 纳入综合，不另设分数）
 - created_at
 
@@ -179,22 +186,23 @@
 
 **技术轮（track=tech）**：4 维度 × 0-2 分 = 0-8：
 - 正确性 / 完整性 / 深度 / 实证
-映射：8=S（不追问）｜6-7=A（1 层 why）｜4-5=B（2 层 why）｜0-3=C/D（记错题本）
-追问触发：score<6 → ≥1 层；score<4 → 2 层（封顶）
+分级：8=S｜6-7=A｜4-5=B｜0-3=C/D（记错题本）。新 Agent 场由回答诊断与证据决定继续、澄清、换题或结束，分数不直接决定行动；低分可换题，高分可核实依据，追问仍最多两层。
+legacy 场保留旧规则：8 不追问、6–7 最多一层、≤5 最多两层。
 判分模型输出结构化 JSON `{score, breakdown, missed_points, followup}`，供 Critic 汇总。
 
 **行为轮（track=behavior，R7）**：STAR + 表达四维 × 0-2 分 = 0-8：
 - STAR结构（情境/任务/行动/结果是否完整）/ 行动细节（个人贡献与动作是否具体）/ 结果与反思（结果是否可量化、有无复盘沉淀）/ 表达与抗压（条理、简洁、被追问时是否稳定）
-- 同样 0-8 分、同样的追问阈值（<6 追问、<4 两层）；追问内容是压细节（"当时你具体做了什么""结果数字是多少"），不是技术 why。
+- 同样 0–8 分；新 Agent 按诊断决定动作，legacy 沿用上述分数层数规则。行为追问压 STAR 细节与本人行动，未知结果先询问，不补造数字。
 - 行为轮薄弱点同样入 weak_point，**不扩表**：knowledge_point 用模型输出的行为标签（如「意见分歧中的诉求对齐与方案落地」），靠标签语义与技术知识点区分；resolved 阈值仍为 score≥6。
 - 判分 JSON 键结构与技术轮一致（score/breakdown/missed_points/followup），仅 breakdown 四维名称不同；外层多 `track:"behavior"`。
 
 ## 4.1 实时行为 vs 报告行为（关键区分）
 
-- **实时（技术深挖官 / 项目质疑官）**：用户答题后只做两件事之一——「追问（≤2 层 why）」或「一句简单纠正」。**不展开讲解、不给知识补充、不给示范回答**。
+- **实时（技术深挖官 / 项目质疑官）**：Agent 可继续追问/澄清、换考点或结束；评分事件可带一句纠正，追问/澄清共用≤2层预算。**不展开讲解、不给知识补充、不给示范回答**。
 - **实时（行为面试官，R7）**：只出行为题（三类题池：协作冲突 / 抗压受挫 / 主动性与影响力，结合用户真实资料，不编造经历）；答题后围绕 STAR 礼貌施压追问细节或一句纠正。**红线：不考任何具体技术知识点、不现场讲大道理、不展开讲解/知识补充/示范回答**；纯行为场首题祈使句不得出现"紧扣 JD 考点"。
-- 判分（技术 4 维 / 行为 STAR 4 维）实时都算，但仅用于决定是否追问；不向用户展示 breakdown 全量。
-- **报告（Critic）**：对每轮做评分 + 逐轮讲解 + 纠正 + 知识补充 + 示范回答；汇总答崩点、表述问题、整体注意事项、必要提醒；答崩点入 weak_point。**R7 起：逐轮回填 track；本场存在行为轮时额外产出 behaviorReview（STAR 四维分 + ≤120 字总评 + ≤4 条建议），无行为轮为 null；matchScore 仍单一分值，软素质纳入综合。**
+- 判分（技术 4 维 / 行为 STAR 4 维）实时都算；新场评分得到本场快照、有限前文与证据，作为行动参考，不替代诊断；不向用户展示 breakdown 全量。
+- **报告（Critic）**：沿用逐轮评分，补充讲解、纠正、知识补充和示范回答；汇总答崩点、表述问题、整体注意事项、必要提醒；错题写入仍由实时判分驱动。**R7 起：逐轮回填 track；本场存在行为轮时额外产出 behaviorReview（STAR 四维分 + ≤120 字总评 + ≤4 条建议），无行为轮为 null；matchScore 仍单一分值，软素质纳入综合。**
+- 新报告只保留实际轮次、去掉重复轮次，并恢复权威 question/score/track；未评分保持 null。证据与候选人陈述均不自动成为已核实事实，示范未知经历/数字用占位符，overallNotes 说明已考察和未评估范围；不改变既有报告 JSON 字段。
 
 ## 5. 间隔重复（weak_point，方案 A 固定阶梯）
 
@@ -213,7 +221,7 @@
 
 - 输入：JD 文本 + 你的 md 文档（简历 / 笔记 / 项目文档 / 真实面试记录）
 - 向量：**R4 起落盘 Lucene FSDirectory（持久化 + userId pre-filter，见 §7）**；此前的内存手写余弦仅 L3 对比实验保留
-- 角色：支持部分启用（可只开技术深挖官 / 只开行为面试官）；角色按勾选顺序轮转（追问继承所属主问题角色）；Critic 始终在
+- 角色：支持部分启用；新 Agent 从启用角色中按考察目标选择，只有 ASK_MAIN 可换角色，PROBE/CLARIFY 继承当前角色；legacy 按勾选顺序轮转；Critic 始终在
 - 用户绝不接触 interview_turn / project_doc / real_interview_record / knowledge_chunk 原始明细
 
 ## 7. R4 向量持久化（Lucene FSDirectory）
