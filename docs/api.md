@@ -245,7 +245,7 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 
 ## 9. 双陪考搭档（2026-10-19）
 
-用户确认的产品角色：**陪考小暖**负责心态与情绪陪伴；**通考小师**负责知识答疑与学习方向。新增小师能力不改变小暖已有接口。
+用户确认的产品角色：**陪考小暖**负责心态与情绪陪伴；**通考小师**负责知识答疑与学习方向。2026-10-24 用户授权按设计实施教学、陪伴、可控画像及兼容流式扩展；既有 chat/reset 的响应形状不变。
 
 ### POST /api/companion/chat / POST /api/companion/reset（既有实现补记）
 - chat body：`{ "message": "..." }`；resp：`{ "reply": "...", "safe": false }`，safe=true 表示触发已有安全支持回复。
@@ -256,10 +256,40 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 ### POST /api/coach/chat（新增）
 - JWT 必需；body：`{ "message": "..." }`，非空、最多 6000 字符；返回 `{ "reply": "..." }`。
 - 小师通过现有 LlmPort/LlmService 路由与计费收口，FAST 非思考档；402/409/504 沿用通用错误语义，不吞掉费用或模型错误。
-- 仅参考用户本次发送的文本及本人短期对话，不自动读取简历、报告或小暖的聊天，不承诺自动提醒或永久记忆。
+- 参考本人短期对话、用户明确发送的报告/错题片段、内置知识卡，以及记忆开启后适用于小师的有限偏好；不自动读取简历、全部报告或小暖的聊天，不承诺自动提醒。
 - 小师上下文独立于小暖，按当前 JWT userId 隔离；最多保留最近 8 个成功问答，闲置 30 分钟后下次访问重新开始，服务重启清空。
 - 同账号已有小师请求处理中 → 409；模型失败/空正文不写入对话历史；空正文 → 504。
 
 ### POST /api/coach/reset（新增）
 - JWT 必需，无 body；返回 `{ "ok": true }`，仅清空本人的小师上下文，不影响小暖。
 - 重置期间如存在旧请求，其结果不再进入下一次对话的上下文。
+
+### POST /api/coach/stream / POST /api/companion/stream（2026-10-24 兼容新增）
+
+- JWT 经 `Authorization: Bearer ...`，body 与 chat 相同：`{"message":"..."}`，非空、最多 6000 字符；响应 `text/event-stream; charset=UTF-8`、`Cache-Control: no-store`、`X-Accel-Buffering: no`。
+- 真实模型正文增量：`event: delta`、`data: {"text":"..."}`；正常终结：`event: done`、`data: {"reply":"完整正文","safe":false}`（小师无 safe 字段）。小暖即时安全支持仍 `safe:true`，跳过模型/费用。
+- 首段尚未提交时，错误继续返回 HTTP 400/401/402/409/504 + `{code,message}`；首段已提交后，以 `event: error`、`data: {"status":504,"code":"LLM_UNAVAILABLE","message":"..."}` 终止，无 done。连接关闭但没 done 不算成功。
+- 纯文本流复用模型路由、key 和 LlmService 计费；已收到模型输出后不自动重放。断流或客户端离开，已有 usage 仍结算，缺 usage 沿用字符估算开关；不承诺取消会退款。用户主动重试是新调用，可能再次扣费。
+- 完整回复成功后才进入短期历史；内部画像标记不展示、不进入助手历史，但属于厂商生成用量。正文完成后画像整理失败不重试付费模型调用，不虚假提示“已记住”。
+- 两个角色统一同用户并发保护、30 分钟闲置清理，分别最多保留 8 个成功问答且历史总字符约束 20000；重启清空。小师“今天不测”、小暖“先听我说”在本次上下文内持续有效。reset 只清该角色短期对话，不清长期画像。
+
+### 可选画像：/api/buddy/memory（2026-10-24 新增）
+
+所有端点仅当前 JWT 本人，禁用 root；不接受 owner、userId、原始聊天字段。默认未开启，无行时不创建记录。
+
+| 方法与路径 | 请求 | 作用 |
+|---|---|---|
+| GET `/api/buddy/memory` | 无 | 查看开关、条目和已停止自动记录项 |
+| PATCH `/api/buddy/memory` | `{"enabled":true}` | 开启/关闭，严格布尔值 |
+| PATCH `/api/buddy/memory/entries/{key}` | `{"value":"先举例"}` | 修改并锁定该字段，自动整理不覆盖；可显式恢复已删字段 |
+| DELETE `/api/buddy/memory/entries/{key}` | 无 | 删除并阻止自动恢复 |
+| DELETE `/api/buddy/memory/entries` | 无 | 清空并停止全部字段的自动记录 |
+| POST `/api/buddy/memory/entries/{key}/allow` | 无 | 用户显式允许该字段重新自动记录，已有手工锁定内容仍不自动覆盖 |
+
+统一响应：`{"enabled":true,"revision":1,"entries":[{"key":"explanation_style","scope":"coach","value":"先举例","source":"AUTO","updatedAt":"ISO-8601","locked":false}],"blockedKeys":[]}`。
+
+- key 白名单：shared 的 `target_role`、`preparation_stage`、`available_time`；coach 的 `explanation_style`、`practice_preference`；companion 的 `support_style`、`address_preference`。最多 7 项，每值 1–300 字符、不含控制字符。非法字段/类型/键/JSON → 400。`source` 为 AUTO 或 USER。
+- 开启后在原生成调用末尾尝试提取最多 3 个候选；value 必须是 evidence 原句片段，evidence 必须来自本条用户输入，并校验范围/时效/敏感内容。对“我的目标岗位是…”“我喜欢先举例…”“以后难过时请先听我说…”等明确原句有保守提取兜底，避免模型漏尾标时失去偏好。不另加每轮分析调用，不保存情绪原文、诊断或人格推断。
+- 关闭后，新发起的对话不再读取/更新长期画像，已保存条目仍可查看、修改和删除；已发出的模型请求不能撤回此前携带的信息，但设置 revision 会拦住旧请求自动回写。
+- 显式修改/删除/关闭/重新允许提高 revision；删除留阻止标记，旧回复不能覆盖用户操作。自动条目包含来源类型与时间，详细聊天不入此表。长期画像持久至用户删除或账号删除；备考阶段等需要变化时可修改，未新增自动到期任务。
+- 浏览器仅内存持有 JWT、会话和草稿；不将聊天或画像复制到 localStorage。报告/错题“让小师讲讲”只把用户选择的既有片段带入可编辑草稿，不自动发送或扩大后台读取权限。

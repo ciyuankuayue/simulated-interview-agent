@@ -8,6 +8,7 @@ import com.bupt.mockinterview.billing.UsageScene;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.llm.chat.ChatRequest;
 import com.bupt.mockinterview.llm.chat.ChatResponse;
+import com.bupt.mockinterview.llm.chat.ChatStreamException;
 import com.bupt.mockinterview.llm.chat.DeepSeekChatProvider;
 import com.bupt.mockinterview.llm.chat.ModelRole;
 import com.bupt.mockinterview.llm.chat.ModelRouter;
@@ -29,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 对话统一门面（T5 起，R3-1 瘦身后）：{@link LlmPort} 唯一生产实现。
@@ -168,6 +170,19 @@ public class LlmService implements LlmPort {
     public LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                          List<Map<String, Object>> tools, boolean jsonMode, int maxTokens,
                          UsageScene scene) {
+        return executeChat(role, thinking, messages, tools, jsonMode, maxTokens, scene, null);
+    }
+
+    @Override
+    public LlmReply streamChat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
+                               Consumer<String> onDelta) {
+        java.util.Objects.requireNonNull(onDelta, "onDelta");
+        return executeChat(role, thinking, messages, null, false, props.getMaxTokens(), UsageScene.CHAT, onDelta);
+    }
+
+    private LlmReply executeChat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
+                                  List<Map<String, Object>> tools, boolean jsonMode, int maxTokens,
+                                  UsageScene scene, Consumer<String> onDelta) {
         // 统一在此做模型/key 路由与计费：followUp/score/Critic/JD 解析等所有对话调用的唯一收口。
         User user = currentUser.currentUser();
         ModelRouter.Route route = router.route(user, role);
@@ -185,9 +200,21 @@ public class LlmService implements LlmPort {
             }
         }
 
-        ChatResponse response = route.provider().chat(
-                new ChatRequest(route.model(), messages, thinking, jsonMode, tools, maxTokens),
-                resolved.apiKey());
+        ChatRequest request = new ChatRequest(route.model(), messages, thinking, jsonMode, tools, maxTokens);
+        ChatResponse response;
+        try {
+            response = onDelta == null
+                    ? route.provider().chat(request, resolved.apiKey())
+                    : route.provider().stream(request, resolved.apiKey(), onDelta);
+        } catch (ChatStreamException e) {
+            // 断流/前端取消后仍结算已发生的模型消耗，不重放，不在业务层重新发请求。
+            ChatResponse partial = e.partialResponse();
+            if (billable && partial != null) {
+                settleUsage(user.getId(), resolved.byok(), scene, route.label(),
+                        messages, partial.content(), partial.toolCalls(), partial.usage());
+            }
+            throw e;
+        }
 
         if (billable) {
             settleUsage(user.getId(), resolved.byok(), scene, route.label(),

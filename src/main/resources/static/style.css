@@ -313,6 +313,31 @@ summary { cursor: pointer; }
 .companion-message { margin-bottom: 24px; }
 .companion-message strong { font-size: 11px; font-weight: 500; color: #71905d; }
 .companion-message p { font-size: 14px; line-height: 1.95; white-space: pre-wrap; margin: 7px 0 0; overflow-wrap: anywhere; }
+.companion-message small { display: block; margin-top: 9px; line-height: 1.8; }
+.buddy-prose { min-width: 0; }
+.buddy-prose strong { font-size: inherit; font-weight: 600; color: inherit; }
+.buddy-code { max-width: 100%; margin: 13px 0; border: 1px solid #e0e7e9; border-radius: 9px; background: #f6f8fa; overflow: hidden; }
+.buddy-code .buddy-code-language { margin: 0; padding: 7px 13px; font-size: 10px; color: #697c8c; border-bottom: 1px solid #e0e7e9; }
+.buddy-code pre { margin: 0; padding: 13px; overflow-x: auto; tab-size: 4; }
+.buddy-code code { font: 12px/1.8 Consolas, Monaco, monospace; white-space: pre; color: #344b63; }
+.partial-message { border-left: 2px solid #d7bd95; padding-left: 12px; }
+.buddy-chat-status { display: flex; align-items: center; justify-content: space-between; min-height: 38px; padding: 0 22px; color: var(--muted); font-size: 11px; }
+.buddy-actions { display: flex; flex-wrap: wrap; gap: 5px 11px; margin-bottom: 13px; }
+.buddy-actions .text-button { font-size: 11px; min-height: 32px; padding: 3px 0; }
+.buddy-retry { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 13px; }
+.buddy-memory { border-top: 1px solid var(--line); margin-top: 25px; padding-top: 20px; }
+.buddy-memory .section-heading { gap: 9px; margin-bottom: 9px; }
+.buddy-memory .section-heading h3 { margin: 0; }
+.buddy-memory .text-button { font-size: 11px; }
+.buddy-memory-list { margin-top: 15px; font-size: 12px; }
+.buddy-memory-list summary { cursor: pointer; padding: 7px 0; }
+.buddy-memory-list article { border-top: 1px solid var(--line); padding: 15px 0 8px; overflow-wrap: anywhere; }
+.buddy-memory-list article strong { font-size: 11px; font-weight: 500; color: var(--accent); }
+.buddy-memory-list article p { margin: 7px 0; }
+.buddy-memory-list article small { color: var(--muted); font-size: 10px; line-height: 1.7; display: block; }
+.buddy-memory-list textarea { margin: 10px 0 3px; min-width: 0; font-size: 12px; }
+.buddy-memory-blocked { font-size: 11px; margin-top: 13px; }
+.buddy-memory-blocked > small { display: block; line-height: 1.8; color: var(--muted); }
 .companion-message.user { background: #f2f6ed; border-radius: 9px; padding: 13px 17px; margin-left: 28px; }
 .safety-message { border-left: 2px solid #b08867; padding-left: 14px; }
 .companion-compose { border-top: 1px solid var(--line); padding: 22px; background: #fcfdfb; }

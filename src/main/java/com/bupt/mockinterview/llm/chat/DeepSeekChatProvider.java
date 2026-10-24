@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * DeepSeek 对话通道（R3-1 从 LlmService 原样迁入，行为零变化）：
@@ -59,6 +60,15 @@ public class DeepSeekChatProvider implements ChatProvider {
         Map<String, Object> body = buildRequestBody(req);
         JsonNode root = callWithRetry(body, apiKey);
         return toResponse(root);
+    }
+
+    @Override
+    public ChatResponse stream(ChatRequest req, String apiKey, Consumer<String> onDelta) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new LlmException("DeepSeek 密钥未配置：平台模式请让运维设置 DEEPSEEK_API_KEY，或在「模型调用方式」中填写你自己的 API Key");
+        }
+        return OpenAiSseStream.call(client, mapper, props.getBaseUrl() + "/chat/completions",
+                buildRequestBody(req), apiKey, "DeepSeek", onDelta);
     }
 
     /** 响应映射：完整保留工具请求，供上层有限 ReAct 循环使用。 */

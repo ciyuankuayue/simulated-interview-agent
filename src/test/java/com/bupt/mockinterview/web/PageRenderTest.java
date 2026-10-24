@@ -54,8 +54,10 @@ class PageRenderTest {
                 .contains("项目质疑官")
                 .contains("错题本")
                 .contains("Critic 报告")
-                // F10：心理陪伴
-                .contains("/api/companion/chat");
+                // 双陪考页面使用真实流式入口；旧 chat 接口由独立 API 回归保护。
+                .contains("/api/companion/stream")
+                .contains("/api/coach/stream")
+                .contains("/api/buddy/memory");
 
         String css = mvc.perform(get("/style.css"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);

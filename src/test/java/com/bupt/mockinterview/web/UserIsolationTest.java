@@ -2,11 +2,16 @@ package com.bupt.mockinterview.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.bupt.mockinterview.llm.LlmPort;
+import com.bupt.mockinterview.llm.LlmReply;
+import com.bupt.mockinterview.rag.Embedder;
+import com.bupt.mockinterview.rag.Embedding;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
@@ -15,6 +20,8 @@ import org.springframework.test.web.servlet.ResultActions;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -50,6 +57,10 @@ class UserIsolationTest {
     @Autowired
     private ObjectMapper mapper;
 
+    // This suite verifies ownership, not provider output; keep it usable without keys or network.
+    @MockBean private LlmPort llm;
+    @MockBean private Embedder embedder;
+
     private String tokenA;
     private String tokenB;
     /** 每方法唯一：批 2 起用户行经 REQUIRES_NEW 独立事务提交（不再随类测试事务回滚）。 */
@@ -58,6 +69,12 @@ class UserIsolationTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        when(llm.followUp(anyString(), anyString())).thenReturn(new LlmReply("请说明事务隔离的作用。", null));
+        when(llm.chat(any(), anyBoolean(), anyList(), any(), anyBoolean(), anyInt(), any()))
+                .thenReturn(new LlmReply("{\"keywords\":[\"Java\"],\"jobType\":\"Java后端\"}", null));
+        when(embedder.name()).thenReturn("fixture:user-isolation");
+        float[] vector = new float[1024]; vector[0] = 1f;
+        when(embedder.embed(anyString())).thenReturn(new Embedding(vector, 1L, false));
         nameA = "alice-" + UUID.randomUUID().toString().substring(0, 8);
         nameB = "bobby-" + UUID.randomUUID().toString().substring(0, 8);
 

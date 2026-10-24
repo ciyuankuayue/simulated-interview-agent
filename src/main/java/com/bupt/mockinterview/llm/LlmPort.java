@@ -4,6 +4,7 @@ import com.bupt.mockinterview.llm.chat.ModelRole;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * LLM 能力端口（T6 引入）：agent 编排层只依赖这个接口，不依赖具体厂商实现。
@@ -58,6 +59,16 @@ public interface LlmPort {
      */
     LlmReply chat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
                   List<Map<String, Object>> tools, boolean jsonMode);
+
+    /** 逐段返回正文；默认实现仅供旧测试桩兼容，生产实现使用厂商真实流。 */
+    default LlmReply streamChat(ModelRole role, boolean thinking, List<Map<String, Object>> messages,
+                                Consumer<String> onDelta) {
+        LlmReply reply = chat(role, thinking, messages, null, false);
+        if (reply.content() != null && !reply.content().isEmpty()) {
+            onDelta.accept(reply.content());
+        }
+        return reply;
+    }
 
     /**
      * R1-3：校验一个「待保存」的用户自带 DeepSeek key（GET /models，不烧对话 token、不扣点）。

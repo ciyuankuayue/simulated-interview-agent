@@ -4,6 +4,7 @@ import com.bupt.mockinterview.billing.QuotaExhaustedException;
 import com.bupt.mockinterview.llm.LlmException;
 import com.bupt.mockinterview.security.ForbiddenException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -88,6 +89,7 @@ public class ApiExceptionHandler {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("code", code);
         m.put("message", message);
-        return ResponseEntity.status(status).body(m);
+        // SSE clients still receive the documented JSON error before the first response fragment.
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body(m);
     }
 }

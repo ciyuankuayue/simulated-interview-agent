@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 通义千问对话通道（R3-2）：DashScope OpenAI 兼容模式 {@code /chat/completions}，
@@ -70,6 +71,15 @@ public class QwenChatProvider implements ChatProvider {
         Map<String, Object> body = buildRequestBody(req);
         JsonNode root = callWithRetry(body, apiKey);
         return toResponse(root);
+    }
+
+    @Override
+    public ChatResponse stream(ChatRequest req, String apiKey, Consumer<String> onDelta) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new LlmException("通义千问密钥未配置：请让运维设置环境变量 DASHSCOPE_API_KEY（对话与向量化共用同一个平台 key）");
+        }
+        return OpenAiSseStream.call(client, mapper, props.getBaseUrl() + "/chat/completions",
+                buildRequestBody(req), apiKey, "通义千问", onDelta);
     }
 
     /** 组装 Qwen 兼容模式请求体（包可见便于单测锁定形状）。 */

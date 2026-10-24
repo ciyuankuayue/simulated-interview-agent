@@ -19,10 +19,14 @@ const unexpected = [];
 let failSettings = false, failAnswer = false, failExport = false, failCompanion = false, failQuestion = false, failCoach = false;
 let delayQuota = false;
 let quotaCompanion = false;
+let truncateBuddy = false, delayBuddy = false, errorBuddy = false;
+let richBuddy = false;
+let delayNextMemoryRead = false;
 function account(token) {
     if (!accounts.has(token)) accounts.set(token, {
         jd: [], resumes: [], reports: [], streams: new Set(), events: [], answerCount: 0,
-        mode: 'PLATFORM', provider: 'DEEPSEEK', last4: '', due: true
+        mode: 'PLATFORM', provider: 'DEEPSEEK', last4: '', due: true,
+        memory: { enabled: false, revision: 0, entries: [], blockedKeys: [] }
     });
     return accounts.get(token);
 }
@@ -76,6 +80,26 @@ const server = http.createServer(async (req, res) => {
         return;
     }
     if (route === 'GET /api/user/settings') { json(res, { keyMode: a.mode, chatProvider: a.provider }); return; }
+    if (route === 'GET /api/buddy/memory') {
+        if (delayNextMemoryRead) {
+            delayNextMemoryRead = false;
+            const snapshot = structuredClone(a.memory);
+            setTimeout(() => { res.setHeader('X-Fixture-Delayed-Memory', 'true'); json(res, snapshot); }, 2400);
+        } else json(res, a.memory);
+        return;
+    }
+    if (route === 'PATCH /api/buddy/memory') { a.memory.enabled = data.enabled; a.memory.revision++; json(res, a.memory); return; }
+    if (route === 'DELETE /api/buddy/memory/entries') { a.memory.blockedKeys = [...new Set([...a.memory.blockedKeys, ...a.memory.entries.map(entry => entry.key)])]; a.memory.entries = []; a.memory.revision++; json(res, a.memory); return; }
+    if (/^POST \/api\/buddy\/memory\/entries\/[^/]+\/allow$/.test(route)) {
+        a.memory.blockedKeys = a.memory.blockedKeys.filter(key => key !== decodeURIComponent(endpoint.split('/').at(-2)));
+        a.memory.revision++; json(res, a.memory); return;
+    }
+    if (/^(PATCH|DELETE) \/api\/buddy\/memory\/entries\//.test(route)) {
+        const key = decodeURIComponent(endpoint.split('/').at(-1));
+        if (req.method === 'DELETE') { a.memory.entries = a.memory.entries.filter(entry => entry.key !== key); a.memory.blockedKeys.push(key); }
+        else Object.assign(a.memory.entries.find(entry => entry.key === key), { value: data.value, locked: true });
+        a.memory.revision++; json(res, a.memory); return;
+    }
     if (route === 'PUT /api/user/settings') {
         if (failSettings) { json(res, { message: '模型切换失败，请重试' }, 503); return; }
         if (data.keyMode === 'BYOK' && !a.last4) { json(res, { message: '请先保存 Key', code: 'KEY_NOT_CONFIGURED' }, 409); return; }
@@ -154,6 +178,31 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/weak-point/1') { json(res, { ...weak, latest: { question: '你是怎样验证项目收益的？', answer: 'A_PRIVATE_ANSWER', review: { explanation: '补充数据来源。' } } }); return; }
     if (route === 'POST /api/weak-point/1/review/question') { json(res, { question: '怎样建立实验基线？' }); return; }
     if (route === 'POST /api/weak-point/1/review/answer') { a.due = false; json(res, { score: 8, explanation: '回答完整。', resolved: true }); return; }
+    if (route === 'POST /api/companion/stream' || route === 'POST /api/coach/stream') {
+        const warm = endpoint.includes('/companion/');
+        if (warm && quotaCompanion) { json(res, { message: '积分已用完。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947', code: 'QUOTA_EXHAUSTED' }, 402); return; }
+        if ((warm && failCompanion) || (!warm && failCoach)) { json(res, { message: warm ? '陪伴服务暂不可用，请重试' : '知识答疑暂不可用，请重试' }, 503); return; }
+        const reply = warm ? '面试前有些紧张很自然，我们可以先慢慢整理一下。' : richBuddy
+            ? '先从**可见性**理解。\n\n```java\n<script>globalThis.buddyInjected = true</script>\nif (ok) { return 1; }\n```\n再回到原理和边界。'
+            : '小师：事务隔离用于控制并发事务彼此可见的变化，可以从读已提交的例子开始理解。';
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' });
+        const firstLength = richBuddy && !warm ? reply.indexOf('</script>') : 6;
+        const first = 'event: delta\r\ndata: ' + JSON.stringify({ text: reply.slice(0, firstLength) }) + '\r\n\r\n';
+        const frame = Buffer.from(first), cut = frame.findIndex(byte => byte > 127) + 1;
+        res.write(frame.subarray(0, cut));
+        setTimeout(() => res.write(frame.subarray(cut)), 30);
+        const interrupted = truncateBuddy, slow = delayBuddy, eventError = errorBuddy;
+        setTimeout(() => {
+            if (interrupted) { a.remaining = (a.remaining ?? 499000) - 500; res.end(); return; }
+            if (eventError) { a.remaining = (a.remaining ?? 499000) - 500; res.end('event: error\ndata: ' + JSON.stringify({ status: 409, code: 'BUSY', message: '当前对话正在处理中，请稍后重试。' }) + '\n\n'); return; }
+            res.write('event: delta\ndata: ' + JSON.stringify({ text: reply.slice(firstLength) }) + '\n\n');
+            if (a.memory.enabled && data.message.includes('先举例')) {
+                a.memory.entries = [{ key: 'explanation_style', scope: 'coach', value: '先举例再讲原理', source: 'AUTO', updatedAt: '2026-10-24T03:00:00Z', locked: false }];
+            }
+            res.end('event: done\ndata: ' + JSON.stringify({ reply, safe: false }) + '\n\n');
+        }, slow ? 1600 : 260);
+        return;
+    }
     if (route === 'POST /api/companion/chat') {
         if (quotaCompanion) { json(res, { message: '积分已用完。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947', code: 'QUOTA_EXHAUSTED' }, 402); return; }
         if (failCompanion) { json(res, { message: '陪伴服务暂不可用，请重试' }, 503); return; }
@@ -308,8 +357,18 @@ async function main() {
         await click('导出 Markdown'); await page.getByText('导出暂不可用', { exact: true }).waitFor();
         assert.equal(downloadedError, false); page.off('download', onDownload); failExport = false;
         pass('402 preserves draft; natural report, replay and checked Markdown export');
+        const coachCallsBeforeExcerpt = calls.filter(call => call.endpoint === '/api/coach/stream').length;
+        await page.locator('.turn-detail').getByRole('button', { name: '让小师讲讲', exact: true }).click();
+        assert.ok((await page.getByLabel('想问小师的问题').inputValue()).includes('A_PRIVATE_ANSWER'));
+        assert.ok((await page.getByLabel('想问小师的问题').inputValue()).includes('说明比较方式与数据来源。'));
+        assert.equal(calls.filter(call => call.endpoint === '/api/coach/stream').length, coachCallsBeforeExcerpt);
+        await page.getByLabel('想问小师的问题').fill('');
+        pass('report excerpt opens an editable coach draft with selected answer and feedback; never auto-sends');
         await nav('错题本'); await page.locator('.weak-point summary').click();
         await page.getByText('补充数据来源。', { exact: true }).waitFor();
+        await page.locator('.weak-detail').getByRole('button', { name: '让小师讲讲', exact: true }).click();
+        assert.ok((await page.getByLabel('想问小师的问题').inputValue()).includes('错题本 · 验证方案的收益'));
+        await page.getByLabel('想问小师的问题').fill(''); await nav('错题本');
         await click('开始今日复习'); await page.getByText('怎样建立实验基线？', { exact: true }).waitFor();
         await page.locator('#review-answer').fill('记录同等条件下的原始指标。');
         await click('提交判分'); await page.getByText('已掌握，本题已出队。', { exact: true }).waitFor();
@@ -334,7 +393,100 @@ async function main() {
         await click('发送');
         await page.getByText('小师：事务隔离用于控制并发事务彼此可见的变化，可以从读已提交的例子开始理解。', { exact: true }).waitFor();
         await screenshot('desktop-coach');
-        assert.ok(calls.some(call => call.endpoint === '/api/coach/chat' && call.data.message === '什么是事务隔离？'));
+        assert.ok(calls.some(call => call.endpoint === '/api/coach/stream' && call.data.message === '什么是事务隔离？'));
+        const coachPage = page.locator('.buddy-page.study:visible');
+        await coachPage.getByRole('button', { name: '开启记忆', exact: true }).click();
+        await coachPage.getByRole('button', { name: '关闭记忆', exact: true }).waitFor();
+        const settingsRevisionBeforeAuto = account('fixture-user_a').memory.revision;
+        delayNextMemoryRead = true;
+        const delayedOldMemoryResponse = page.waitForResponse(response => response.headers()['x-fixture-delayed-memory'] === 'true');
+        await coachPage.getByRole('button', { name: '刷新记忆', exact: true }).click();
+        delayBuddy = true;
+        await page.getByLabel('想问小师的问题').fill('请先举例再讲原理。'); await click('发送');
+        await page.waitForFunction(() => document.querySelectorAll('.buddy-page.study .companion-message.assistant p').length === 2);
+        const partialText = await coachPage.locator('.companion-message.assistant p').last().innerText();
+        assert.ok(partialText.length > 0 && partialText.length < 30 && !partialText.includes('�'));
+        await page.getByLabel('想问小师的问题').fill('下一条知识问题草稿');
+        await nav('陪考小暖'); await page.getByLabel('想对小暖说的话').fill('小暖独立草稿');
+        await nav('通考小师'); assert.equal(await page.getByLabel('想问小师的问题').inputValue(), '下一条知识问题草稿');
+        await page.waitForFunction(() => document.querySelector('.buddy-page.study .buddy-chat-status').innerText.includes('已回复'));
+        delayBuddy = false;
+        await coachPage.getByText('查看记忆（1）', { exact: true }).click();
+        await coachPage.getByText('先举例再讲原理', { exact: true }).waitFor();
+        assert.equal(account('fixture-user_a').memory.revision, settingsRevisionBeforeAuto);
+        const oldMemoryResponse = await delayedOldMemoryResponse;
+        assert.equal((await oldMemoryResponse.json()).entries.length, 0);
+        await oldMemoryResponse.finished();
+        await sleep(100);
+        await coachPage.getByText('先举例再讲原理', { exact: true }).waitFor();
+        pass('late older memory GET cannot replace newer automatic entries with the same settings revision');
+        await coachPage.getByRole('button', { name: '修改', exact: true }).click();
+        await coachPage.getByLabel('修改记忆', { exact: true }).fill('先用生活中的例子，再说明边界');
+        await coachPage.getByRole('button', { name: '保存记忆', exact: true }).click();
+        await coachPage.getByText('先用生活中的例子，再说明边界', { exact: true }).waitFor();
+        await coachPage.getByRole('button', { name: '关闭记忆', exact: true }).click();
+        await coachPage.getByRole('button', { name: '开启记忆', exact: true }).waitFor();
+        await coachPage.getByText('先用生活中的例子，再说明边界', { exact: true }).waitFor();
+        await coachPage.getByRole('button', { name: '删除', exact: true }).click();
+        await coachPage.getByText('还没有保存的记忆。', { exact: true }).waitFor();
+        await coachPage.getByText('讲解偏好', { exact: true }).waitFor();
+        await coachPage.getByRole('button', { name: '允许重新记住', exact: true }).click();
+        await page.waitForFunction(() => !document.querySelector('.buddy-page.study .buddy-memory-blocked'));
+        account('fixture-user_a').memory.entries = [{ key: 'target_role', scope: 'shared', value: 'A_PRIVATE Java 后端', updatedAt: '2026-10-24T03:00:00Z', locked: false }];
+        account('fixture-user_a').memory.revision++;
+        await coachPage.getByRole('button', { name: '刷新记忆', exact: true }).click();
+        await coachPage.getByText('查看记忆（1）', { exact: true }).click();
+        await coachPage.getByRole('button', { name: '清空全部记忆', exact: true }).click();
+        await coachPage.getByText('还没有保存的记忆。', { exact: true }).waitFor();
+        await coachPage.getByText('目标岗位', { exact: true }).waitFor();
+        pass('true split UTF-8 streaming renders before done, survives buddy navigation and preserves both drafts; optional memory can be edited, disabled and deleted');
+        await coachPage.locator('.companion-chat').evaluate(el => { el.style.height = '120px'; el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
+        await coachPage.getByRole('button', { name: '回到最新回复', exact: true }).waitFor();
+        await coachPage.getByRole('button', { name: '看面试问法', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('.buddy-page.study .buddy-chat-status').innerText.includes('已回复'));
+        assert.equal(await coachPage.locator('.companion-chat').evaluate(el => el.scrollTop), 0);
+        await coachPage.locator('.companion-chat').evaluate(el => { el.style.height = ''; });
+        await coachPage.getByRole('button', { name: '回到最新回复', exact: true }).click();
+        pass('reply does not pull readers away from older messages; return-to-latest is explicit; clear-all stops deleted fields from reappearing');
+        truncateBuddy = true;
+        const quotaBeforePartialFailure = calls.filter(call => call.endpoint === '/api/user/quota').length;
+        await page.getByLabel('想问小师的问题').fill('这次连接会中断'); await click('发送');
+        await coachPage.getByText('以下是未完成的回复，重试后会替换。', { exact: true }).waitFor();
+        await page.waitForFunction(() => document.querySelector('.balance-pill').innerText.includes('997'));
+        assert.ok(calls.filter(call => call.endpoint === '/api/user/quota').length > quotaBeforePartialFailure);
+        const userMessages = await coachPage.locator('.companion-message.user').count();
+        const assistantMessages = await coachPage.locator('.companion-message.assistant').count();
+        assert.equal(await page.getByLabel('想问小师的问题').inputValue(), '这次连接会中断');
+        truncateBuddy = false;
+        await coachPage.getByRole('button', { name: '重试原问题', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('.buddy-page.study .buddy-chat-status').innerText.includes('已回复'));
+        assert.equal(await coachPage.locator('.companion-message.user').count(), userMessages);
+        assert.equal(await coachPage.locator('.companion-message.assistant').count(), assistantMessages);
+        assert.equal(await coachPage.locator('.partial-message').count(), 0);
+        errorBuddy = true;
+        const quotaBeforeEventFailure = calls.filter(call => call.endpoint === '/api/user/quota').length;
+        await page.getByLabel('想问小师的问题').fill('回应中遇到忙碌错误'); await click('发送');
+        await coachPage.getByText('当前对话正在处理中，请稍后重试。', { exact: true }).waitFor();
+        await page.waitForFunction(() => document.querySelector('.balance-pill').innerText.includes('996'));
+        assert.ok(calls.filter(call => call.endpoint === '/api/user/quota').length > quotaBeforeEventFailure);
+        assert.equal(await page.getByLabel('想问小师的问题').inputValue(), '回应中遇到忙碌错误');
+        errorBuddy = false;
+        pass('missing done never appears successful; retry replaces partial pair; partial/SSE errors refresh billed quota and retain original error/draft');
+        richBuddy = true; delayBuddy = true;
+        await page.getByLabel('想问小师的问题').fill('请展示带代码的安全讲解'); await click('发送');
+        await coachPage.locator('.companion-message.assistant').last().locator('pre code').waitFor();
+        assert.ok((await coachPage.locator('.companion-message.assistant').last().locator('pre code').innerText()).includes('<script>'));
+        assert.equal(await page.evaluate(() => globalThis.buddyInjected), undefined);
+        await page.waitForFunction(() => document.querySelector('.buddy-page.study .buddy-chat-status').innerText.includes('已回复'));
+        const richReply = coachPage.locator('.companion-message.assistant').last();
+        assert.equal(await richReply.locator('.buddy-prose strong').innerText(), '可见性');
+        assert.ok((await richReply.locator('pre code').innerText()).includes('<script>globalThis.buddyInjected = true</script>'));
+        assert.equal(await richReply.locator('script').count(), 0);
+        await screenshot('desktop-coach-code');
+        await page.setViewportSize({ width: 390, height: 844 }); await noOverflow('mobile escaped coach code'); await screenshot('mobile-coach-code');
+        await page.setViewportSize({ width: 1440, height: 1050 });
+        richBuddy = false; delayBuddy = false;
+        pass('streamed unfinished code fences retain content; simple bold renders; script literals stay escaped and mobile code does not overflow');
         failCoach = true;
         await page.getByLabel('想问小师的问题').fill('我的另一个知识问题。'); await click('发送');
         await page.getByText('知识答疑暂不可用，请重试', { exact: true }).waitFor();
@@ -359,14 +511,22 @@ async function main() {
             await nav(name); await noOverflow('360px ' + name);
         }
         pass('390px and 360px: all eight views have no document overflow and expose both buddy shortcuts');
+        delayBuddy = true; await nav('陪考小暖');
+        await page.getByLabel('想对小暖说的话').fill('A_PRIVATE_BUDDY_SLOW'); await click('发送');
+        await page.waitForFunction(() => document.querySelector('.buddy-page.warm .buddy-chat-status').innerText.includes('正在回应'));
         delayQuota = true; await nav('账号与设置'); await click('刷新设置与用量'); await sleep(50);
         await page.getByRole('button', { name: '退出登录', exact: true }).click();
-        await login('user_b'); await sleep(1400);
+        await login('user_b'); await sleep(1800); delayBuddy = false;
         await nav('报告与成长');
         assert.equal(await page.locator('.report-summary').count(), 0);
         await nav('面试工作区'); assert.equal(await page.locator('.message').count(), 0);
         assert.equal(await page.locator('body').innerText().then(text => /A_PRIVATE/.test(text)), false);
         assert.ok(await page.locator('.balance-pill').innerText().then(text => text.includes('24.69')));
+        await nav('陪考小暖'); assert.equal(await page.locator('.buddy-page.warm .companion-message').count(), 0);
+        assert.equal(await page.getByLabel('想对小暖说的话').inputValue(), '');
+        await nav('通考小师'); assert.equal(await page.locator('.buddy-page.study .companion-message').count(), 0);
+        assert.equal(await page.getByLabel('想问小师的问题').inputValue(), '');
+        await page.locator('.buddy-page.study').getByRole('button', { name: '开启记忆', exact: true }).waitFor();
         pass('account reset clears private content; late prior-user response cannot overwrite new state');
         await page.setViewportSize({ width: 1440, height: 1050 });
         await nav('开始练习');

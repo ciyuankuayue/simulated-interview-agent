@@ -8,6 +8,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * F10 心理助手 / 情绪陪伴。
@@ -27,10 +30,10 @@ public class CompanionController {
         this.currentUser = currentUser;
     }
 
-    public record ChatRequest(String message) {}
+    public record ChatRequest(@NotBlank(message = "消息不能为空") @Size(max = 6000, message = "消息最多 6000 字符") String message) {}
 
     @PostMapping("/chat")
-    public Map<String, Object> chat(@RequestBody ChatRequest req) {
+    public Map<String, Object> chat(@Valid @RequestBody ChatRequest req) {
         if (req == null || req.message() == null || req.message().isBlank()) {
             throw new IllegalArgumentException("message 不能为空");
         }

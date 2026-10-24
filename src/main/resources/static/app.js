@@ -1,9 +1,10 @@
 /* Vue 3 client. Existing contracts and JWT-in-memory policy are unchanged; coach endpoints are additive.
- * Views own their form state; account reset invalidates all outstanding requests.
+ * Account reset invalidates requests and clears both buddies' private state.
  */
 (function () {
     'use strict';
     const { createApp, reactive, nextTick } = Vue;
+    const buddyState = () => ({ messages: [], input: '', busy: false, error: '', status: '', nextId: 0, retry: null, following: true });
     const initialState = () => ({
         token: null, username: '', accountEpoch: 0, view: 'prepare', notice: null,
         jdList: [], resumeList: [], historyList: [], weakList: [], quota: null,
@@ -14,6 +15,8 @@
         report: null, reportSessionId: null, connOk: false, connText: '尚未开始',
         pendingSince: null, elapsed: 0, quotaOpen: false, dueOnly: false,
         authDestination: null, buddyReturnView: 'prepare',
+        buddies: { coach: buddyState(), companion: buddyState() },
+        buddyMemory: { enabled: false, revision: -1, entries: [], blockedKeys: [], loaded: false, busy: false, error: '' },
         histFilter: { keyword: '', status: '', minScore: '', maxScore: '' }
     });
     const store = reactive(initialState());
@@ -22,6 +25,7 @@
     let seen = new Set();
     let submitted = new Set();
     let historySequence = 0;
+    let buddyMemorySequence = 0;
     const staleError = () => Object.assign(new Error('会话已切换'), { stale: true });
     const notify = (message, error = false) => {
         if (message && message.stale) return;
@@ -39,6 +43,16 @@
         }
         if (!['companion', 'coach'].includes(store.view)) store.buddyReturnView = store.view;
         store.view = view;
+        if (!store.buddyMemory.loaded) refreshBuddyMemory();
+    }
+    function explainWithCoach(question, answer, review, source) {
+        const coach = store.buddies.coach;
+        if (coach.input.trim() && !confirm('用选中的练习片段替换小师输入框里的草稿？')) return;
+        const feedback = typeof review === 'string' ? review : [review?.explanation, review?.correction, review?.knowledgeSupplement].filter(Boolean).join('\n');
+        coach.input = ['请帮我讲懂这道题，指出面试考点，再给一道可跳过的小题。', source ? '来源：' + source : '',
+            '问题：' + (question || '待巩固知识点'), answer ? '我当时的回答：' + answer : '', feedback ? '已有反馈：' + feedback : ''].filter(Boolean).join('\n\n').slice(0, 6000);
+        goBuddy('coach');
+        nextTick(() => document.getElementById('buddy-input-coach')?.focus({ preventScroll: true }));
     }
     const fmtTime = value => value ? new Date(value).toLocaleString('zh-CN', {
         month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
@@ -56,7 +70,7 @@
         closeStream();
         requests.forEach(controller => controller.abort());
         requests.clear();
-        seen = new Set(); submitted = new Set(); historySequence++;
+        seen = new Set(); submitted = new Set(); historySequence++; buddyMemorySequence++;
         Object.assign(store, initialState(), { accountEpoch: epoch });
     }
     async function api(path, method = 'GET', body, raw = false) {
@@ -97,6 +111,90 @@
             if (error instanceof TypeError) throw new Error('网络连接中断，请检查网络后重试。');
             throw error;
         } finally { requests.delete(controller); }
+    }
+    function acceptBuddyMemory(data) {
+        const memory = store.buddyMemory;
+        if (data && Number(data.revision) >= memory.revision) Object.assign(memory, data, { loaded: true, error: '' });
+    }
+    async function refreshBuddyMemory() {
+        // Automatic entries share the settings revision; also reject snapshots from superseded reads.
+        const sequence = ++buddyMemorySequence;
+        try {
+            const data = await api('/api/buddy/memory');
+            if (sequence === buddyMemorySequence) acceptBuddyMemory(data);
+        } catch (error) {
+            if (!error.stale && sequence === buddyMemorySequence) store.buddyMemory.error = '记忆暂未读取成功，可以稍后重试。';
+        }
+    }
+    async function streamBuddy(path, message, onEvent) {
+        const epoch = store.accountEpoch, controller = new AbortController();
+        requests.add(controller);
+        let reader, complete = false;
+        const check = () => { if (epoch !== store.accountEpoch) throw staleError(); };
+        const fail = (data, status) => {
+            check();
+            status = Number(data?.status || status || 503);
+            if (status === 401) {
+                resetAccount(); notify('登录已过期，请重新登录。', true); throw staleError();
+            }
+            if (status === 402) { store.quotaOpen = true; store.quota = null; }
+            throw Object.assign(new Error(data?.message || '回应暂未完成，请稍后重试。'), { status, code: data?.code });
+        };
+        try {
+            const response = await fetch(path, { method: 'POST', signal: controller.signal,
+                headers: { Authorization: 'Bearer ' + store.token, 'Content-Type': 'application/json; charset=utf-8', Accept: 'text/event-stream' },
+                body: JSON.stringify({ message }) });
+            check();
+            if (!response.ok) {
+                let data; try { data = await response.json(); } catch (_) { data = null; }
+                fail(data, response.status);
+            }
+            if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) throw new Error('服务返回格式异常，请稍后重试。');
+            reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '', type = '', lines = [];
+            const dispatch = () => {
+                if (!lines.length) { type = ''; return; }
+                let data; try { data = JSON.parse(lines.join('\n')); } catch (_) { throw new Error('回应传输不完整，请重试。'); }
+                const event = type; type = ''; lines = [];
+                check();
+                if (event === 'error') fail(data);
+                if (event === 'done') {
+                    if (typeof data.reply !== 'string' || !data.reply.trim()) throw new Error('未收到完整回复，请重试。');
+                    complete = true;
+                }
+                if (event === 'delta' || event === 'done') onEvent(event, data);
+            };
+            const consume = final => {
+                let end;
+                while ((end = buffer.indexOf('\n')) >= 0) {
+                    const line = buffer.slice(0, end).replace(/\r$/, ''); buffer = buffer.slice(end + 1);
+                    if (!line) dispatch();
+                    else if (!line.startsWith(':')) {
+                        const colon = line.indexOf(':');
+                        const field = colon < 0 ? line : line.slice(0, colon);
+                        const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /, '');
+                        if (field === 'event') type = value;
+                        if (field === 'data') lines.push(value);
+                    }
+                    if (complete) return;
+                }
+                if (final && (buffer || lines.length)) throw new Error('回应传输中断，请重试。');
+            };
+            while (!complete) {
+                const chunk = await reader.read(); check();
+                buffer += decoder.decode(chunk.value, { stream: !chunk.done }); consume(chunk.done);
+                if (chunk.done) break;
+            }
+            if (!complete) throw new Error('连接已中断，回复尚未完成。请重试，可能产生新的调用费用。');
+        } catch (error) {
+            check();
+            if (error instanceof TypeError) throw new Error('网络连接中断，回复尚未完成，请重试。');
+            throw error;
+        } finally {
+            if (reader) reader.cancel().catch(() => {});
+            requests.delete(controller);
+        }
     }
     function waitFor(phase) {
         store.phase = phase;
@@ -241,7 +339,8 @@
             tagline: '先接住你的心情，再陪你坚定向前。', welcome: '今天的你，感觉怎么样？',
             description: '紧张、失落，或者只是想说几句话，都可以在这里慢慢聊。',
             placeholder: '说说你现在的心情…', label: '想对小暖说的话',
-            chat: '/api/companion/chat', reset: '/api/companion/reset',
+            stream: '/api/companion/stream', reset: '/api/companion/reset',
+            actions: ['先听我说', '帮我理一理', '陪我走一步'],
             starters: ['明天就要面试了，我有点紧张。', '刚才没有答好，有点受挫。', '我想先整理一下现在的心情。']
         },
         coach: {
@@ -250,7 +349,8 @@
             tagline: '把不会的弄懂，把下一步走清楚。', welcome: '哪一个问题，让你停住了？',
             description: '一个没弄懂的知识点，一道答不好的题，或一份不知从哪开始的学习计划，我们一点点拆开。',
             placeholder: '把卡住的问题贴过来，也可以告诉我你的目标岗位和基础…', label: '想问小师的问题',
-            chat: '/api/coach/chat', reset: '/api/coach/reset',
+            stream: '/api/coach/stream', reset: '/api/coach/reset',
+            actions: ['换个比喻', '看面试问法', '给个提示', '看答案', '跳过这题', '今天不测'],
             starters: ['能用一个简单例子解释数据库事务隔离吗？', '怎样用 STAR 结构讲清我的项目贡献？', '我想梳理备考方向，应该先告诉你哪些信息？']
         }
     };
@@ -607,6 +707,15 @@
                 if (this.trendOpen) {
                     try { this.trend = await api('/api/interview/trend'); } catch (error) { notify(error, true); }
                 }
+            },
+            async teach(turn) {
+                const sessionId = store.reportSessionId;
+                try {
+                    const turns = this.turns.length ? this.turns : await api('/api/interview/' + sessionId + '/turns');
+                    if (store.reportSessionId !== sessionId) return;
+                    this.turns = turns;
+                    explainWithCoach(turn.question, turns.find(item => item.seq === turn.turnSeq)?.answer, turn, '面试报告 #' + sessionId + ' · 第 ' + turn.turnSeq + ' 轮');
+                } catch (error) { notify(error, true); }
             }
         },
         template: `
@@ -621,7 +730,7 @@
 <section class="report-section" v-if="report.collapsedPoints?.length"><h3>优先补强</h3><ul class="takeaways"><li v-for="point in report.collapsedPoints" :key="point">{{point}}</li></ul><button class="text-button" @click="store.view='weak'">去错题本巩固<app-icon name="arrow"/></button></section>
 <section class="report-section" v-if="report.behaviorReview"><h3>行为面试评估</h3><div class="behavior-dimensions"><span v-for="(value,key) in report.behaviorReview.dimensions" :key="key">{{key}}<b>{{value}} / 2</b></span></div><p>{{report.behaviorReview.summary}}</p><ul><li v-for="suggestion in report.behaviorReview.suggestions" :key="suggestion">{{suggestion}}</li></ul></section>
 <section class="report-section"><div class="section-heading"><h3>逐轮反馈</h3><button class="text-button" @click="toggleTurns">{{showTurns?'收起原始问答':'查看原始问答'}}</button></div><p v-if="!reportTurns.length" class="field-note">本场暂无逐轮讲解；如报告生成失败，请保留原始问答。</p>
-<details v-for="turn in reportTurns" :key="turn.turnSeq" class="turn"><summary><span class="turn-number">{{String(turn.turnSeq).padStart(2,'0')}}</span><span class="grow">{{turn.question}}<small v-if="turn.track==='behavior'">行为面试</small></span><b>{{turn.score}} / 8</b></summary><div class="turn-detail"><template v-for="field in [{key:'explanation',label:'讲解'},{key:'correction',label:'纠正'},{key:'knowledgeSupplement',label:'知识补充'},{key:'exemplarAnswer',label:'示范回答'}]" :key="field.key"><div v-if="turn[field.key]"><h4>{{field.label}}</h4><p>{{turn[field.key]}}</p></div></template></div></details>
+<details v-for="turn in reportTurns" :key="turn.turnSeq" class="turn"><summary><span class="turn-number">{{String(turn.turnSeq).padStart(2,'0')}}</span><span class="grow">{{turn.question}}<small v-if="turn.track==='behavior'">行为面试</small></span><b>{{turn.score}} / 8</b></summary><div class="turn-detail"><template v-for="field in [{key:'explanation',label:'讲解'},{key:'correction',label:'纠正'},{key:'knowledgeSupplement',label:'知识补充'},{key:'exemplarAnswer',label:'示范回答'}]" :key="field.key"><div v-if="turn[field.key]"><h4>{{field.label}}</h4><p>{{turn[field.key]}}</p></div></template><button class="secondary compact" @click="teach(turn)">让小师讲讲<app-icon name="arrow"/></button></div></details>
 <div v-if="showTurns" class="turns-replay"><article v-for="turn in turns" :key="turn.seq"><h4>第 {{turn.seq}} 轮{{turn.layer?' · 追问 '+turn.layer:''}}</h4><strong>{{turn.question}}</strong><p>{{turn.answer || '本轮未作答'}}</p></article></div></section>
 <section v-if="report.expressionIssues?.length" class="report-section"><h3>表达改进</h3><div v-for="(issue,index) in report.expressionIssues" :key="index" class="expression-issue"><strong>{{issue.issue}}</strong><p>{{issue.guide}}</p></div></section><section v-if="report.reminders?.length" class="report-section"><h3>带到下一次的提醒</h3><ul><li v-for="reminder in report.reminders" :key="reminder">{{reminder}}</li></ul></section></template></article></div></section>`
     };
@@ -636,6 +745,10 @@
                 try { this.details[item.weakPointId] = await api('/api/weak-point/' + item.weakPointId); }
                 catch (error) { notify(error, true); }
                 finally { this.loadingDetail[item.weakPointId] = false; }
+            },
+            teach(item) {
+                const latest = this.details[item.weakPointId]?.latest;
+                explainWithCoach(latest?.question || item.knowledgePoint, latest?.answer, latest?.review, '错题本 · ' + item.knowledgePoint);
             },
             async start() {
                 if (this.busy) return;
@@ -674,48 +787,151 @@
         template: `
 <section><div class="page-heading"><div><span class="eyebrow">把薄弱点练成底气</span><h1>错题与复习</h1><p>按 1、3、7、15 天的节奏，巩固还不熟悉的知识。</p></div><button class="primary" @click="start" :disabled="busy">{{review?'返回错题列表':'开始今日复习'}}<app-icon name="arrow"/></button></div>
 <p v-if="error" class="inline-error" role="alert">{{error}}</p><div v-if="review" class="surface review-surface"><p v-if="!queue.length" class="empty-copy">今天没有到期的复习项，可以放心开始新的练习。</p><template v-else><span class="eyebrow">今日复习 · {{index+1}} / {{queue.length}}</span><h2>{{queue[index].knowledgePoint}}</h2><p v-if="busy" role="status">正在处理，请稍候…</p><p class="review-question">{{question}}</p><template v-if="!result"><label for="review-answer" class="field-label">你的回答</label><textarea id="review-answer" rows="5" v-model="answer" :disabled="busy || !question" placeholder="再试一次，看看这次能否说得更清楚。"></textarea><div class="row"><button class="primary" @click="submit" :disabled="busy || !question || !answer.trim()">提交判分</button><button class="text-button" @click="next" :disabled="busy">跳过</button></div></template><div v-else class="review-result"><strong>{{result.score}} / 8</strong><p>{{result.explanation}}</p><p class="quiet">{{result.resolved?'已掌握，本题已出队。':'下次复习：'+fmtTime(result.nextReviewAt)}}</p><button class="primary" @click="next" :disabled="busy">{{index+1<queue.length?'下一题':'完成复习'}}</button></div></template></div>
-<div v-else class="surface"><div class="section-heading"><h2>待巩固的知识点</h2><div class="row"><label class="checkbox-label"><input type="checkbox" v-model="store.dueOnly" @change="refresh">只看今日到期</label><button class="icon-button" aria-label="刷新错题" @click="refresh"><app-icon name="refresh"/></button></div></div><div v-if="!store.weakList.length" class="empty-state"><span class="empty-symbol"><app-icon name="leaf"/></span><h2>慢慢积累，不急于一次掌握</h2><p>练习中需要巩固的知识点，会自动收进这里。</p></div><details v-for="item in store.weakList" :key="item.weakPointId" class="weak-point" @toggle="detail(item,$event)"><summary><span class="grow"><strong>{{item.knowledgePoint}}</strong><small>错 {{item.wrongCount || 0}} 次 · {{item.resolved?'已掌握':'复习阶段 '+(item.reviewStage || 0)}}{{item.nextReviewAt?' · '+fmtTime(item.nextReviewAt):''}}</small></span><span class="quiet">查看详情</span></summary><div class="weak-detail"><p v-if="loadingDetail[item.weakPointId]">正在读取…</p><template v-else-if="details[item.weakPointId]?.latest"><h4>最近一次练习</h4><strong>{{details[item.weakPointId].latest.question}}</strong><p>你的回答：{{details[item.weakPointId].latest.answer}}</p><template v-if="details[item.weakPointId].latest.review"><h4>反馈与纠正</h4><p>{{details[item.weakPointId].latest.review.explanation}}</p><p>{{details[item.weakPointId].latest.review.correction}}</p></template></template><p v-else>暂时没有可回看的原始问答。</p></div></details></div></section>`
+<div v-else class="surface"><div class="section-heading"><h2>待巩固的知识点</h2><div class="row"><label class="checkbox-label"><input type="checkbox" v-model="store.dueOnly" @change="refresh">只看今日到期</label><button class="icon-button" aria-label="刷新错题" @click="refresh"><app-icon name="refresh"/></button></div></div><div v-if="!store.weakList.length" class="empty-state"><span class="empty-symbol"><app-icon name="leaf"/></span><h2>慢慢积累，不急于一次掌握</h2><p>练习中需要巩固的知识点，会自动收进这里。</p></div><details v-for="item in store.weakList" :key="item.weakPointId" class="weak-point" @toggle="detail(item,$event)"><summary><span class="grow"><strong>{{item.knowledgePoint}}</strong><small>错 {{item.wrongCount || 0}} 次 · {{item.resolved?'已掌握':'复习阶段 '+(item.reviewStage || 0)}}{{item.nextReviewAt?' · '+fmtTime(item.nextReviewAt):''}}</small></span><span class="quiet">查看详情</span></summary><div class="weak-detail"><p v-if="loadingDetail[item.weakPointId]">正在读取…</p><template v-else-if="details[item.weakPointId]?.latest"><h4>最近一次练习</h4><strong>{{details[item.weakPointId].latest.question}}</strong><p>你的回答：{{details[item.weakPointId].latest.answer}}</p><template v-if="details[item.weakPointId].latest.review"><h4>反馈与纠正</h4><p>{{details[item.weakPointId].latest.review.explanation}}</p><p>{{details[item.weakPointId].latest.review.correction}}</p></template><button class="secondary compact" @click="teach(item)">让小师讲讲<app-icon name="arrow"/></button></template><p v-else>暂时没有可回看的原始问答。</p></div></details></div></section>`
+    };
+    // Render only these two useful teaching conventions. All output remains escaped Vue text.
+    const BuddyText = {
+        props: ['text'],
+        computed: {
+            blocks() {
+                const result = [];
+                let lines = [], code = false, fenceLength = 0, language = '';
+                const flush = () => {
+                    const text = lines.join('\n');
+                    if (text || code) result.push({ code, language, text });
+                    lines = [];
+                };
+                for (const line of String(this.text || '').split('\n')) {
+                    const fence = line.match(/^ {0,3}(`{3,})([^`]*)$/);
+                    if (!code && fence && /^[a-zA-Z0-9_+.#-]*\s*$/.test(fence[2])) {
+                        flush(); code = true; fenceLength = fence[1].length; language = fence[2].trim();
+                    } else if (code && fence && !fence[2].trim() && fence[1].length >= fenceLength) {
+                        flush(); code = false; language = '';
+                    } else lines.push(line);
+                }
+                flush();
+                return result;
+            }
+        },
+        methods: {
+            inline(text) {
+                const parts = [], bold = /\*\*([^*\n]+)\*\*/g;
+                let from = 0, match;
+                while ((match = bold.exec(text))) {
+                    if (match.index > from) parts.push({ text: text.slice(from, match.index), bold: false });
+                    parts.push({ text: match[1], bold: true }); from = bold.lastIndex;
+                }
+                if (from < text.length) parts.push({ text: text.slice(from), bold: false });
+                return parts;
+            }
+        },
+        template: `<div class="buddy-prose"><template v-for="(block,index) in blocks" :key="index"><div v-if="block.code" class="buddy-code"><small v-if="block.language" class="buddy-code-language">{{block.language}}</small><pre><code>{{block.text}}</code></pre></div><p v-else><template v-for="(part,partIndex) in inline(block.text)" :key="partIndex"><strong v-if="part.bold">{{part.text}}</strong><template v-else>{{part.text}}</template></template></p></template></div>`
+    };
+    const BuddyMemory = {
+        props: ['mode'],
+        data: () => ({ editing: null, value: '' }),
+        computed: { memory() { return store.buddyMemory; } },
+        methods: {
+            refresh: refreshBuddyMemory,
+            keyLabel(key) { return ({ target_role: '目标岗位', preparation_stage: '备考阶段', available_time: '通常可用时间', explanation_style: '讲解偏好', practice_preference: '练习偏好', support_style: '陪伴偏好', address_preference: '称呼偏好' })[key] || '备考偏好'; },
+            scopeLabel(entry) { return ({ SHARED: '共同备考目标', COACH: '小师讲解偏好', COMPANION: '小暖沟通偏好' })[String(entry.scope).toUpperCase()] || '备考偏好'; },
+            edit(entry) { this.editing = entry.key; this.value = entry.value; },
+            async change(path, method, body) {
+                if (this.memory.busy) return;
+                const memory = this.memory;
+                buddyMemorySequence++;
+                memory.busy = true; memory.error = '';
+                try { acceptBuddyMemory(await api('/api/buddy/memory' + path, method, body)); this.editing = null; }
+                catch (error) { if (!error.stale) memory.error = error.message; }
+                finally { memory.busy = false; }
+            },
+            remove(entry) {
+                if (confirm('删除这条记忆？删除后不会再从旧对话自动恢复。')) this.change('/entries/' + encodeURIComponent(entry.key), 'DELETE');
+            },
+            clear() {
+                if (confirm('清空全部长期记忆？本次聊天仍会保留；旧对话不会自动恢复这些记忆。')) this.change('/entries', 'DELETE');
+            }
+        },
+        template: `<section class="buddy-memory"><div class="section-heading"><h3>记住了什么</h3><button class="text-button" @click="refresh" :disabled="memory.busy">刷新记忆</button></div><p>由你决定是否开启。开启后，尝试整理你明确说出的备考目标、讲解和沟通偏好；不保存整段聊天，也不推断人格或病症。</p><button class="secondary compact" :aria-pressed="memory.enabled" @click="change('','PATCH',{enabled:!memory.enabled})" :disabled="memory.busy || !memory.loaded">{{memory.enabled?'关闭记忆':'开启记忆'}}</button><p class="buddy-boundary">{{memory.enabled?'记忆已开启，可随时修改、删除或清空。':'记忆已关闭：后续发起的对话不再读取或整理长期记忆；保留的条目仍可查看或删除。'}}</p><p v-if="!memory.enabled && (store.buddies.coach.busy || store.buddies.companion.busy)" class="buddy-boundary">已开始的回复可能已读取当时的偏好；当前聊天仍会参考你刚说过的内容。</p><p v-if="memory.error" class="inline-error" role="alert">{{memory.error}}</p><details v-if="memory.entries.length" class="buddy-memory-list"><summary>查看记忆（{{memory.entries.length}}）</summary><article v-for="entry in memory.entries" :key="entry.key"><strong>{{keyLabel(entry.key)}} · {{scopeLabel(entry)}}</strong><template v-if="editing===entry.key"><label class="sr-only" :for="'memory-'+mode+'-'+entry.key">修改记忆</label><textarea :id="'memory-'+mode+'-'+entry.key" v-model="value" rows="3" maxlength="300"></textarea><div class="row wrap"><button class="text-button" :disabled="memory.busy || !value.trim()" @click="change('/entries/'+encodeURIComponent(entry.key),'PATCH',{value:value.trim()})">保存记忆</button><button class="text-button" @click="editing=null">取消</button></div></template><template v-else><p>{{entry.value}}</p><small>{{entry.locked?'由你修改，自动整理不会覆盖':'来自你明确表达的目标或偏好'}} · {{fmtTime(entry.updatedAt)}}</small><div class="row wrap"><button class="text-button" :disabled="memory.busy" @click="edit(entry)">修改</button><button class="text-button danger-text" :disabled="memory.busy" @click="remove(entry)">删除</button></div></template></article><button class="text-button danger-text" :disabled="memory.busy" @click="clear">清空全部记忆</button></details><p v-else-if="memory.loaded" class="field-note">还没有保存的记忆。</p><div v-if="memory.blockedKeys?.length" class="buddy-memory-blocked"><p>已停止自动记录：</p><div v-for="key in memory.blockedKeys" :key="key" class="row wrap"><span>{{keyLabel(key)}}</span><button class="text-button" :disabled="memory.busy" @click="change('/entries/'+encodeURIComponent(key)+'/allow','POST')">允许重新记住</button></div><small>重新允许后，只会根据你接下来明确说出的信息整理。</small></div></section>`
     };
     const CompanionPanel = {
+        components: { BuddyMemory, BuddyText },
         props: { mode: { type: String, default: 'companion' } },
-        data: () => ({ messages: [], input: '', busy: false, error: '' }),
-        computed: { profile() { return buddyProfiles[this.mode] || buddyProfiles.companion; } },
+        computed: {
+            profile() { return buddyProfiles[this.mode] || buddyProfiles.companion; },
+            chat() { return store.buddies[this.profile.id]; }
+        },
+        mounted() { if (store.view === this.profile.id && !store.buddyMemory.loaded) refreshBuddyMemory(); },
+        watch: {
+            'chat.messages': { deep: true, handler() { this.follow(); } },
+            'store.view'(view) { if (view === this.profile.id) this.follow(); }
+        },
         methods: {
+            follow() { nextTick(() => { const el = this.$refs.chat; if (el && this.chat.following && store.view === this.profile.id) el.scrollTop = el.scrollHeight; }); },
+            scrolled() { const el = this.$refs.chat; this.chat.following = el.scrollHeight - el.scrollTop - el.clientHeight < 85; },
+            latest() { this.chat.following = true; this.follow(); },
             async send(text) {
-                text = typeof text === 'string' ? text : this.input.trim();
-                if (!text || this.busy) return;
-                this.error = ''; this.busy = true; this.input = '';
-                let message = this.messages.at(-1);
-                if (message?.failed && message.text === text) message.failed = false;
-                else { message = { role: 'user', text, failed: false }; this.messages.push(message); }
-                try {
-                    const result = await api(this.profile.chat, 'POST', { message: text });
-                    this.messages.push({ role: 'assistant', text: result.reply, safe: result.safe === true });
-                    loadQuota().catch(error => notify(error, true));
-                } catch (error) {
-                    if (!error.stale) { this.error = error.message; this.input = text; message.failed = true; }
-                } finally {
-                    this.busy = false;
-                    nextTick(() => { if (this.$refs.chat) this.$refs.chat.scrollTop = this.$refs.chat.scrollHeight; });
+                const chat = this.chat;
+                text = typeof text === 'string' ? text : chat.input.trim();
+                if (!text || chat.busy) return;
+                if (typeof text === 'string' && chat.input.trim() === text) chat.input = '';
+                chat.error = ''; chat.busy = true; chat.status = this.profile.shortName + '正在回应…';
+                let user;
+                if (chat.retry?.text === text) {
+                    user = chat.messages.find(item => item.id === chat.retry.userId);
+                    chat.messages = chat.messages.filter(item => item.id !== chat.retry.assistantId);
                 }
+                if (user) user.failed = false;
+                else { user = { id: ++chat.nextId, role: 'user', text, failed: false }; chat.messages.push(user); }
+                const reply = { id: ++chat.nextId, role: 'assistant', text: '', partial: false };
+                chat.messages.push(reply);
+                chat.retry = null;
+                const epoch = store.accountEpoch;
+                try {
+                    await streamBuddy(this.profile.stream, text, (event, data) => {
+                        // Mutate through the reactive array so every genuine model fragment is rendered.
+                        const item = chat.messages.find(item => item.id === reply.id);
+                        if (event === 'delta' && typeof data.text === 'string') item.text += data.text;
+                        if (event === 'done') { item.text = data.reply; item.safe = data.safe === true; }
+                    });
+                    chat.status = this.profile.shortName + '已回复。';
+                    loadQuota().catch(error => notify(error, true));
+                    refreshBuddyMemory();
+                } catch (error) {
+                    if (!error.stale && epoch === store.accountEpoch) {
+                        chat.error = error.message;
+                        if (!chat.input.trim()) chat.input = text;
+                        const item = chat.messages.find(item => item.id === reply.id);
+                        if (item.text) item.partial = true;
+                        else chat.messages = chat.messages.filter(item => item.id !== reply.id);
+                        user.failed = true;
+                        chat.retry = { text, userId: user.id, assistantId: reply.id };
+                        chat.status = '回复尚未完成，原问题已保留。';
+                        // A partial generation can already be billed; a lost done can also have saved preferences.
+                        // Reconcile quietly so refresh failures never replace the original error or retry draft.
+                        loadQuota().catch(() => {});
+                        if (item.text) refreshBuddyMemory();
+                    }
+                } finally { if (epoch === store.accountEpoch) chat.busy = false; }
             },
             async reset() {
-                if (this.busy || !confirm('清空与' + this.profile.name + '的本次对话？')) return;
-                this.busy = true;
-                try { await api(this.profile.reset, 'POST'); this.messages = []; this.input = ''; this.error = ''; }
-                catch (error) { if (!error.stale) this.error = error.message; }
-                finally { this.busy = false; }
+                const chat = this.chat;
+                if (chat.busy || !confirm('清空与' + this.profile.name + '的本次对话？长期记忆另行管理，不会一并删除。')) return;
+                chat.busy = true;
+                try { await api(this.profile.reset, 'POST'); Object.assign(chat, buddyState()); }
+                catch (error) { if (!error.stale) chat.error = error.message; }
+                finally { chat.busy = false; }
             },
             back() { store.view = store.buddyReturnView || (store.interviewActive ? 'interview' : 'prepare'); }
         },
         template: `
 <section :class="['buddy-page',profile.tone]"><div class="page-heading"><div><span class="eyebrow">{{profile.role}} · 备考路上的 AI 搭档</span><h1>{{profile.name}}</h1><p>{{profile.tagline}}</p></div><button class="secondary" @click="back">返回刚才的页面<app-icon name="arrow"/></button></div>
 <div class="buddy-introduction"><buddy-avatar :tone="profile.tone"/><div><span class="eyebrow">{{profile.name}} · {{profile.role}}</span><p>{{profile.introduction}}</p></div></div>
-<div class="companion-grid"><div class="surface companion-room"><div class="companion-heading"><buddy-avatar :tone="profile.tone"/><div><h2>{{profile.shortName}}在这里</h2><p>{{mode==='coach'?'把卡住的知识点说给我听。':profile.tagline}}</p></div><span class="spacer"></span><button class="text-button" @click="reset" :disabled="busy">清空对话</button></div>
-<div class="companion-chat" ref="chat" role="log" :aria-label="'与'+profile.shortName+'的对话'" aria-live="polite" aria-relevant="additions"><div v-if="!messages.length" class="companion-welcome"><h2>{{profile.welcome}}</h2><p>{{profile.description}}</p><div class="starter-list"><button v-for="starter in profile.starters" :key="starter" @click="send(starter)" :disabled="busy">{{starter}}<app-icon name="arrow"/></button></div></div><article v-for="(message,index) in messages" :key="index" :class="['companion-message',message.role,{'safety-message':message.safe}]"><strong>{{message.role==='user'?'我':profile.shortName}}</strong><p>{{message.text}}</p><small v-if="message.failed" class="danger-text">暂未获得回复，问题已保留在输入框。</small></article><p v-if="busy" class="quiet" role="status">{{profile.shortName}}正在回应…</p></div>
-<div class="companion-compose"><p v-if="error" class="inline-error" role="alert">{{error}}</p><label class="sr-only" :for="'buddy-input-'+profile.id">{{profile.label}}</label><textarea :id="'buddy-input-'+profile.id" v-model="input" rows="3" maxlength="6000" :placeholder="profile.placeholder" :disabled="busy" @keydown.ctrl.enter.prevent="send()" @keydown.meta.enter.prevent="send()"></textarea><div class="row"><span class="field-note">Ctrl / ⌘ + Enter 发送</span><span class="spacer"></span><button class="primary" @click="send()" :disabled="busy || !input.trim()">发送<app-icon name="arrow"/></button></div></div></div>
-<aside class="companion-aside"><template v-if="mode==='companion'"><span class="eyebrow">不急，我们慢慢来</span><h2>先照顾好自己，<br>再面对下一题。</h2><p>小暖提供倾听与心态陪伴。也欢迎你把感受说给身边信任的人听，一起找到支持。</p><p class="buddy-boundary">AI 陪伴不替代专业心理支持，不做诊断。对话不会自动加入资料库；服务重启后历史清空。</p><hr><h3>想把难点弄明白？</h3><p>让小师陪你讲清知识、拆解题目，找到下一步的学习方向。</p><button class="secondary" @click="goBuddy('coach')"><buddy-avatar tone="study"/>去找通考小师<app-icon name="arrow"/></button></template>
-<template v-else><span class="eyebrow">一点点弄懂，就在进步</span><h2>不怕暂时不会，<br>我们从这里开始。</h2><p>告诉小师你卡住的知识点，或者目标岗位、当前基础和可用时间，一起理清学习方向。</p><p class="buddy-boundary">小师只参考你发送的内容。需要结合报告时，可以复制相关片段；短期对话不承诺永久记忆。</p><button class="text-button" @click="store.view='history'">查看我的练习报告<app-icon name="arrow"/></button><hr><h3>累了，先缓一缓</h3><p>学不进去时也不必苛责自己。小暖在另一边，愿意听你说。</p><button class="secondary" @click="goBuddy('companion')"><buddy-avatar tone="warm"/>去找陪考小暖<app-icon name="arrow"/></button></template></aside></div></section>`
+<div class="companion-grid"><div class="surface companion-room"><div class="companion-heading"><buddy-avatar :tone="profile.tone"/><div><h2>{{profile.shortName}}在这里</h2><p>{{mode==='coach'?'先弄懂，再用一道短题试试；随时可以跳过。':profile.tagline}}</p></div><span class="spacer"></span><button class="text-button" @click="reset" :disabled="chat.busy">清空对话</button></div>
+<div class="companion-chat" ref="chat" role="region" :aria-label="'与'+profile.shortName+'的对话'" tabindex="0" @scroll="scrolled"><div v-if="!chat.messages.length" class="companion-welcome"><h2>{{profile.welcome}}</h2><p>{{profile.description}}</p><div class="starter-list"><button v-for="starter in profile.starters" :key="starter" @click="send(starter)" :disabled="chat.busy">{{starter}}<app-icon name="arrow"/></button></div></div><article v-for="message in chat.messages" :key="message.id" :class="['companion-message',message.role,{'safety-message':message.safe,'partial-message':message.partial}]"><strong>{{message.role==='user'?'我':profile.shortName}}</strong><buddy-text v-if="message.text" :text="message.text"/><small v-if="message.failed" class="danger-text">这次尚未完成，可以重试原问题。</small><small v-if="message.partial" class="danger-text">以下是未完成的回复，重试后会替换。</small></article></div>
+<div class="buddy-chat-status"><span role="status" aria-live="polite">{{chat.status}}</span><button v-if="!chat.following" class="text-button" @click="latest">回到最新回复</button></div>
+<div class="companion-compose"><p v-if="chat.error" class="inline-error" role="alert">{{chat.error}}</p><div v-if="chat.retry && !chat.busy" class="buddy-retry"><button class="secondary compact" @click="send(chat.retry.text)">重试原问题</button><span class="field-note">将重新发起调用，可能再次扣减积分。</span></div><div class="buddy-actions" role="group" :aria-label="profile.shortName+'对话快捷操作'"><button v-for="action in profile.actions" :key="action" class="text-button" @click="send(action)" :disabled="chat.busy">{{action}}</button></div><label class="sr-only" :for="'buddy-input-'+profile.id">{{profile.label}}</label><textarea :id="'buddy-input-'+profile.id" v-model="chat.input" rows="3" maxlength="6000" :placeholder="chat.busy?'可以先写下接下来想说的话…':profile.placeholder" @keydown.ctrl.enter.prevent="send()" @keydown.meta.enter.prevent="send()"></textarea><div class="row"><span class="field-note">{{chat.busy?'回应中，可先写下一条或切换页面。':'Ctrl / ⌘ + Enter 发送'}}</span><span class="spacer"></span><button class="primary" @click="send()" :disabled="chat.busy || !chat.input.trim()">发送<app-icon name="arrow"/></button></div></div></div>
+<aside class="companion-aside"><template v-if="mode==='companion'"><span class="eyebrow">不急，我们慢慢来</span><h2>先照顾好自己，<br>再面对下一题。</h2><p>想倾诉，我们就先听你说；想找方向，我们就一起理一理。你可以随时告诉小暖，怎样陪你更舒服。</p><p class="buddy-boundary">AI 陪伴不替代专业心理支持，不做诊断。情绪聊天不会自动加入资料库；当前对话只短期保留。</p></template><template v-else><span class="eyebrow">一点点弄懂，就在进步</span><h2>不怕暂时不会，<br>我们从这里开始。</h2><p>先用例子建立直觉，再回到原理和面试考点。答不上来也没关系，可以看提示、看答案，或今天先不测。</p><p class="buddy-boundary">小师参考你发来的内容。也可以从报告或错题选择片段带来，不会自动读取全部资料；当前对话只短期保留。</p><button class="text-button" @click="store.view='history'">查看我的练习报告<app-icon name="arrow"/></button></template><buddy-memory :mode="mode"/><hr><template v-if="mode==='companion'"><h3>想把难点弄明白？</h3><p>让小师陪你讲清知识、拆解题目，找到下一步的学习方向。</p><button class="secondary" @click="goBuddy('coach')"><buddy-avatar tone="study"/>去找通考小师<app-icon name="arrow"/></button></template><template v-else><h3>累了，先缓一缓</h3><p>学不进去时也不必苛责自己。小暖在另一边，愿意听你说。</p><button class="secondary" @click="goBuddy('companion')"><buddy-avatar tone="warm"/>去找陪考小暖<app-icon name="arrow"/></button></template></aside></div></section>`
     };
 
     const SettingsPanel = {

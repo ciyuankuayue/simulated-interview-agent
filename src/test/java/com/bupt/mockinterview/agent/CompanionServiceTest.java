@@ -93,6 +93,7 @@ class CompanionServiceTest {
         assertThat(response.get("reply").toString()).contains("信任的人", "当地急救", "安全");
         verify(llm, times(1)).chat(any(), anyBoolean(), anyList(), any(), anyBoolean());
         companion.chat(1L, "重新聊聊");
-        assertThat(captured(2).get(1)).hasSize(2);
+        assertThat(captured(2).get(1)).hasSize(4);
+        assertThat(captured(2).get(1).toString()).contains("我想自伤", "安全").doesNotContain("EARLIER_PRIVATE");
     }
 }
