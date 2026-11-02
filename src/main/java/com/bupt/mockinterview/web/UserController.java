@@ -84,7 +84,8 @@ public class UserController {
         }
 
         User user = currentUser.currentUser();
-
+        KeyMode nextMode = user.getKeyMode();
+        ChatProviderChoice nextProvider = user.getChatProvider();
         if (hasKeyMode) {
             KeyMode mode;
             try {
@@ -97,7 +98,7 @@ public class UserController {
                 return error(HttpStatus.CONFLICT, "KEY_NOT_CONFIGURED",
                         "请先保存你的 DeepSeek API Key，再切换到 BYOK 模式");
             }
-            user.setKeyMode(mode);
+            nextMode = mode;
         }
 
         if (hasChatProvider) {
@@ -108,9 +109,12 @@ public class UserController {
                 return error(HttpStatus.BAD_REQUEST, "INVALID_CHAT_PROVIDER",
                         "chatProvider 只能是 DEEPSEEK 或 QWEN");
             }
-            user.setChatProvider(provider);
+            nextProvider = provider;
         }
 
+        // Validate both fields before mutating the managed entity; a 400 must not commit half a setting.
+        user.setKeyMode(nextMode);
+        user.setChatProvider(nextProvider);
         userRepo.save(user);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("keyMode", user.getKeyMode().name());
@@ -210,6 +214,14 @@ public class UserController {
             m.put("completionTokens", l.getCompletionTokens());
             m.put("totalTokens", l.getTotalTokens());
             m.put("chargedTokens", l.getChargedTokens());
+            m.put("dueTokens", l.getDueTokens());
+            m.put("callId", l.getCallId());
+            m.put("sessionId", l.getSessionId());
+            m.put("billingVersion", l.getBillingVersion());
+            m.put("platformCostMicros", l.getPlatformCostMicros());
+            m.put("pricingVersion", l.getPricingVersion());
+            m.put("status", l.getStatus());
+            m.put("attemptCount", l.getAttemptCount());
             m.put("createdAt", l.getCreatedAt());
             resp.add(m);
         }

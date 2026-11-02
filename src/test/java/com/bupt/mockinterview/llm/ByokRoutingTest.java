@@ -75,11 +75,12 @@ class ByokRoutingTest {
         when(currentUser.currentUser()).thenReturn(u);
         when(keyResolver.resolveForChat(eq(u), anyString()))
                 .thenReturn(new KeyResolver.ResolvedKey("sk-byok", KeyMode.BYOK));
-        when(quotaService.chargeForByokCall(7L)).thenReturn(false);
+        doThrow(QuotaExhaustedException.forMode(KeyMode.BYOK))
+                .when(quotaService).ensureAvailable(7L, KeyMode.BYOK);
 
         assertThatThrownBy(() -> llm.followUp("system", "user"))
                 .isInstanceOf(QuotaExhaustedException.class)
-                .hasMessageContaining("切回平台模式");
+                .hasMessageContaining("服务积分已用完");
 
         verify(http, never()).newCall(any());
     }

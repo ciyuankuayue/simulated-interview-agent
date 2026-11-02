@@ -12,6 +12,10 @@ public interface QuotaRepository extends JpaRepository<Quota, Long> {
 
     Optional<Quota> findByUserId(Long userId);
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select q from Quota q where q.user.id = :userId")
+    Optional<Quota> lockByUserId(@Param("userId") Long userId);
+
     /**
      * 条件扣减（R2 并发安全核心，单条 UPDATE 天然原子）：
      * 仅当扣后不超 total 时成功（受影响行 1）；不足返回 0，调用方走 clamp 或 402。

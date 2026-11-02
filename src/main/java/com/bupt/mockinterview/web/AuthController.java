@@ -101,6 +101,7 @@ public class AuthController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("userId", user.getId());
         body.put("username", user.getUsername());
+        body.put("role", user.getRole().name());
         body.put("token", token);
         return body;
     }

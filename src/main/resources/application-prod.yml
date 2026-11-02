@@ -12,6 +12,13 @@
 # 【存量库升级】（此前用 mysql profile update 维护、尚无 tenant_id）：直接以 prod 启动，
 #   Flyway baseline 3 → V4 四段式（加列→用 user_id 回填→NOT NULL→索引）。上线前先备份。
 
+server:
+  # Trust forwarded client addresses only from the internal reverse proxy, never arbitrary clients.
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      internal-proxies: ${APP_TRUSTED_PROXY_REGEX:172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+}
+
 spring:
   datasource:
     # 不带 createDatabaseIfNotExist：库由 mysql 容器的 MYSQL_DATABASE 预建，缺失应显式失败而非隐式创建。

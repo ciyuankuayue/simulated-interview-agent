@@ -100,16 +100,16 @@ class LlmServiceToolCallsTest {
     }
 
     @Test
-    void byokToolReply_keepsPerCallFeeAndUsageLogSemantics() {
+    void byokToolReply_prechecksThenSettlesUsage() {
         when(keys.resolveForChat(user, "deepseek"))
                 .thenReturn(new KeyResolver.ResolvedKey("offline-byok", KeyMode.BYOK));
-        when(quota.chargeForByokCall(7L)).thenReturn(true);
         when(provider.chat(any(), anyString())).thenReturn(new ChatResponse("", null, null,
                 List.of(new ToolCall("call-1", "read_history", "{}"))));
 
         LlmReply reply = llm.chat(ModelRole.FAST, false, List.of(), null, false, 4096);
 
-        verify(quota).chargeForByokCall(7L);
+        verify(quota).ensureAvailable(7L, KeyMode.BYOK);
+        verify(quota, never()).chargeForByokCall(7L);
         verify(quota).recordByokChat(7L, UsageScene.CHAT, "deepseek:deepseek-flash", 0, 0,
                 reply.usage().totalTokens(), true);
         verify(quota, never()).settlePlatformCall(anyLong(), any(), anyString(), anyLong(), anyLong(), anyLong(), anyBoolean());

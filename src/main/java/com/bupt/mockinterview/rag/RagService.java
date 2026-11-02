@@ -4,6 +4,11 @@ import com.bupt.mockinterview.billing.QuotaProperties;
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.billing.UsageEstimates;
 import com.bupt.mockinterview.billing.UsageScene;
+import com.bupt.mockinterview.billing.UsageContext;
+import com.bupt.mockinterview.billing.ModelCosts;
+import com.bupt.mockinterview.billing.PlatformBudgetService;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import com.bupt.mockinterview.domain.KeyMode;
 import com.bupt.mockinterview.security.CurrentUserService;
 import com.bupt.mockinterview.security.TenantProperties;
@@ -119,10 +124,9 @@ public class RagService {
         try {
             for (int i = 0; i < pieces.size(); i++) {
                 String piece = pieces.get(i);
-                Embedding emb = embedder.embed(piece);
+                Embedding emb = embedAndBill(userId, UsageScene.EMBED_INGEST, piece);
                 store.add(new KnowledgeChunk(sourceType + "#" + sourceId + "#" + i, userId,
                         sourceType, sourceId, piece, emb.vector()));
-                settle(userId, UsageScene.EMBED_INGEST, piece, emb);
             }
             store.commitBatch();
         } catch (Exception e) {
@@ -135,12 +139,35 @@ public class RagService {
     public List<KnowledgeChunk.ScoredChunk> retrieve(String query, int topK) throws Exception {
         guardVectorUser("检索");
         Long userId = billableUserId();
-        if (userId != null) {
-            quota.ensureAvailable(userId, KeyMode.PLATFORM);
-        }
-        Embedding q = embedder.embed(query);
-        settle(userId, UsageScene.EMBED_QUERY, query, q);
+        Embedding q = embedAndBill(userId, UsageScene.EMBED_QUERY, query);
         return store.search(userId, q.vector(), topK);
+    }
+
+    private Embedding embedAndBill(Long userId, UsageScene scene, String input) throws Exception {
+        if (userId == null) return embedder.embed(input);
+        quota.ensureAvailable(userId, KeyMode.PLATFORM);
+        try (UsageContext.Scope ignored = UsageContext.withCall(UUID.randomUUID().toString())) {
+            // Fake/offline embedders do not spend platform money.
+            PlatformBudgetService.Reservation reservation = embedder instanceof DashscopeEmbedder
+                    ? quota.reservePlatformCall(UsageContext.callId(), embedder.name(),
+                        (input == null ? 0 : input.getBytes(StandardCharsets.UTF_8).length) + 128L, 0, 1) : null;
+            Embedding result = null;
+            try {
+                result = embedder.embed(input);
+                settle(userId, scene, input, result);
+                return result;
+            } catch (Exception failure) {
+                UsageContext.status("FAILED");
+                try { quota.recordFailedCall(userId, KeyMode.PLATFORM, scene, embedder.name()); }
+                catch (RuntimeException logFailure) { log.error("embedding失败记录落库失败", logFailure); }
+                throw failure;
+            } finally {
+                Long cost = result == null || result.estimated() ? null : ModelCosts.estimateMicros(embedder.name(),
+                        result.tokens(), 0, result.tokens());
+                try { quota.settlePlatformBudget(reservation, cost, 1); }
+                catch (RuntimeException accountingFailure) { log.error("embedding预算结算失败，保留预留", accountingFailure); }
+            }
+        }
     }
 
     /** 登录用户且装配了 QuotaService 才计量（离线实验/单测构造返回 null）。 */

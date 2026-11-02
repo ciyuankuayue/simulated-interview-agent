@@ -122,6 +122,7 @@ public class InterviewOrchestrator {
         session.setResumeId(resumeId);
         session = sessionRepo.save(session);
 
+        try (var usageScope = com.bupt.mockinterview.billing.UsageContext.withSession(session.getId())) {
         if (agentRuntime.enabled()) {
             agentRuntime.initialize(session);
             InterviewAgentRuntime.Decision decision = agentRuntime.decide(session, List.of(), null);
@@ -153,6 +154,7 @@ public class InterviewOrchestrator {
                         "role", roles.get(0).displayName(), "layer", 0),
                 AgentEvent.of(AgentEvent.AWAIT_ANSWER, "turnSeq", first.getSeq()));
         return new StartResult(session.getId(), firstQuestion, events);
+        }
     }
 
     // ---------- answer ----------

@@ -32,7 +32,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@Transactional
 class AdminQuotaTest {
 
     @Autowired
@@ -54,15 +53,32 @@ class AdminQuotaTest {
         return mapper.readTree(a.andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
     }
 
+    @org.junit.jupiter.api.BeforeEach
+    @org.junit.jupiter.api.AfterEach
+    void resetRole() {
+        testUser.setRole(UserRole.USER);
+        userRepo.saveAndFlush(testUser);
+    }
+
     private void makeAdmin() {
         testUser.setRole(UserRole.ADMIN);
         userRepo.save(testUser);
     }
 
     private User createUserWithQuota(String username) {
-        User u = userRepo.save(new User(username, encoder.encode("password")));
-        quotaService.grantIfAbsent(u);
+        User u = userRepo.save(new User(username + java.util.UUID.randomUUID().toString().substring(0, 4), encoder.encode("password")));
+        Long previous = com.bupt.mockinterview.security.TenantContext.getTenantId();
+        try {
+            com.bupt.mockinterview.security.TenantContext.set(u.getId());
+            quotaService.grantForNewUser(u);
+        } finally { com.bupt.mockinterview.security.TenantContext.set(previous); }
         return u;
+    }
+
+    private Quota ownQuota(User u) {
+        Long previous = com.bupt.mockinterview.security.TenantContext.getTenantId();
+        try { com.bupt.mockinterview.security.TenantContext.set(u.getId()); return quotaRepo.findByUserId(u.getId()).orElseThrow(); }
+        finally { com.bupt.mockinterview.security.TenantContext.set(previous); }
     }
 
     @Test
@@ -79,11 +95,11 @@ class AdminQuotaTest {
     void admin_grant_increasesTargetsQuota() throws Exception {
         makeAdmin();
         User alice = createUserWithQuota("alice_admin_grant");
-        long before = quotaRepo.findByUserId(alice.getId()).orElseThrow().getTotalTokens();
+        long before = ownQuota(alice).getTotalTokens();
 
         var actions = mvc.perform(post("/api/admin/quota")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"username\":\"alice_admin_grant\",\"grantTokens\":200000}"));
+                .content("{\"username\":\"" + alice.getUsername() + "\",\"grantTokens\":200000}"));
 
         assertThat(actions.andReturn().getResponse().getStatus()).isEqualTo(200);
         JsonNode body = json(actions);
@@ -91,7 +107,7 @@ class AdminQuotaTest {
         assertThat(body.get("remainingTokens").asLong())
                 .isEqualTo(body.get("totalTokens").asLong() - body.get("usedTokens").asLong());
 
-        Quota stored = quotaRepo.findByUserId(alice.getId()).orElseThrow();
+        Quota stored = ownQuota(alice);
         assertThat(stored.getTotalTokens()).isEqualTo(before + 200_000L);
     }
 

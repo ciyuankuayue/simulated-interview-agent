@@ -44,6 +44,8 @@ class UserSettingsApiTest {
     private User testUser;
     @Autowired
     private QuotaService quotaService;
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     @MockBean
     private LlmPort llm;
@@ -64,7 +66,7 @@ class UserSettingsApiTest {
         assertThat(noKey.get("hasKey").asBoolean()).isFalse();
 
         JsonNode quota0 = json(mvc.perform(get("/api/user/quota")));
-        assertThat(quota0.get("totalTokens").asLong()).isEqualTo(50_000L);
+        assertThat(quota0.get("totalTokens").asLong()).isEqualTo(100_000L);
         assertThat(quota0.get("usedTokens").asLong()).isZero();
 
         // ---- 无 key 切 BYOK → 409 ----
@@ -108,12 +110,18 @@ class UserSettingsApiTest {
         // ---- 此时才允许切 BYOK ----
         assertThat(json(putJson("/api/user/settings", "{\"keyMode\":\"BYOK\"}")).get("keyMode").asText())
                 .isEqualTo("BYOK");
+        assertThat(putJson("/api/user/settings", "{\"keyMode\":\"PLATFORM\",\"chatProvider\":\"INVALID\"}")
+                .andReturn().getResponse().getStatus()).isEqualTo(400);
+        assertThat(json(mvc.perform(get("/api/user/settings"))).get("keyMode").asText()).isEqualTo("BYOK");
 
-        // ---- BYOK 服务费：一次模型调用扣 1 积分（500 token 当量），quota 立即可见 ----
-        assertThat(quotaService.chargeForByokCall(testUser.getId())).isTrue();
+        // 5,000 real model tokens settle 500 internal equivalents (1 service point).
+        quotaService.recordByokChat(testUser.getId(), com.bupt.mockinterview.billing.UsageScene.CHAT,
+                "deepseek:deepseek-flash", 4000, 1000, 5000, false);
+        // MockMvc shares this test transaction; real HTTP requests use a fresh persistence context.
+        entityManager.refresh(quotaService.getByUser(testUser.getId()));
         JsonNode quota1 = json(mvc.perform(get("/api/user/quota")));
         assertThat(quota1.get("usedTokens").asLong()).isEqualTo(500L);
-        assertThat(quota1.get("remainingTokens").asLong()).isEqualTo(49_500L);
+        assertThat(quota1.get("remainingTokens").asLong()).isEqualTo(99_500L);
 
         // ---- 更换 key（last4 变化）----
         String secret2 = "sk-replaced-key-0000000000000000wxyz";

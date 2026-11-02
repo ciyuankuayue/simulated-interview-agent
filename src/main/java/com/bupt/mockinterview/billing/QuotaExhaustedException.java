@@ -10,8 +10,7 @@ public class QuotaExhaustedException extends RuntimeException {
 
     public static final String BETA_SUPPORT = "平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947";
     public static final String PLATFORM_MESSAGE = "积分已用完。" + BETA_SUPPORT;
-    public static final String BYOK_MESSAGE = "积分不足以支付本次自带 Key 服务费。" + BETA_SUPPORT
-            + "；若仍有少量积分，可切回平台模式按用量使用";
+    public static final String BYOK_MESSAGE = "自带 API 的服务积分已用完。" + BETA_SUPPORT;
 
     public QuotaExhaustedException(String message) {
         super(message);

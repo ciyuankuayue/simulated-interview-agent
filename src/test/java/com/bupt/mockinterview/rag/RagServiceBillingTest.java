@@ -74,7 +74,7 @@ class RagServiceBillingTest {
 
         svc().ingest(text, "note", "9");
 
-        verify(quota, times(1)).ensureAvailable(7L, KeyMode.PLATFORM);
+        verify(quota, times(4)).ensureAvailable(7L, KeyMode.PLATFORM);
         verify(quota, times(3)).settlePlatformCall(eq(7L), eq(UsageScene.EMBED_INGEST),
                 eq("dashscope:test-model"), eq(0L), eq(0L), eq(5L), eq(false));
     }

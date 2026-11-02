@@ -2,7 +2,7 @@
 
 > 对外契约唯一事实源。S4 契约优先产出。NEVER 未经确认修改本文件（改前先与用户确认）。
 > 传输：JSON；流式用 SSE（text/event-stream）。本地默认 http://localhost:8080。
-> 2026-10-21 用户确认内部 Agent 决策重构；本轮不新增 HTTP 请求/响应字段或 SSE 事件。下文更新新场与旧场的实际语义，内部模型、预算、V5迁移见 [运行时说明](agent-decision-runtime.md)。
+> 2026-10-30 用户确认试推广运营迭代：新增运营、反馈、产品事件接口及按用量自带Key服务费；旧面试协议兼容。2026-10-21内部 Agent 决策重构说明继续适用。下文更新新场与旧场的实际语义，内部模型、预算、V5迁移见 [运行时说明](agent-decision-runtime.md)。
 
 ## 1. 通用约定
 
@@ -26,15 +26,15 @@
 - body: `{ "username": "abc", "password": "xxx" }`
 - `username`：4-32 字符，唯一；已存在 → 409 `{code:"USERNAME_TAKEN"}`
 - `password`：≥6 字符，BCrypt 加密存储
-- resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
-- **R2-T0 起注册恒为 role=USER**（「首个注册者=ADMIN」规则已删除——任何公开注册都拿不到管理员，杜绝抢注首个账号）；同时为该用户创建 quota 并赠送 100 积分（`app.quota.signup-bonus-tokens`，默认 50000 token 当量）；新用户 key_mode=PLATFORM。
+- resp: `{ "userId": 1, "username": "abc", "role": "USER", "token": "eyJhbG..." }`（注册成功自动签发 JWT，免额外 login）
+- **R2-T0 起注册恒为 role=USER**（「首个注册者=ADMIN」规则已删除——任何公开注册都拿不到管理员，杜绝抢注首个账号）；同时为该用户创建 quota 并赠送 200 积分（`app.quota.signup-bonus-tokens`，默认 100000 token 当量，`APP_SIGNUP_BONUS_TOKENS`可覆盖）；新用户 key_mode=PLATFORM。
 - **ADMIN 的唯一产生方式：env 引导器**（不开放任何 HTTP 接口）。启动时配置 `app.security.bootstrap-admin.username` / `password`（env `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`）：用户不存在则建 ADMIN（BCrypt + 赠额度）；已存在（含原 USER）则幂等升级为 ADMIN 并按配置更新密码、不重建额度；只配 username 不配 password 时首建生成随机密码并 WARN 回显一次；两项都不配则跳过（仅 WARN 指引，不影响启动）。
 - HTTP 201 Created
 
 ### POST /api/auth/login
 登录，换取 JWT。
 - body: `{ "username": "abc", "password": "xxx" }`
-- resp: `{ "userId": 1, "username": "abc", "token": "eyJhbG..." }`
+- resp: `{ "userId": 1, "username": "abc", "role": "USER", "token": "eyJhbG..." }`
 - 用户名不存在或密码错 → **401** `{code:"INVALID_CREDENTIALS",message:"用户名或密码错误"}`
 
 ### POST /api/auth/logout
@@ -166,11 +166,11 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 
 > 平台 key 只从**环境变量**读（`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`）；页面保险箱、`/api/setup/**`、`X-Vault-Token` 全部移除。
 > 每个登录用户有两个相互**独立**的设置维度：
-> - **调用方式 `keyMode`**：`PLATFORM`（默认，走平台 key）/ `BYOK`（走用户自己加密存储的 DeepSeek key，每次模型调用扣固定服务费，默认 1 积分 = 500 token 当量，余额不足→**402**）。一轮面试可包含出题、判分等多次模型调用。
+> - **调用方式 `keyMode`**：`PLATFORM`（默认，走平台 key）/ `BYOK`（走用户自己加密存储的 DeepSeek key，调用后按真实用量收10%服务token当量，即每5000模型token=1积分，余额为零→**402**）。一轮面试可包含出题、判分等多次模型调用。
 > - **对话模型厂商 `chatProvider`（R3-2 新增）**：`DEEPSEEK`（默认）/ `QWEN`（通义千问，DashScope OpenAI 兼容模式）。
 > - 两维正交，共 4 种组合。**QWEN 恒走平台 `DASHSCOPE_API_KEY` 并按 PLATFORM 实扣 token**——即使 keyMode=BYOK：BYOK 自带 key 体系只支持 DeepSeek，选 QWEN 时不读用户 key、不扣每次服务费（API 费由平台额度承担）。
 > - PLATFORM 下 DeepSeek 对话、Qwen 对话、DashScope embedding **均按真实 token 计费**——调用前预检余额，调用后按厂商 `usage.total_tokens` 实扣（缺失按字符估算兜底）。
-> - 页面统一显示**积分**，固定 **1 积分 = 500 token 当量**（沿用原换算）；数据库和 API 的 `*Tokens` 字段仍保留 token 单位，契约不变。积分最多显示 3 位小数，1 token = 0.002 积分，不整点取整。新用户赠送 `app.quota.signup-bonus-tokens`（默认 50000，即 100 积分）；已有用户总额、已用额与历史流水不重置、不迁移。
+> - 页面统一显示**积分**，固定 **1 积分 = 500 token 当量**（沿用原换算）；数据库和 API 的 `*Tokens` 字段仍保留 token 单位，契约不变。积分最多显示 3 位小数，1 token = 0.002 积分，不整点取整。新用户赠送 `app.quota.signup-bonus-tokens`（默认 100000，即 200 积分）；已有用户总额、已用额与历史流水不重置、不迁移。
 > - 用户自带 key 仅支持 DeepSeek；任何接口都不回传 key 明文。
 > - Agent工具循环可在一次决策中多次调用模型；每次均经现有路由和计费。DeepSeek BYOK每次模型调用扣服务费，资料搜索的embedding恒平台按token扣；恢复生成不是零费用重放，已存报告的直接重放不新调用模型。
 
@@ -199,7 +199,7 @@ score(turn1, 7/A) → question(turn2) → await_answer ...
 ### GET /api/user/quota
 `{ "totalTokens": 50000, "usedTokens": 1320, "remainingTokens": 48680 }`
 - 上例页面显示：总额 100 积分，已用 2.64 积分，剩余 97.36 积分。
-- PLATFORM 每次 DeepSeek/Qwen 对话与 embedding 调用后按 usage 实增；BYOK 每次 **DeepSeek** 对话 +`byok-charge-per-call`（embedding 与 Qwen 对话按真实 token）。
+- PLATFORM 每次 DeepSeek/Qwen 对话与 embedding 调用后按 usage 实增；BYOK 每次 **DeepSeek** 对话按真实token的10%收服务当量（不按次预扣）（embedding 与 Qwen 对话按真实 token）。
 
 ### GET /api/user/usage?limit=50
 本人最近用量流水（limit 默认/上限 50），按时间倒序：
@@ -231,14 +231,14 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 ### 402 语义
 任何触发计费调用（DeepSeek 对话 / embedding）的业务接口，预检发现额度为 0 时：
 - **PLATFORM** → **402** `{code:"QUOTA_EXHAUSTED",message:"积分已用完。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947"}`
-- **BYOK** → **402** `{code:"QUOTA_EXHAUSTED",message:"积分不足以支付本次自带 Key 服务费。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947；若仍有少量积分，可切回平台模式按用量使用"}`（低于 1 积分即拦截，并不一定余额为零）
+- **BYOK** → **402** `{code:"QUOTA_EXHAUSTED",message:"自带 API 的服务积分已用完。平台目前处于内测阶段，请联系工作人员补充额度。微信：13481264947"}`（余额为零即拦截，不再要求至少1积分）
 - 当前无在线支付接口；前端的积分不足弹窗和设置页都展示内测补额说明与工作人员微信，可选中号码复制。HTTP/SSE 错误使用相同补额引导，回答/聊天草稿保留。
 - 402 穿透所有「LLM/检索瞬时失败降级」边界直达全局异常处理，前端收到后刷新额度并按模式引导；条件 UPDATE 保证不超发，PLATFORM 最后一次实扣最多把 used clamp 到 total。
 
 ## 8. 契约边界
 
-- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + 自带 key 加密存储（R1-3）；**token 计量（PLATFORM 对话+embedding 按 usage 实扣、BYOK 按次服务费）、用量流水、ADMIN 充值、402/403（R2）**
-- **R2 不做**：月度重置/套餐（reset_at/plan）、充值/支付页面与申请入口（只提供 ADMIN API）、用量明细前端页面（只提供查询 API）
+- **已实现**：用户注册/登录 + JWT 鉴权（R1-1）；PLATFORM/BYOK 双调用模式 + 自带 key 加密存储（R1-3）；**token 计量（PLATFORM 对话+embedding 按 usage 实扣、BYOK 按用量服务费）、用量流水、ADMIN 充值、402/403（R2）**
+- **R2 不做**：月度重置/套餐（reset_at/plan）、自动支付与月卡套餐；2026-10-30起已增加人工补额管理、补额记录和用户用量页
 - 历史会话只做「最近 20 场列表 + 报告回看」，不做会话编辑/删除/多场对比
 - 不做 PDF/网页抓取（输入仅 md/文本）
 - 报告与明细分离：响应均为「表达精炼、抓核心」的版本（关键内容不省）；检索引用/判分过程细节/token 等内部明细只在 DB（interview_turn），不进响应
@@ -293,3 +293,47 @@ body: `{ "tenantId": 123, "sourceType": "note", "sourceId": "7001" }`（三项�
 - 关闭后，新发起的对话不再读取/更新长期画像，已保存条目仍可查看、修改和删除；已发出的模型请求不能撤回此前携带的信息，但设置 revision 会拦住旧请求自动回写。
 - 显式修改/删除/关闭/重新允许提高 revision；删除留阻止标记，旧回复不能覆盖用户操作。自动条目包含来源类型与时间，详细聊天不入此表。长期画像持久至用户删除或账号删除；备考阶段等需要变化时可修改，未新增自动到期任务。
 - 浏览器仅内存持有 JWT、会话和草稿；不将聊天或画像复制到 localStorage。报告/错题“让小师讲讲”只把用户选择的既有片段带入可编辑草稿，不自动发送或扩大后台读取权限。
+
+## 11. 试推广运营接口（2026-10-30）
+
+已获用户确认。下列增量与前述旧接口兼容；首次反馈奖励需人工审核，页面只在账号页显示积分余额。
+
+# Launch operations API implementation contract
+
+All list responses use `{items:[],page:0,size:20,total:0}`. Page is zero-based, size 1..100. ADMIN endpoints require server-side ADMIN authorization. User IDs always come from authenticated user except explicit ADMIN target fields. JSON uses camelCase; money CNY as decimal; points decimal (1 point=500 internal tokens).
+
+## User
+
+- GET `/api/user/grants?page=0&size=20` -> paged grant views `{id,userId,username,points,type,reason,amountCny,createdAt}` (no operator note/orderRef).
+- GET/PUT `/api/user/analytics-preference` -> `{enabled:true,reportInvitationSeen:false}`. PUT accepts either/both boolean fields; report invitation persistence does not require optional analytics.
+- POST `/api/product-events/batch` body `{events:[{eventId:"uuid",name:"PAGE_VIEW",page:"prepare",sessionId:null,durationMs:null,source:null,device:"DESKTOP"}]}` -> `{accepted:1}`. Names: PAGE_VIEW, PRACTICE_CLICK, API_CONFIG_OPEN, REPORT_VIEW, FEEDBACK_INVITE_VIEW, FEEDBACK_OPEN. Pages: prepare,interview,history,weak,materials,companion,coach,settings,feedback. Device DESKTOP/MOBILE/UNKNOWN. No arbitrary properties. Max20 events, opted-out returns accepted0.
+- GET `/api/feedback` -> `{feedback:null,rewardPoints:200}` or `{feedback:{id,progress,experience,blockers:[],suggestions,followUp,contact,status,reviewNote,createdAt,updatedAt},rewardPoints:200}`. One feedback per account; supplement updates same feedback.
+- POST `/api/feedback` body `{progress:"REPORT_VIEWED",experience:"...",blockers:["SPEED"],suggestions:"",followUp:false,contact:""}` -> feedback view. Duplicate POST409; PUT same path supplements pending/NEEDS_INFO feedback, returns view; REWARDED/CLOSED immutable409.
+- Progress enum LOOKED_ONLY,START_FAILED,STOPPED,INTERVIEW_DONE,REPORT_VIEWED,BUDDY,OTHER.
+- Blocker enums NONE,NO_NEED,CONFUSING,QUESTIONS,REPORT,SPEED,ERROR,COST,UNSURE,OTHER. NONE/UNSURE each exclusive. At least1, max10, no duplicates. OTHER optional free content goes in suggestions, no extra field.
+- experience required trimmed1..2000, suggestions0..2000, contact0..200; contact only accepted when followUp=true. No minimum word count. State PENDING/NEEDS_INFO/REWARDED/CLOSED. Followup contact automatically cleared after90days; text retention180days (reward marker retained).
+
+## ADMIN
+
+- GET `/api/admin/overview?days=7` -> `{days,registeredUsers,activeUsers,interviewsStarted,reportsGenerated,reportsViewed,chargedPoints,platformEstimatedCostCny,paidAmountCny,pendingFeedback,unknownPlatformCostCalls,budget:{day,spentCny,reservedCny}}`. days1..90.
+- GET `/api/admin/users?q=&page=0&size=20` -> paged `{id,username,createdAt,lastActiveAt,chatProvider,keyMode,effectiveKeyMode,remainingPoints,usedPoints,totalPoints,sevenDayTokens,interviewCount,reportCount}`.
+- GET `/api/admin/users/{id}/activity?days=7` -> `{user:<same>,usage:[{id,scene,model,keyMode,promptTokens,completionTokens,totalTokens,chargedTokens,createdAt}],events:[{id,name,page,sessionId,durationMs,createdAt}],grants:[<admin grant>]}`. Each detail list max100, no private prompt/chat/material content.
+- GET `/api/admin/grants?userId=&page=0&size=20` -> paged admin grant `{id,userId,username,points,type,reason,amountCny,orderRef,operatorId,requestId,createdAt}`.
+- POST `/api/admin/grants` body `{username:"alice",points:200,type:"GIFT",reason:"...",amountCny:null,orderRef:"",requestId:"uuid"}` -> `{grant:<admin grant>,quota:{totalTokens,usedTokens,remainingTokens}}`. Types GIFT,PAID,COMPENSATION,ADJUSTMENT; reason required1..500; positive points <=1000000; PAID requires amountCny>0 & orderRef nonblank, others amountCny mustnull/0. Same requestId+same payload returns previous result; different payload409. Ledger+quota atomic.
+- GET `/api/admin/feedback?status=PENDING&page=0&size=20` -> paged feedback views plus userId,username. Omit status for all. GET includes consented contact.
+- POST `/api/admin/feedback/{id}/review` body `{action:"REWARD",note:"..."}` -> `{feedback:<view>,grant:<grant or null>}`. actions REWARD,NEEDS_INFO,CLOSE. NEEDS_INFO requires note. REWARD idempotent and grants200 exactly once/account. Review after REWARDED cannot change state. CLOSED cannot reward. Source grant type FEEDBACK.
+- GET `/api/admin/analytics?days=7` -> `{days,funnel:[{name,count}],models:[{model,calls,tokens,platformEstimatedCostCny,failedCalls,retryAttempts,unknownPlatformCostCalls}],scenes:[{scene,<same metrics>}],feedbackFunnel:[{name,count}],errors:[{code,count}],retention:{day1:{eligible,returned,rate},day7:{eligible,returned,rate}},daily:[{date,activeUsers,chargedPoints,platformEstimatedCostCny}],cost:{estimated:true,platformEstimatedCostCny,byokTokens,unattributedCalls,unknownPlatformCostCalls,sessionCount,sessionMedianCny,sessionP90Cny},sources:[{source,count}]}`. Retention counts completed observation cohorts only; rate null if no eligible. Per-session cost includes known usage for sessions whose reports were generated in the selected window; all linked usage is included even across the window boundary. Failed starts, unfinished sessions and un-attributed ingestion are excluded from these percentiles. Unknown cost is null; mixed groups sum only known amounts and disclose unknown counts. Retry counts exclude the first attempt; unknown failed-attempt costs are protected by the budget reservation, not invented in usage totals. Feedback stage counts are period counts, not conversion rates. Sources aggregate only PAGE_VIEW/PRACTICE_CLICK source codes; account/quota/report feedback entrances are not acquisition channels.
+
+## Server recorder
+
+`ProductEventService.recordServer(Long userId,String name,String eventId,Long sessionId,String page,String resultCode)` is best-effort, tenant-scoped, independent transaction. Allowed names REGISTERED,LOGIN,IMPORT_SUCCEEDED,INTERVIEW_STARTED,ANSWER_SAVED,REPORT_GENERATED,MODEL_FAILED,QUOTA_BLOCKED,SETTINGS_SAVED,BUDDY_SUCCEEDED. Idempotent eventId peruser. resultCode enum-like regex only max64; no messages/content.
+
+### 限制与新增错误码
+
+- 注册/登录响应新增role字段（USER或ADMIN）；公开注册永远USER。
+- GET /api/user/billing-policy：`{signupBonusPoints:200,tokensPerPoint:500,byokTokensPerPoint:5000,feedbackRewardPoints:200,billingVersion:"2026-10-30-token-v1"}`；需登录。
+- GET /api/user/usage新增dueTokens/callId/sessionId/billingVersion/platformCostMicros/pricingVersion/status/attemptCount；旧行可null。platformCostMicros以百万分之一人民币为单位，BYOK对话为0，未知平台成本为null。
+- 平台日预算触达：409 PLATFORM_BUDGET_REACHED，与用户积分不足402不同；充值用户积分不能解除平台预算限制。
+- 429 RATE_LIMITED；409 REQUEST_IN_PROGRESS；413 CONTENT_TOO_LARGE / MATERIAL_LIMIT；503 LIMIT_GUARD_UNAVAILABLE（生产Redis访问保护失效）。响应仍为JSON `{code,message}`。
+- 默认注册10次/小时/IP、登录30次/分钟/IP、写操作60次/分钟/账号；同账号主要模型操作串行。请求体1MiB、单份资料20000字符、批量JD10条、资料累计100万字符，app.launch.limits可调整。
+- 无自动收款。PAID表示管理员人工核验收款后录入，非支付平台确认；账本只追加，旧管理补额仍支持但无新接口的请求去重保证。

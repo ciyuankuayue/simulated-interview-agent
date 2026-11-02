@@ -87,7 +87,7 @@ class QuotaServiceTest {
     void grantForNewUser_givesConfiguredSignupBonusTokens() {
         User user = userRepo.save(new User("quota-bonus-user-r2", "hash"));
         Quota quota = quotaService.grantForNewUser(user);
-        assertThat(quota.getTotalTokens()).isEqualTo(100 * POINT);
+        assertThat(quota.getTotalTokens()).isEqualTo(200 * POINT);
         assertThat(quota.getUsedTokens()).isZero();
     }
 
@@ -123,7 +123,7 @@ class QuotaServiceTest {
         assertThat(q.remaining()).isZero();
         // 流水照记真实用量（透支不追讨，但明细在）
         assertThat(usageRepo.findAll()).anyMatch(l -> l.getUserId().equals(user.getId())
-                && l.getTotalTokens() == 50 && l.getChargedTokens() == 50);
+                && l.getTotalTokens() == 50 && l.getDueTokens() == 50 && l.getChargedTokens() == 30);
     }
 
     @Test
@@ -134,24 +134,22 @@ class QuotaServiceTest {
                 .hasMessageContaining("内测阶段").hasMessageContaining("13481264947");
         assertThatThrownBy(() -> quotaService.ensureAvailable(user.getId(), KeyMode.BYOK))
                 .isInstanceOf(QuotaExhaustedException.class)
-                .hasMessageContaining("切回平台模式");
+                .hasMessageContaining("服务积分已用完");
     }
 
     @Test
     void byokChat_recordsRealUsageButChargesServiceFeeOnce() {
         User user = newUserWithQuota("quota-byok-log-user", 100 * POINT);
-        assertThat(quotaService.chargeForByokCall(user.getId())).isTrue();
-
-        // 用户 key 上真实烧了 1234 token，平台只记流水、不再扣额度
+        // 用户 key 上真实烧了1234 token，按十分之一向上到内部token当量结算
         quotaService.recordByokChat(user.getId(), UsageScene.FOLLOWUP, "deepseek-flash",
                 1000, 234, 1234, false);
 
         Quota q = quotaRepo.findByUserId(user.getId()).orElseThrow();
-        assertThat(q.getUsedTokens()).isEqualTo(POINT);        // 只有 1 积分服务费
+        assertThat(q.getUsedTokens()).isEqualTo(124);
         var log = quotaService.recentUsage(user.getId(), 1).get(0);
         assertThat(log.getKeyMode()).isEqualTo(KeyMode.BYOK);
         assertThat(log.getTotalTokens()).isEqualTo(1234);      // 真实用量展示
-        assertThat(log.getChargedTokens()).isEqualTo(POINT);   // 实际扣减
+        assertThat(log.getChargedTokens()).isEqualTo(124);
     }
 
     @Test

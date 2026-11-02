@@ -28,6 +28,10 @@ public class BuddyStreamController {
     private final CompanionService companion;
     private final CurrentUserService currentUser;
     private final ObjectMapper mapper;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.bupt.mockinterview.operations.ProductEventService productEvents;
+    @org.springframework.beans.factory.annotation.Value("${app.launch.telemetry-enabled:true}")
+    private boolean telemetryEnabled = true;
 
     public BuddyStreamController(StudyCoachService coach, CompanionService companion,
                                  CurrentUserService currentUser, ObjectMapper mapper) {
@@ -52,22 +56,33 @@ public class BuddyStreamController {
                     ? coach.stream(userId, body.message().trim(), delta)
                     : companion.stream(userId, body.message().trim(), delta);
             event(response, "done", result);
+            record(userId, "BUDDY_SUCCEEDED", request, "OK");
         } catch (RuntimeException e) {
+            record(userId, e instanceof QuotaExhaustedException ? "QUOTA_BLOCKED" : "MODEL_FAILED", request,
+                    e instanceof com.bupt.mockinterview.billing.PlatformBudgetExceededException ? "PLATFORM_BUDGET_REACHED"
+                            : e instanceof QuotaExhaustedException ? "QUOTA_EXHAUSTED" : "LLM_UNAVAILABLE");
             if (!response.isCommitted()) {
                 response.resetBuffer();
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 throw e;
             }
             if (hasDisconnect(e)) return;
-            int status = e instanceof QuotaExhaustedException ? 402 : e instanceof IllegalStateException ? 409
+            int status = e instanceof com.bupt.mockinterview.billing.PlatformBudgetExceededException ? 409
+                    : e instanceof QuotaExhaustedException ? 402 : e instanceof IllegalStateException ? 409
                     : e instanceof LlmException ? 504 : 500;
-            String code = status == 402 ? "QUOTA_EXHAUSTED" : status == 409 ? "CONFLICT"
+            String code = e instanceof com.bupt.mockinterview.billing.PlatformBudgetExceededException ? "PLATFORM_BUDGET_REACHED"
+                    : status == 402 ? "QUOTA_EXHAUSTED" : status == 409 ? "CONFLICT"
                     : status == 504 ? "LLM_UNAVAILABLE" : "INTERNAL_ERROR";
             try {
                 event(response, "error", Map.of("status", status, "code", code,
                         "message", status == 500 ? "回复暂未完成，请稍后重试" : String.valueOf(e.getMessage())));
             } catch (UncheckedIOException ignored) { /* Client left after its last delta. */ }
         }
+    }
+
+    private void record(Long owner, String name, HttpServletRequest request, String code) {
+        if (telemetryEnabled && productEvents != null) productEvents.recordServer(owner, name, java.util.UUID.randomUUID().toString(), null,
+                request.getRequestURI().contains("coach") ? "coach" : "companion", code);
     }
 
     private void event(HttpServletResponse response, String name, Object value) {

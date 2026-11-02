@@ -6,7 +6,9 @@
     const { createApp, reactive, nextTick } = Vue;
     const buddyState = () => ({ messages: [], input: '', busy: false, error: '', status: '', nextId: 0, retry: null, following: true });
     const initialState = () => ({
-        token: null, username: '', accountEpoch: 0, view: 'prepare', notice: null,
+        token: null, username: '', role: 'USER', accountEpoch: 0, view: 'prepare', notice: null,
+        billingPolicy: null, analyticsEnabled: false, analyticsLoaded: false, reportInvitationSeen: false,
+        feedbackOpen: false, feedbackSource: '', feedback: null, feedbackLoaded: false, feedbackDraft: null,
         jdList: [], resumeList: [], historyList: [], weakList: [], quota: null,
         keyMode: 'PLATFORM', chatProvider: 'DEEPSEEK', hasKey: false, last4: '',
         jdId: null, resumeId: null, sessionId: null, maxQuestions: 3,
@@ -26,6 +28,7 @@
     let submitted = new Set();
     let historySequence = 0;
     let buddyMemorySequence = 0;
+    let lastReportView = null;
     const staleError = () => Object.assign(new Error('会话已切换'), { stale: true });
     const notify = (message, error = false) => {
         if (message && message.stale) return;
@@ -70,7 +73,7 @@
         closeStream();
         requests.forEach(controller => controller.abort());
         requests.clear();
-        seen = new Set(); submitted = new Set(); historySequence++; buddyMemorySequence++;
+        seen = new Set(); submitted = new Set(); lastReportView = null; historySequence++; buddyMemorySequence++;
         Object.assign(store, initialState(), { accountEpoch: epoch });
     }
     async function api(path, method = 'GET', body, raw = false) {
@@ -111,6 +114,22 @@
             if (error instanceof TypeError) throw new Error('网络连接中断，请检查网络后重试。');
             throw error;
         } finally { requests.delete(controller); }
+    }
+    // Strict metadata only: never pass text, URLs, credentials or arbitrary event properties.
+    function track(name, page = store.view, source = null) {
+        if (!store.token || !store.analyticsLoaded || !store.analyticsEnabled) return;
+        if (!['prepare','interview','history','weak','materials','companion','coach','settings','feedback'].includes(page)) return;
+        if (!['PAGE_VIEW','PRACTICE_CLICK','API_CONFIG_OPEN','REPORT_VIEW','FEEDBACK_INVITE_VIEW','FEEDBACK_OPEN'].includes(name)) return;
+        const sessionId = page === 'history' ? store.reportSessionId : page === 'interview' ? store.sessionId : null;
+        if (name === 'PAGE_VIEW' && page !== 'history') lastReportView = null;
+        if (name === 'REPORT_VIEW') {
+            if (sessionId == null || lastReportView === sessionId) return;
+            lastReportView = sessionId;
+        }
+        const event = { eventId: crypto.randomUUID(), name, page, sessionId, durationMs: null,
+            source: ['account','report','quota'].includes(source) ? source : null,
+            device: window.innerWidth < 700 ? 'MOBILE' : 'DESKTOP' };
+        api('/api/product-events/batch', 'POST', { events: [event] }).catch(() => {});
     }
     function acceptBuddyMemory(data) {
         const memory = store.buddyMemory;
@@ -382,7 +401,7 @@
                     });
                     const destination = store.authDestination;
                     resetAccount();
-                    store.token = result.token; store.username = result.username;
+                    store.token = result.token; store.username = result.username; store.role = result.role || 'USER';
                     store.view = destination || 'prepare';
                     nextTick(() => window.scrollTo({ top: 0, behavior: 'auto' }));
                     [refreshJd, refreshResume, loadHistory, loadWeak, loadQuota, loadSettings]
@@ -406,7 +425,7 @@
     <section class="auth-card" aria-labelledby="auth-title">
       <span class="eyebrow">让每一次出发，都有人陪</span><h2 id="auth-title">{{tab==='login'?'欢迎回到练习室':'开启你的面试练习'}}</h2><p class="quiet">先安顿心情，再为下一步积累底气。</p>
       <div class="segmented auth-tabs"><button type="button" :aria-pressed="tab==='login'" @click="tab='login';error=''" :disabled="loading">登录</button><button type="button" :aria-pressed="tab==='register'" @click="tab='register';error=''" :disabled="loading">注册账号</button></div>
-      <p v-if="tab==='register'" class="auth-selection">新用户注册即赠 100 积分，陪你开始第一段练习。</p>
+      <p v-if="tab==='register'" class="auth-selection">新用户注册赠送体验积分，无需配置 API 即可开始练习。</p>
       <p v-if="store.notice" :class="store.notice.error?'inline-error':'auth-selection'" :role="store.notice.error?'alert':'status'">{{store.notice.message}}</p>
       <form @submit.prevent="submit" class="auth-form">
         <label>用户名<input v-model="username" autocomplete="username" required minlength="4" maxlength="32" placeholder="输入 4–32 字符的用户名" :disabled="loading"></label>
@@ -463,6 +482,7 @@
                 store.currentTurn = null; store.mainCount = 0; store.sessionId = null;
                 store.awaiting = false; seen = new Set(); submitted = new Set();
                 try {
+                    track('PRACTICE_CLICK', 'prepare');
                     const result = await api('/api/interview/start', 'POST', {
                         jdId: store.jdId, resumeId: store.resumeId,
                         roles: this.roleOptions.filter(role => this.roles.includes(role.name)).map(role => role.name),
@@ -479,7 +499,7 @@
         },
         template: `
 <section>
-  <div class="page-heading"><div><span class="eyebrow">从目标出发</span><h1>开始一场新练习</h1><p>准备一个目标岗位，剩下的，我们一起练。</p></div><span class="soft-label"><app-icon name="clock"/>按自己的节奏来</span></div>
+  <div class="page-heading"><div><span class="eyebrow">从目标出发</span><h1>开始一场新练习</h1><p>准备一个目标岗位，剩下的，我们一起练。</p><button class="text-button" @click="store.view='settings'">{{store.chatProvider==='QWEN'?'通义千问':'DeepSeek'}} · {{store.chatProvider==='DEEPSEEK' && store.keyMode==='BYOK'?'我的 API':'平台提供'}}<app-icon name="settings"/></button></div><span class="soft-label"><app-icon name="clock"/>按自己的节奏来</span></div>
   <div class="prepare-grid">
     <div class="surface preparation">
       <div class="section-heading"><span class="step-number">01</span><div><h2>你想面试什么岗位？</h2><p>粘贴招聘 JD，让提问更有针对性。</p></div></div>
@@ -680,7 +700,7 @@
                 try {
                     const result = await api('/api/interview/' + sessionId + '/report');
                     if (selection === this.selection) {
-                        store.report = result; store.reportSessionId = sessionId;
+                        store.report = result; store.reportSessionId = sessionId; track('REPORT_VIEW', 'history');
                     }
                 } catch (error) { if (!error.stale) this.error = error.message; }
                 finally { if (selection === this.selection || store.reportSessionId === sessionId) this.loading = false; }
@@ -726,7 +746,7 @@
 <p v-if="!store.historyList.length" class="empty-copy">没有找到练习记录。<br>完成第一次练习后，来这里看看收获。</p><div class="history-list"><button v-for="session in store.historyList" :key="session.sessionId" :class="['history-item',{selected:store.reportSessionId===session.sessionId}]" :disabled="!session.hasReport" @click="select(session.sessionId)"><span><strong>{{session.jobType || '模拟面试'}}</strong><small>{{fmtTime(session.createdAt)}} · #{{session.sessionId}}</small><small v-if="session.sameTypeTag">{{session.sameTypeTag}}</small></span><span class="history-score">{{session.matchScore ?? '—'}}<small>{{session.hasReport?'查看报告':'暂无报告'}}</small></span></button></div></aside>
 <article class="surface report-surface" :aria-busy="loading"><p v-if="error" class="inline-error" role="alert">{{error}}</p><p v-if="loading" role="status">正在读取报告…</p>
 <div v-if="!report" class="empty-state"><span class="empty-symbol"><app-icon name="report"/></span><h2>你的进步，会留在这里</h2><p>选择一份历史报告，或先完成一次练习。</p><button class="secondary" @click="store.view='prepare'">开始练习<app-icon name="arrow"/></button></div>
-<template v-else><div class="report-top"><div><span class="eyebrow">Critic 报告 · #{{store.reportSessionId}}</span><h2>这一次，离目标更近了多少？</h2></div><button class="secondary compact" @click="exportMd">导出 Markdown</button></div><div class="report-summary"><div class="match-score"><b>{{report.matchScore ?? '—'}}</b><span>/ 100<br>岗位匹配度</span></div><p>{{report.overallNotes || '查看逐轮反馈，发现下一步的练习方向。'}}</p></div>
+<template v-else><feedback-invitation/><div class="report-top"><div><span class="eyebrow">Critic 报告 · #{{store.reportSessionId}}</span><h2>这一次，离目标更近了多少？</h2></div><button class="secondary compact" @click="exportMd">导出 Markdown</button></div><div class="report-summary"><div class="match-score"><b>{{report.matchScore ?? '—'}}</b><span>/ 100<br>岗位匹配度</span></div><p>{{report.overallNotes || '查看逐轮反馈，发现下一步的练习方向。'}}</p></div>
 <section class="report-section" v-if="report.collapsedPoints?.length"><h3>优先补强</h3><ul class="takeaways"><li v-for="point in report.collapsedPoints" :key="point">{{point}}</li></ul><button class="text-button" @click="store.view='weak'">去错题本巩固<app-icon name="arrow"/></button></section>
 <section class="report-section" v-if="report.behaviorReview"><h3>行为面试评估</h3><div class="behavior-dimensions"><span v-for="(value,key) in report.behaviorReview.dimensions" :key="key">{{key}}<b>{{value}} / 2</b></span></div><p>{{report.behaviorReview.summary}}</p><ul><li v-for="suggestion in report.behaviorReview.suggestions" :key="suggestion">{{suggestion}}</li></ul></section>
 <section class="report-section"><div class="section-heading"><h3>逐轮反馈</h3><button class="text-button" @click="toggleTurns">{{showTurns?'收起原始问答':'查看原始问答'}}</button></div><p v-if="!reportTurns.length" class="field-note">本场暂无逐轮讲解；如报告生成失败，请保留原始问答。</p>
@@ -934,62 +954,12 @@
 <aside class="companion-aside"><template v-if="mode==='companion'"><span class="eyebrow">不急，我们慢慢来</span><h2>先照顾好自己，<br>再面对下一题。</h2><p>想倾诉，我们就先听你说；想找方向，我们就一起理一理。你可以随时告诉小暖，怎样陪你更舒服。</p><p class="buddy-boundary">AI 陪伴不替代专业心理支持，不做诊断。情绪聊天不会自动加入资料库；当前对话只短期保留。</p></template><template v-else><span class="eyebrow">一点点弄懂，就在进步</span><h2>不怕暂时不会，<br>我们从这里开始。</h2><p>先用例子建立直觉，再回到原理和面试考点。答不上来也没关系，可以看提示、看答案，或今天先不测。</p><p class="buddy-boundary">小师参考你发来的内容。也可以从报告或错题选择片段带来，不会自动读取全部资料；当前对话只短期保留。</p><button class="text-button" @click="store.view='history'">查看我的练习报告<app-icon name="arrow"/></button></template><buddy-memory :mode="mode"/><hr><template v-if="mode==='companion'"><h3>想把难点弄明白？</h3><p>让小师陪你讲清知识、拆解题目，找到下一步的学习方向。</p><button class="secondary" @click="goBuddy('coach')"><buddy-avatar tone="study"/>去找通考小师<app-icon name="arrow"/></button></template><template v-else><h3>累了，先缓一缓</h3><p>学不进去时也不必苛责自己。小暖在另一边，愿意听你说。</p><button class="secondary" @click="goBuddy('companion')"><buddy-avatar tone="warm"/>去找陪考小暖<app-icon name="arrow"/></button></template></aside></div></section>`
     };
 
-    const SettingsPanel = {
-        data: () => ({ key: '', busy: false, usage: [], loaded: false, error: '' }),
-        methods: {
-            async update(field, value) {
-                if (this.busy) return;
-                this.busy = true; this.error = '';
-                try {
-                    const result = await api('/api/user/settings', 'PUT', { [field]: value });
-                    store.keyMode = result.keyMode; store.chatProvider = result.chatProvider;
-                    notify('设置已保存。');
-                } catch (error) { if (!error.stale) this.error = error.message; }
-                finally { this.busy = false; }
-            },
-            async saveKey() {
-                if (this.busy || !this.key.trim()) return;
-                this.busy = true; this.error = '';
-                try {
-                    const result = await api('/api/user/api-key', 'PUT', { apiKey: this.key.trim() });
-                    store.hasKey = result.hasKey; store.last4 = result.last4; this.key = '';
-                    const settings = await api('/api/user/settings', 'PUT', { keyMode: 'BYOK' });
-                    store.keyMode = settings.keyMode; store.chatProvider = settings.chatProvider;
-                    notify('Key 已保存，已切换为自带 Key 模式。');
-                } catch (error) { if (!error.stale) this.error = error.message; }
-                finally { this.busy = false; }
-            },
-            async removeKey() {
-                if (this.busy || !confirm('删除自带 Key 并切回平台额度？')) return;
-                this.busy = true; this.error = '';
-                try {
-                    await api('/api/user/api-key', 'DELETE'); this.key = '';
-                    store.hasKey = false; store.last4 = ''; store.keyMode = 'PLATFORM';
-                    notify('自带 Key 已删除。');
-                } catch (error) { if (!error.stale) this.error = error.message; }
-                finally { this.busy = false; }
-            },
-            async refresh() {
-                this.error = '';
-                try {
-                    await Promise.all([loadSettings(), loadQuota()]);
-                    this.usage = await api('/api/user/usage'); this.loaded = true;
-                } catch (error) { if (!error.stale) this.error = error.message; }
-            }
-        },
-        template: `
-<section><div class="page-heading"><div><span class="eyebrow">按你的方式练习</span><h1>账号与设置</h1><p>管理模型、额度和调用方式。</p></div><button class="secondary" @click="refresh"><app-icon name="refresh"/>刷新设置与用量</button></div><p v-if="error" class="inline-error" role="alert">{{error}}</p>
-<div class="settings-grid"><section class="surface"><h2>对话模型</h2><p class="quiet">切换后用于后续调用，当前正在处理的请求不受影响。</p><div class="setting-choices"><button v-for="provider in [{id:'DEEPSEEK',name:'DeepSeek'},{id:'QWEN',name:'通义千问'}]" :key="provider.id" :aria-pressed="store.chatProvider===provider.id" @click="update('chatProvider',provider.id)" :disabled="busy"><strong>{{provider.name}}</strong><app-icon v-if="store.chatProvider===provider.id" name="check"/></button></div>
-<h3>调用方式</h3><div class="segmented"><button :aria-pressed="store.keyMode==='PLATFORM'" @click="update('keyMode','PLATFORM')" :disabled="busy">平台额度</button><button :aria-pressed="store.keyMode==='BYOK'" @click="update('keyMode','BYOK')" :disabled="busy">自带 DeepSeek Key</button></div><p class="field-note">通义千问始终使用平台额度。自带 Key 仅适用于 DeepSeek；资料向量化仍使用平台额度。</p>
-<h3>DeepSeek API Key</h3><p class="field-note">{{store.hasKey?'已保存，末四位 '+store.last4:'尚未保存自带 Key'}}</p><label for="byok-key" class="sr-only">DeepSeek API Key</label><input id="byok-key" v-model="key" type="password" autocomplete="off" placeholder="输入 sk- 开头的 Key" :disabled="busy"><div class="row wrap"><button class="primary" @click="saveKey" :disabled="busy || !key.trim()">{{busy?'正在保存…':'保存并启用自带 Key'}}</button><button class="text-button danger-text" v-if="store.hasKey" @click="removeKey" :disabled="busy">删除 Key</button></div><p class="field-note">Key 加密保存在服务端，保存后不再显示明文。</p></section>
-<section class="surface quota-surface"><span class="eyebrow">我的积分</span><div class="quota-value">{{formatPoints(store.quota?.remainingTokens)}}<span>积分</span></div><p class="quiet">累计使用 {{formatPoints(store.quota?.usedTokens)}} 积分 / 总积分 {{formatPoints(store.quota?.totalTokens)}}</p><hr><h3>积分如何使用？</h3><p>新用户注册赠送 100 积分。使用平台模型，按实际用量折算扣除积分；小额用量也会如实记录。</p><p>自带 DeepSeek Key：每次模型调用收取 1 积分服务费，模型费用由你的 Key 支付。一轮面试可能包含出题、判分等多次调用。</p><p>通义千问与资料向量化始终按平台实际用量扣积分。</p><quota-contact/></section></div>
-<section class="surface usage-surface"><div class="section-heading"><h2>积分明细</h2><button class="text-button" @click="refresh">{{loaded?'刷新':'加载用量'}}</button></div><p v-if="!usage.length" class="empty-copy">{{loaded?'暂无积分使用记录。':'点击加载，查看最近的模型调用和积分扣减。'}}</p><div v-else class="table-scroll"><table><thead><tr><th>时间</th><th>场景</th><th>模型</th><th>计费方式</th><th>扣除积分</th></tr></thead><tbody><tr v-for="row in usage" :key="row.id"><td>{{fmtTime(row.createdAt)}}</td><td>{{row.scene}}</td><td>{{row.model}}</td><td>{{row.keyMode==='BYOK'?'自带 Key 服务费':'平台用量'}}</td><td>{{formatPoints(row.chargedTokens)}}</td></tr></tbody></table></div></section></section>`
-    };
+    const { SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel, openFeedback } = window.createLaunchPanels({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track });
     const QuotaContact = {
         template: `<div class="quota-contact"><p>平台目前处于内测阶段，请联系工作人员补充额度。</p><div class="support-wechat"><span>工作人员微信</span><strong>13481264947</strong></div></div>`
     };
     const App = {
-        components: { AuthPanel, PreparePanel, MaterialsPanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel, SettingsPanel },
+        components: { AuthPanel, PreparePanel, MaterialsPanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel, SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel },
         data: () => ({ timer: null, navigation: [
             { id: 'prepare', name: '开始练习', icon: 'practice', caption: '准备你的下一场面试' },
             { id: 'interview', name: '面试工作区', icon: 'interview', caption: '专注回答，从容表达' },
@@ -998,11 +968,14 @@
             { id: 'materials', name: '我的资料', icon: 'folder', caption: '让练习更了解你' },
             { id: 'companion', name: '陪考小暖', icon: 'spark', caption: '给自己留一点空间' },
             { id: 'coach', name: '通考小师', icon: 'practice', caption: '把不会的，一点点弄懂' },
-            { id: 'settings', name: '账号与设置', icon: 'settings', caption: '按你的方式练习' }
+            { id: 'settings', name: '我的账号', icon: 'settings', caption: '按你的方式练习' },
+            { id: 'admin', name: '运营管理', icon: 'report', caption: '内测运营' }
         ] }),
-        computed: { currentNav() { return this.navigation.find(item => item.id === store.view) || this.navigation[0]; } },
+        computed: { visibleNavigation() { return this.navigation.filter(item => item.id !== 'admin' || store.role === 'ADMIN'); }, currentNav() { return this.visibleNavigation.find(item => item.id === store.view) || this.navigation[0]; } },
         watch: {
-            'store.view'() { nextTick(() => window.scrollTo({ top: 0, behavior: 'auto' })); },
+            'store.view'() { nextTick(() => window.scrollTo({ top: 0, behavior: 'auto' })); track('PAGE_VIEW'); if (store.view === 'history' && store.report) track('REPORT_VIEW', 'history'); },
+            'store.analyticsLoaded'(loaded) { if (loaded) track('PAGE_VIEW'); },
+            'store.reportSessionId'() { if (store.view === 'history' && store.report) track('REPORT_VIEW', 'history'); },
             'store.quotaOpen'(open) {
                 if (open) nextTick(() => this.$refs.quotaDialog?.showModal());
             }
@@ -1022,26 +995,29 @@
                 if ((store.interviewActive || store.busy) && !confirm('本场练习仍在进行，退出会关闭当前连接。确认退出？')) return;
                 resetAccount();
             },
-            closeQuota() { store.quotaOpen = false; store.view = 'settings'; }
+            closeQuota() { store.quotaOpen = false; store.view = 'settings'; },
+            openFeedback
         },
         template: `
 <div><auth-panel v-if="!store.token"/>
 <div v-else class="app-shell" :key="store.accountEpoch">
-  <aside class="sidebar"><a href="#" class="brand" @click.prevent="store.view='prepare'"><span class="brand-mark"><app-icon name="spark"/></span><span>面试练习室<small>INTERVIEW STUDIO</small></span></a><span class="sidebar-label">我的练习空间</span><nav aria-label="主导航"><button v-for="item in navigation" :key="item.id" :class="['nav-item',{active:store.view===item.id}]" :aria-label="item.name" :aria-current="store.view===item.id?'page':null" @click="navigate(item.id)"><app-icon :name="item.icon"/><span>{{item.name}}</span><span v-if="item.id==='interview' && store.interviewActive" class="nav-dot" aria-label="面试进行中"></span></button></nav><div class="sidebar-bottom"><div class="sidebar-quote"><span class="eyebrow">一点点，更从容</span><p>最好的准备，<br>是再练习一次。</p></div><div class="account"><span class="avatar">{{store.username.slice(0,1).toUpperCase()}}</span><span class="grow"><strong>{{store.username}}</strong><small>我的练习账号</small></span><button class="icon-button" aria-label="退出登录" @click="logout"><app-icon name="logout"/></button></div></div></aside>
-  <div class="workspace"><header class="workspace-header"><span>我的练习空间 <span class="breadcrumb-slash">/</span><strong>{{currentNav.name}}</strong></span><div class="header-tools"><buddy-links/><button class="balance-pill" @click="store.view='settings'"><span class="status-dot online"></span>{{formatPoints(store.quota?.remainingTokens)}}<small>积分</small></button></div></header>
+  <aside class="sidebar"><a href="#" class="brand" @click.prevent="store.view='prepare'"><span class="brand-mark"><app-icon name="spark"/></span><span>面试练习室<small>INTERVIEW STUDIO</small></span></a><span class="sidebar-label">我的练习空间</span><nav aria-label="主导航"><button v-for="item in visibleNavigation" :key="item.id" :class="['nav-item',{active:store.view===item.id}]" :aria-label="item.name" :aria-current="store.view===item.id?'page':null" @click="navigate(item.id)"><app-icon :name="item.icon"/><span>{{item.name}}</span><span v-if="item.id==='interview' && store.interviewActive" class="nav-dot" aria-label="面试进行中"></span></button></nav><div class="sidebar-bottom"><div class="sidebar-quote"><span class="eyebrow">一点点，更从容</span><p>最好的准备，<br>是再练习一次。</p></div><div class="account"><span class="avatar">{{store.username.slice(0,1).toUpperCase()}}</span><span class="grow"><strong>{{store.username}}</strong><small>我的练习账号</small></span><button class="icon-button" aria-label="退出登录" @click="logout"><app-icon name="logout"/></button></div></div></aside>
+  <div class="workspace"><header class="workspace-header"><span>我的练习空间 <span class="breadcrumb-slash">/</span><strong>{{currentNav.name}}</strong></span><div class="header-tools"><buddy-links/></div></header>
   <main id="main-content" class="workspace-content"><div v-if="store.notice" :class="['notice',{'notice-error':store.notice.error}]" :role="store.notice.error?'alert':'status'"><span>{{store.notice.message}}</span><button class="icon-button" aria-label="关闭提示" @click="store.notice=null">×</button></div>
-    <prepare-panel v-show="store.view==='prepare'"/><materials-panel v-show="store.view==='materials'"/><interview-panel v-show="store.view==='interview'"/><report-panel v-show="store.view==='history'"/><weak-panel v-show="store.view==='weak'"/><companion-panel v-show="store.view==='companion'" mode="companion"/><companion-panel v-show="store.view==='coach'" mode="coach"/><settings-panel v-show="store.view==='settings'"/>
+    <prepare-panel v-show="store.view==='prepare'"/><materials-panel v-show="store.view==='materials'"/><interview-panel v-show="store.view==='interview'"/><report-panel v-show="store.view==='history'"/><weak-panel v-show="store.view==='weak'"/><companion-panel v-show="store.view==='companion'" mode="companion"/><companion-panel v-show="store.view==='coach'" mode="coach"/><settings-panel v-show="store.view==='settings'"/><admin-panel v-if="store.role==='ADMIN'" v-show="store.view==='admin'"/>
     <footer class="workspace-footer"><span>每一次练习，都算数。</span><span>AI 反馈供练习参考，请结合真实岗位要求判断。</span></footer>
   </main></div>
 </div>
-<dialog v-if="store.quotaOpen" ref="quotaDialog" class="quota-dialog" aria-labelledby="quota-title" @cancel="store.quotaOpen=false"><span class="eyebrow">先休息一下</span><h2 id="quota-title">本次调用的积分不足</h2><p>回答草稿会保留，补充积分后可以继续练习。自带 Key 每次模型调用需要 1 积分。</p><quota-contact/><button class="primary large" @click="closeQuota" autofocus>查看积分与设置<app-icon name="arrow"/></button></dialog>
+<dialog v-if="store.quotaOpen" ref="quotaDialog" class="quota-dialog" aria-labelledby="quota-title" @cancel="store.quotaOpen=false"><span class="eyebrow">先休息一下</span><h2 id="quota-title">本次调用的积分不足</h2><p>回答草稿会保留，补充积分后可以继续练习。也可以自愿分享体验，审核后获赠积分。</p><quota-contact/><button class="secondary large" @click="openFeedback('quota')">{{store.feedback?'查看我的反馈':'分享体验，审核赠积分'}}</button><button class="primary large" @click="closeQuota" autofocus>前往我的账号<app-icon name="arrow"/></button></dialog>
+<feedback-dialog v-if="store.token && store.feedbackOpen" :key="store.accountEpoch"/>
 </div>`
     };
     const app = createApp(App);
     app.component('quota-contact', QuotaContact);
+    app.component('feedback-invitation', FeedbackInvitation);
     app.component('app-icon', Icon);
     app.component('buddy-avatar', BuddyAvatar);
     app.component('buddy-links', BuddyLinks);
-    Object.assign(app.config.globalProperties, { store, fmtTime, formatPoints, goBuddy });
+    Object.assign(app.config.globalProperties, { store, fmtTime, formatPoints, goBuddy, track });
     app.mount('#app');
 })();

@@ -80,7 +80,7 @@ class StrictPublicRequestApiTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String token = mapper.readTree(response).get("token").asText();
         mvc.perform(get("/api/user/quota").header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.totalTokens").value(50000));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalTokens").value(100000));
         assertThat(TenantContext.getTenantId()).isNull();
         mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(Map.of("username", username, "password", "wrong"))))

@@ -37,6 +37,7 @@ class PageRenderTest {
                 .contains("id=\"app\"")
                 .contains("vue.global")   // Vue3 CDN
                 .contains("/app.js")
+                .contains("/launch-panels.js")
                 .contains("/style.css");
     }
 
@@ -62,5 +63,9 @@ class PageRenderTest {
         String css = mvc.perform(get("/style.css"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(css).contains("--bg");
+
+        String launch = mvc.perform(get("/launch-panels.js"))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(launch).contains("createLaunchPanels", "/api/admin/grants", "/api/feedback");
     }
 }

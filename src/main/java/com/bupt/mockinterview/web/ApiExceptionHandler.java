@@ -29,6 +29,24 @@ import java.util.Map;
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> unreadable(org.springframework.http.converter.HttpMessageNotReadableException e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof com.bupt.mockinterview.launch.LaunchLimitException limit) return launchLimit(limit);
+        }
+        return body(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "提交内容格式不正确");
+    }
+
+    @ExceptionHandler(com.bupt.mockinterview.billing.PlatformBudgetExceededException.class)
+    public ResponseEntity<Map<String, Object>> platformBudget(com.bupt.mockinterview.billing.PlatformBudgetExceededException e) {
+        return body(HttpStatus.CONFLICT, "PLATFORM_BUDGET_REACHED", e.getMessage());
+    }
+
+    @ExceptionHandler(com.bupt.mockinterview.launch.LaunchLimitException.class)
+    public ResponseEntity<Map<String, Object>> launchLimit(com.bupt.mockinterview.launch.LaunchLimitException e) {
+        return body(HttpStatus.valueOf(e.status()), e.code(), e.getMessage());
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> notFound(IllegalArgumentException e) {
         return body(HttpStatus.NOT_FOUND, "NOT_FOUND", e.getMessage());

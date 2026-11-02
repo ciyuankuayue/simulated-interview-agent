@@ -12,14 +12,18 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.LockModeType;
 
 /**
  * Token 额度服务（R2）。
  * <ul>
  *   <li>PLATFORM 对话/embedding：调用前 {@link #ensureAvailable}，调用成功后 {@link #settlePlatformCall}
- *       按真实 usage 实扣；tryCharge 不足（最后一次透支）→ clamp 到 total。</li>
- *   <li>BYOK 对话：调用前 {@link #chargeForByokCall} 扣固定服务费（条件更新，绝不超发），
- *       调用成功后 {@link #recordByokChat} 只落流水（真实 token 烧在用户 key 上，不再扣）。</li>
+ *       按真实usage实扣；在额度行锁内计算余额限制后的实际扣减。</li>
+ *   <li>BYOK 对话：预检余额，调用后按用量的10%结算服务 token 当量。</li>
  *   <li>扣减 + 流水 REQUIRES_NEW 独立提交：token 已真实消耗，业务事务后续回滚不退款。</li>
  * </ul>
  */
@@ -29,6 +33,8 @@ public class QuotaService {
     private final QuotaRepository quotaRepo;
     private final LlmUsageLogRepository usageRepo;
     private final QuotaProperties props;
+    @PersistenceContext private EntityManager entityManager;
+    @Autowired(required = false) private PlatformBudgetService platformBudget;
 
     public QuotaService(QuotaRepository quotaRepo, LlmUsageLogRepository usageRepo, QuotaProperties props) {
         this.quotaRepo = quotaRepo;
@@ -59,7 +65,7 @@ public class QuotaService {
 
     /**
      * 调用前预检：余额为 0 直接 402（不发起任何外部调用）。
-     * PLATFORM 对话与 embedding 都走它；BYOK 对话走 {@link #chargeForByokCall}（预检+扣费一体）。
+     * PLATFORM/BYOK对话与embedding都走它；扣费在模型用量返回后结算。
      */
     @Transactional(readOnly = true)
     public void ensureAvailable(Long userId, KeyMode mode) {
@@ -72,6 +78,7 @@ public class QuotaService {
      * BYOK 对话调用前扣固定服务费。条件更新保证不超发；
      * 返回 false = 余额不足（调用方转 402，不发起 LLM 调用，重试也不重复扣）。
      */
+    @Deprecated // Historical test/internal compatibility only; production LLM paths no longer invoke this.
     @Transactional
     public boolean chargeForByokCall(Long userId) {
         return quotaRepo.tryChargeTokens(userId, props.getByokChargePerCall()) > 0;
@@ -88,28 +95,59 @@ public class QuotaService {
     public void settlePlatformCall(Long userId, UsageScene scene, String model,
                                    long promptTokens, long completionTokens,
                                    long totalTokens, boolean estimated) {
-        if (totalTokens <= 0L) {
-            // 理论上估算兜底不会给 0；防御：无用量不扣不记
-            return;
-        }
-        if (quotaRepo.tryChargeTokens(userId, totalTokens) == 0) {
-            // 最后一次调用超出剩余：透支部分不追讨，余额归零，之后预检拦死
-            quotaRepo.clampUsedToTotal(userId);
-        }
-        usageRepo.save(new LlmUsageLog(userId, scene, KeyMode.PLATFORM, model,
-                promptTokens, completionTokens, totalTokens, totalTokens, estimated));
+        settle(userId, KeyMode.PLATFORM, scene, model, promptTokens, completionTokens, totalTokens, estimated);
     }
 
-    /**
-     * BYOK 对话成功后只落流水：服务费已在调用前扣除（{@link #chargeForByokCall}），
-     * 真实 prompt/completion token 烧在用户自己的 key 上，仅记录展示。
-     */
+    /** BYOK now charges 10% of actual token usage after the call, never a fixed pre-call fee. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordByokChat(Long userId, UsageScene scene, String model,
                                long promptTokens, long completionTokens,
                                long totalTokens, boolean estimated) {
-        usageRepo.save(new LlmUsageLog(userId, scene, KeyMode.BYOK, model,
-                promptTokens, completionTokens, totalTokens, props.getByokChargePerCall(), estimated));
+        settle(userId, KeyMode.BYOK, scene, model, promptTokens, completionTokens, totalTokens, estimated);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordFailedCall(Long userId, KeyMode mode, UsageScene scene, String model) {
+        settle(userId, mode, scene, model, 0, 0, 0, true);
+    }
+
+    private void settle(Long userId, KeyMode mode, UsageScene scene, String model,
+                        long promptTokens, long completionTokens, long totalTokens, boolean estimated) {
+        if (totalTokens < 0 || promptTokens < 0 || completionTokens < 0) throw new IllegalArgumentException("用量不能为负数");
+        String callId = UsageContext.callId() == null ? UUID.randomUUID().toString() : UsageContext.callId();
+        Quota q = quotaRepo.lockByUserId(userId).orElseThrow(() -> new IllegalStateException("额度账户不存在"));
+        // OSIV may already hold this entity: refresh under the lock before reading balances.
+        entityManager.refresh(q, LockModeType.PESSIMISTIC_WRITE);
+        if (usageRepo.existsByUserIdAndCallId(userId, callId)) return;
+        int divisor = Math.max(1, props.getByokTokenDivisor());
+        long due = mode == KeyMode.BYOK ? totalTokens / divisor + (totalTokens % divisor == 0 ? 0 : 1) : totalTokens;
+        long charged = Math.min(due, q.remaining());
+        q.setUsedTokens(q.getUsedTokens() + charged);
+        LlmUsageLog row = new LlmUsageLog(userId, scene, mode, model, promptTokens, completionTokens,
+                totalTokens, charged, estimated);
+        row.setDueTokens(due);
+        row.setCallId(callId);
+        row.setSessionId(UsageContext.sessionId());
+        row.setBillingVersion(QuotaProperties.BILLING_VERSION);
+        row.setPricingVersion(ModelCosts.VERSION);
+        row.setStatus(UsageContext.status());
+        row.setAttemptCount(UsageContext.attempts());
+        row.setPlatformCostMicros(mode == KeyMode.BYOK ? Long.valueOf(0L) :
+                (totalTokens == 0 ? null : ModelCosts.estimateMicros(model, promptTokens, completionTokens, totalTokens)));
+        usageRepo.save(row);
+    }
+
+    public int boundedOutputTokens(int requested) {
+        return platformBudget == null ? requested : platformBudget.capOutput(requested);
+    }
+
+    public PlatformBudgetService.Reservation reservePlatformCall(String callId, String model,
+                                                                  long inputTokenBound, int outputBound, int attempts) {
+        return platformBudget == null ? null : platformBudget.reserve(callId, model, inputTokenBound, outputBound, attempts);
+    }
+
+    public void settlePlatformBudget(PlatformBudgetService.Reservation reservation, Long costMicros, int attempts) {
+        if (platformBudget != null) platformBudget.settle(reservation, costMicros, attempts);
     }
 
     /**

@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -137,18 +138,17 @@ class LlmServiceStreamTest {
     }
 
     @Test
-    void byokPaysOneFeeAndLogsPartialUsageOnFailure() throws Exception {
+    void byokPrechecksThenChargesPartialMeasuredUsage() throws Exception {
         when(keys.resolveForChat(user, "deepseek")).thenReturn(new KeyResolver.ResolvedKey("offline-byok", KeyMode.BYOK));
-        when(quota.chargeForByokCall(7L)).thenReturn(true);
         when(deepseek.stream(any(), anyString(), any())).thenThrow(new ChatStreamException("断流", null,
                 new ChatResponse("未完", null, mapper.readTree("{\"total_tokens\":12}"))));
 
         assertThatThrownBy(() -> llm.streamChat(ModelRole.FAST, false, messages, text -> {}))
                 .isInstanceOf(ChatStreamException.class);
 
-        verify(quota, times(1)).chargeForByokCall(7L);
+        verify(quota, never()).chargeForByokCall(7L);
+        verify(quota).ensureAvailable(7L, KeyMode.BYOK);
         verify(quota, times(1)).recordByokChat(7L, UsageScene.CHAT, "deepseek:deepseek-flash", 0, 0, 12, false);
-        verify(quota, never()).ensureAvailable(anyLong(), any());
         verify(quota, never()).settlePlatformCall(anyLong(), any(), anyString(), anyLong(), anyLong(), anyLong(), anyBoolean());
     }
 
@@ -175,6 +175,15 @@ class LlmServiceStreamTest {
         assertThatThrownBy(() -> llm.streamChat(ModelRole.FAST, false, messages, text -> {}))
                 .isInstanceOf(QuotaExhaustedException.class);
 
+        verify(deepseek, never()).stream(any(), anyString(), any());
+    }
+
+    @Test
+    void budgetDenialPreventsProviderRequestBeforeAnyTokenIsSpent() {
+        doThrow(new com.bupt.mockinterview.billing.PlatformBudgetExceededException("预算已满"))
+                .when(quota).reservePlatformCall(anyString(), anyString(), anyLong(), anyInt(), anyInt());
+        assertThatThrownBy(() -> llm.streamChat(ModelRole.FAST, false, messages, text -> {}))
+                .isInstanceOf(com.bupt.mockinterview.billing.PlatformBudgetExceededException.class);
         verify(deepseek, never()).stream(any(), anyString(), any());
     }
 }

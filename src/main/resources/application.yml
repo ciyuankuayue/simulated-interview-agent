@@ -10,7 +10,7 @@ spring:
   #   PowerShell（推荐）: $env:SPRING_PROFILES_ACTIVE="mysql"; .\mvnw.cmd clean spring-boot:run
   #   双 shell 通用（-D 整体加引号，PowerShell 不加引号会被拆参）:
   #                      .\mvnw.cmd clean spring-boot:run "-Dspring-boot.run.profiles=mysql"
-  # ⚠️ 部署到生产必须显式加 mysql profile，否则默认跑 H2 内存库（重启即清空，仅本地验证用）。
+  # ⚠️ 部署到生产必须显式加 prod profile，否则默认跑 H2 内存库（重启即清空，仅本地验证用）。
   datasource:
     url: jdbc:h2:mem:mock_interview;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     username: sa
@@ -80,7 +80,7 @@ jwt:
   secret: ${JWT_SECRET:}                  # 空=启动时自动生成（仅开发便利；生产必须显式设）
   expiry-ms: 86400000                     # 24 小时（24 * 60 * 60 * 1000）
 
-# ---- R2 token 额度（PLATFORM 按 usage 实扣；BYOK 对话按次服务费；embedding 也计量） ----
+# ---- R2 token 额度（PLATFORM 按 usage 实扣；BYOK 对话按真实用量比例收服务费；embedding 也计量） ----
 app:
   interview:
     # New sessions use bounded Agent decisions; existing sessions without agent_state retain compatibility.
@@ -104,9 +104,12 @@ app:
     # 生产 mysql profile 在 application-mysql.yml 显式置 false。
     clean-on-empty-sources: true
   quota:
-    signup-bonus-tokens: 50000             # 新用户赠 100 积分；1 积分 = 500 token 当量；不重置存量余额
-    byok-charge-per-call: 500              # BYOK 每次 DeepSeek 模型调用扣 1 积分服务费；不足 1 积分→402
+    signup-bonus-tokens: ${APP_SIGNUP_BONUS_TOKENS:100000} # 新用户赠200积分，存量不重置
+    byok-token-divisor: 10                 # 每5000真实token扣1服务积分，调用后结算
     usage-estimate-enabled: true           # 厂商响应缺 usage 时按字符 1:1 估算兜底（false=不扣，仅记日志）
+  platform-budget:
+    daily-cny: ${APP_PLATFORM_DAILY_BUDGET_CNY:100}
+    max-output-tokens: 32768
   security:
     # BYOK key 入库的 AES-256 KEK（Base64 编码 32 字节）。空=启动自动生成临时 key（重启后旧密文不可解）。
     # 生产/多实例必须显式设置同一 APP_DATA_KEY：

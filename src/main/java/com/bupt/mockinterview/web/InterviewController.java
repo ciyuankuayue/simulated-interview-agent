@@ -198,9 +198,11 @@ public class InterviewController {
             throw new IllegalArgumentException("会话不存在: " + sessionId);
         }
         return requestGuard.execute(currentUser.currentUserId(), sessionId, () -> {
+            try (var usageScope = com.bupt.mockinterview.billing.UsageContext.withSession(sessionId)) {
             List<AgentEvent> events = orchestrator.answer(sessionId, text);
             broker.publish(sessionId, events);
             return Map.of("accepted", true);
+            }
         });
     }
 
@@ -219,7 +221,9 @@ public class InterviewController {
     /** 主动结束：触发 Critic 出报告。已结束时幂等返回既有报告。 */
     @PostMapping("/{sessionId}/end")
     public Map<String, Object> end(@PathVariable Long sessionId) {
+        try (var usageScope = com.bupt.mockinterview.billing.UsageContext.withSession(sessionId)) {
         return requestGuard.execute(currentUser.currentUserId(), sessionId, () -> endGuarded(sessionId));
+        }
     }
 
     private Map<String, Object> endGuarded(Long sessionId) {

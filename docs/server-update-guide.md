@@ -314,3 +314,13 @@ backup_dir="$HOME/app-backups/20261020-实际时间戳"
 - [Git：merge 与 ff-only](https://git-scm.com/docs/git-merge)
 
 本文提供操作步骤，没有在你的 Ubuntu 服务器实际执行备份、合并、迁移或部署；实际结果以服务器输出为准。新文档不自动提交或推送。
+
+## 2026-10-30 试推广升级补充
+
+1. 先备份MySQL和Lucene卷，再构建与人审。prod经Flyway执行V7运营表和V8用量/预算迁移；不要用ddl-auto:update替代生产迁移。
+2. 配置ADMIN引导账号；APP_SIGNUP_BONUS_TOKENS默认100000，APP_PLATFORM_DAILY_BUDGET_CNY默认100。compose已传入这两个值，环境调整后重建app容器生效。
+3. prod访问保护依赖Redis；Redis不可用返回503，不自动回退到单机保护。app只能经Caddy暴露，Tomcat默认只信任Docker172.16～31内部代理；若实际网络不同设置APP_TRUSTED_PROXY_REGEX，切勿无条件信任所有来源。
+4. 上线前用管理员给一个真实USER补少量积分，重复请求不增加第二次；USER不能访问管理接口。用第二个USER验证用量/补额/反馈隔离。核对问卷三入口和审核赠200积分。
+5. 预算页的消耗包含未知重试的保守预留，和厂商账单不完全相同。跨日/崩溃预留不自动归还，先人工对账；金额为估算。首版事件分析滚动90天，没有长期数据仓库。
+6. 未接自动支付，不启用月卡或不限量。变更API模型/地域前核对公开单价并更新ModelCosts价格版本；未知平台模型失败关闭。
+7. 2026-11-01已验证隔离MySQL 8 + Redis 7：旧库V6→V8、新库Hibernate初始化→baseline3→V8、生产结构校验及关键运营并发均通过。可用PowerShell运行 `./scripts/verify-launch-mysql.ps1` 复验（独立13317/16387端口，自动清理本轮容器，不触碰既有数据库、不调用模型）。这不替代实际发布前的生产备份和恢复准备。

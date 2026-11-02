@@ -36,6 +36,7 @@ final class OpenAiSseStream {
             throw new LlmException("流式正文调用不支持工具请求");
         }
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            com.bupt.mockinterview.billing.UsageContext.noteAttempt();
             State state = new State();
             boolean retryable = false;
             try {

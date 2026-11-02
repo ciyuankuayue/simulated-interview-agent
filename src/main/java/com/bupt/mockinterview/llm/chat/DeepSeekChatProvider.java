@@ -107,6 +107,7 @@ public class DeepSeekChatProvider implements ChatProvider {
     private JsonNode callWithRetry(Map<String, Object> body, String apiKey) {
         LlmException last = null;
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            com.bupt.mockinterview.billing.UsageContext.noteAttempt();
             try {
                 return callOnce(body, apiKey);
             } catch (HttpStatusException e) {

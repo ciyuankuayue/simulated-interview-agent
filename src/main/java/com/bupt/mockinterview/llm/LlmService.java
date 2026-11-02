@@ -5,6 +5,11 @@ import com.bupt.mockinterview.billing.QuotaProperties;
 import com.bupt.mockinterview.billing.QuotaService;
 import com.bupt.mockinterview.billing.UsageEstimates;
 import com.bupt.mockinterview.billing.UsageScene;
+import com.bupt.mockinterview.billing.UsageContext;
+import com.bupt.mockinterview.billing.ModelCosts;
+import com.bupt.mockinterview.billing.PlatformBudgetService;
+import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 import com.bupt.mockinterview.domain.User;
 import com.bupt.mockinterview.llm.chat.ChatRequest;
 import com.bupt.mockinterview.llm.chat.ChatResponse;
@@ -188,46 +193,67 @@ public class LlmService implements LlmPort {
         ModelRouter.Route route = router.route(user, role);
         KeyResolver.ResolvedKey resolved = keyResolver.resolveForChat(user, route.providerId());
         boolean billable = user != null;
-        if (billable) {
-            if (resolved.byok()) {
-                // BYOK 服务费在调用前扣（绝不超发）；余额不足抛 402，一次请求都不发出
-                if (!quotaService.chargeForByokCall(user.getId())) {
-                    throw QuotaExhaustedException.forMode(resolved.mode());
+        if (billable) quotaService.ensureAvailable(user.getId(), resolved.mode());
+        int boundedOutput = billable ? quotaService.boundedOutputTokens(maxTokens) : maxTokens;
+        if (boundedOutput <= 0) boundedOutput = maxTokens; // Convenient offline/mock construction.
+        ChatRequest request = new ChatRequest(route.model(), messages, thinking, jsonMode, tools, boundedOutput);
+        String callId = UUID.randomUUID().toString();
+        try (UsageContext.Scope ignored = UsageContext.withCall(callId)) {
+            PlatformBudgetService.Reservation reservation = null;
+            if (billable && !resolved.byok()) {
+                // Serialized UTF-8 bytes dominate text token counts; include tools and framing overhead.
+                long inputBound = mapper.valueToTree(Map.of("messages", messages,
+                        "tools", tools == null ? List.of() : tools)).toString().getBytes(StandardCharsets.UTF_8).length + 256L;
+                reservation = quotaService.reservePlatformCall(callId, route.label(), inputBound, boundedOutput, 3);
+            }
+            ChatResponse response;
+            TokenUsage budgetUsage = null;
+            try {
+                response = onDelta == null
+                        ? route.provider().chat(request, resolved.apiKey())
+                        : route.provider().stream(request, resolved.apiKey(), onDelta);
+                budgetUsage = parseUsage(response.usage(), messages, response.content(), response.toolCalls());
+                if ((response.content() == null || response.content().isBlank()) && response.toolCalls().isEmpty())
+                    UsageContext.status("FAILED");
+                if (billable) settleUsage(user.getId(), resolved.byok(), scene, route.label(),
+                        messages, response.content(), response.toolCalls(), response.usage());
+            } catch (ChatStreamException e) {
+                ChatResponse partial = e.partialResponse();
+                UsageContext.status(partial == null ? "FAILED" : "PARTIAL");
+                if (partial != null) {
+                    budgetUsage = parseUsage(partial.usage(), messages, partial.content(), partial.toolCalls());
+                    if (billable) settleUsage(user.getId(), resolved.byok(), scene, route.label(),
+                            messages, partial.content(), partial.toolCalls(), partial.usage());
+                } else if (billable) recordFailure(user.getId(), resolved.mode(), scene, route.label());
+                throw e;
+            } catch (RuntimeException e) {
+                UsageContext.status("FAILED");
+                if (billable) recordFailure(user.getId(), resolved.mode(), scene, route.label());
+                throw e;
+            } finally {
+                if (billable && !resolved.byok()) {
+                    Long measured = budgetUsage == null || budgetUsage.estimated() ? null : ModelCosts.estimateMicros(route.label(),
+                            budgetUsage.promptTokens(), budgetUsage.completionTokens(), budgetUsage.totalTokens());
+                    try { quotaService.settlePlatformBudget(reservation, measured, UsageContext.attempts()); }
+                    catch (RuntimeException accountingFailure) {
+                        // Reservation remains held; future calls still fail closed at the budget bound.
+                        log.error("平台预算结算失败，预留保持，callId={}", callId, accountingFailure);
+                    }
                 }
-            } else {
-                // PLATFORM 预检：余额 0 直接 402，不烧请求
-                quotaService.ensureAvailable(user.getId(), resolved.mode());
             }
-        }
-
-        ChatRequest request = new ChatRequest(route.model(), messages, thinking, jsonMode, tools, maxTokens);
-        ChatResponse response;
-        try {
-            response = onDelta == null
-                    ? route.provider().chat(request, resolved.apiKey())
-                    : route.provider().stream(request, resolved.apiKey(), onDelta);
-        } catch (ChatStreamException e) {
-            // 断流/前端取消后仍结算已发生的模型消耗，不重放，不在业务层重新发请求。
-            ChatResponse partial = e.partialResponse();
-            if (billable && partial != null) {
-                settleUsage(user.getId(), resolved.byok(), scene, route.label(),
-                        messages, partial.content(), partial.toolCalls(), partial.usage());
+            if ((response.content() == null || response.content().isBlank()) && response.toolCalls().isEmpty()) {
+                throw new LlmException("模型响应正文与工具调用均为空");
             }
-            throw e;
+            return new LlmReply(response.content(), response.reasoning(), budgetUsage, response.toolCalls());
         }
-
-        if (billable) {
-            settleUsage(user.getId(), resolved.byok(), scene, route.label(),
-                    messages, response.content(), response.toolCalls(), response.usage());
-        }
-        if ((response.content() == null || response.content().isBlank()) && response.toolCalls().isEmpty()) {
-            throw new LlmException("模型响应正文与工具调用均为空");
-        }
-        return new LlmReply(response.content(), response.reasoning(),
-                parseUsage(response.usage(), messages, response.content(), response.toolCalls()), response.toolCalls());
     }
 
-    /** 用后计费：PLATFORM 按 usage 实扣；BYOK 只落流水（服务费已在调用前扣）。计费失败不吞掉用户已拿到的回复。 */
+    private void recordFailure(Long userId, com.bupt.mockinterview.domain.KeyMode mode, UsageScene scene, String model) {
+        try { quotaService.recordFailedCall(userId, mode, scene, model); }
+        catch (RuntimeException failure) { log.error("模型失败记录落库失败，callId={}", UsageContext.callId(), failure); }
+    }
+
+    /** 用后计费：PLATFORM按usage实扣，BYOK按用量收10%服务当量。计费失败不吞掉用户已拿到的回复。 */
     private void settleUsage(Long userId, boolean byok, UsageScene scene, String modelLabel,
                              List<Map<String, Object>> messages, String content,
                              List<ToolCall> toolCalls, JsonNode usageNode) {

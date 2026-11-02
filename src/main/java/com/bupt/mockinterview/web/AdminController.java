@@ -31,12 +31,14 @@ public class AdminController {
     private final CurrentUserService currentUser;
     private final UserRepository userRepo;
     private final QuotaService quotaService;
+    private final com.bupt.mockinterview.operations.OperationsService operations;
 
     public AdminController(CurrentUserService currentUser, UserRepository userRepo,
-                           QuotaService quotaService) {
+                           QuotaService quotaService, com.bupt.mockinterview.operations.OperationsService operations) {
         this.currentUser = currentUser;
         this.userRepo = userRepo;
         this.quotaService = quotaService;
+        this.operations = operations;
     }
 
     @PostMapping("/quota")
@@ -45,14 +47,7 @@ public class AdminController {
         if (operator == null || operator.getRole() != UserRole.ADMIN) {
             throw new ForbiddenException("仅管理员可充值 token 额度");
         }
-        User target = userRepo.findByUsername(req.username())
-                .orElseThrow(() -> new UserNotFoundException("用户不存在：" + req.username()));
-        Quota q = quotaService.grantTokens(target.getId(), req.grantTokens());
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("totalTokens", q.getTotalTokens());
-        body.put("usedTokens", q.getUsedTokens());
-        body.put("remainingTokens", q.remaining());
-        return body;
+        return operations.legacyGrant(operator.getId(), req.username(), req.grantTokens());
     }
 
     /** 充值请求：grantTokens 必须 &gt; 0（校验失败 → 400 BAD_REQUEST）。 */

@@ -6,6 +6,10 @@ spring:
     enabled: false
 
 app:
+  launch:
+    telemetry-enabled: false
+    limits:
+      enabled: false
   interview:
     # Historical suites exercise legacy sessions; dedicated Agent suites explicitly enable the new runtime.
     agent-enabled: false

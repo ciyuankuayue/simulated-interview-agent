@@ -10,4 +10,5 @@ public interface LlmUsageLogRepository extends JpaRepository<LlmUsageLog, Long> 
 
     /** 本人最近用量流水（id 倒序≈时间倒序，省掉 created_at 排序开销）。 */
     List<LlmUsageLog> findByUserIdOrderByIdDesc(Long userId, Pageable pageable);
+    boolean existsByUserIdAndCallId(Long userId, String callId);
 }

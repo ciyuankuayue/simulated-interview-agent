@@ -9,7 +9,7 @@
 |---|------|------|--------|
 | 0 | **app_user**（R1-1，R1-3 扩） | 用户账号：注册/登录 + JWT 鉴权，所有实体的 owner；含 key_mode / role | 不对外暴露 |
 | 0a | **user_api_key**（R1-3） | 用户自带 DeepSeek key（BYOK），AES-GCM 密文落库 | 仅回 hasKey + last4 |
-| 0b | **quota**（R2 token 计量） | 用户 token 额度：注册赠送、PLATFORM 按真实 token 扣、BYOK 按次扣服务费、ADMIN 可充值 | 用户可看余额/明细 |
+| 0b | **quota**（R2 token 计量） | 用户 token 额度：注册赠送、PLATFORM 按真实 token 扣、BYOK 按真实用量比例扣服务费、ADMIN 可充值 | 用户可看余额/明细 |
 | 0c | **llm_usage_log**（R2 新增） | 每次 LLM/embedding 调用的 token 用量与扣减流水 | 仅本人/ADMIN，内部明细 |
 | 1 | jd_profile | JD 原文 + 考点关键词 + 岗位类型 + 同类标签 | 列表（精简），按 user_id 隔离 |
 | 2 | resume_version | 多版本简历原文 + 上传时间 | 可切换，按 user_id 隔离 |
@@ -47,17 +47,17 @@
 ### quota（R2：token 计量；R1-3 的 points 列已整体替换）
 - id (PK)
 - user_id (FK UNIQUE, NOT NULL)
-- total_tokens      # 总额度（token 单位；注册赠送 app.quota.signup-bonus-tokens，默认 50000 = 100 积分；ADMIN 可加）
+- total_tokens      # 总额度（token 单位；注册赠送 app.quota.signup-bonus-tokens，默认 100000 = 200 积分；ADMIN 可加）
 - used_tokens       # 已消耗（token 当量；非负，永不超过 total，最后一次透支由 clamp 归零到 total）
 - created_at / updated_at
 
-> 积分展示（2026-10-19）：1 积分 = 500 token 当量。保留现有 token 账本与 API；页面按此比例显示，最多 3 位小数，不把 0.002 积分舍入成 0。新用户默认赠 100 积分，存量用户额度不重置。
+> 积分展示（2026-10-19）：1 积分 = 500 token 当量。保留现有 token 账本与 API；页面按此比例显示，最多 3 位小数，不把 0.002 积分舍入成 0。新用户默认赠 200 积分，存量用户额度不重置。
 >
-> R2 计量规则（2026-10-19 调整默认赠额与服务费）：
+> 现行计量规则（2026-10-30 调整默认赠额与服务费）：
 > - **PLATFORM**：DeepSeek 与 embedding（DashScope）都走平台 key。调用**前预检**余额（=0 直接 402，不发请求）；调用**后**按响应 `usage.total_tokens` **实扣**；usage 缺失按「输入+输出字符数 1 字符≈1 token」估算兜底（偏保守，`app.quota.usage-estimate-enabled` 可关）。允许最后一次小幅超出，扣减时 clamp 到 total，之后预检拦死。
-> - **BYOK**：API 费由用户自己付给 DeepSeek；平台仍在每次模型调用**前**扣固定服务费 `app.quota.byok-charge-per-call`（默认 500 token 当量 = 1 积分），条件 UPDATE 不超发，不足 1 积分即 402；一轮面试可能有多次模型调用。BYOK 的 embedding 仍走平台 key → 按实际用量折算积分（与对话模式无关）。
+> - **BYOK**：API 费由用户自己付给 DeepSeek；调用前仅预检余额，调用后按真实 token 的十分之一收服务当量（5000 模型 token = 1 积分），向上舍入到 1 内部 token 当量；余额为零返回 402。BYOK 的 embedding 仍走平台 key → 按实际用量折算积分（与对话模式无关）。
 > - 扣减与流水在 REQUIRES_NEW 独立事务提交：token 已真实烧掉，业务事务后续回滚不退款。
-> - 并发安全：单条条件 UPDATE 原子扣减（不引 @Version/Redis INCR），并发压测保证不超发。
+> - 并发安全：新结算在用户额度行写锁内刷新余额、按唯一调用号去重、扣减与流水同事务；不引 @Version/Redis INCR。旧辅助条件 UPDATE 保留兼容。
 
 ### llm_usage_log（R2 新增，用量流水）
 - id (PK)
@@ -66,7 +66,7 @@
 - key_mode         # PLATFORM / BYOK（embedding 恒 PLATFORM；R3-2 起 BYOK 用户选 QWEN 时对话也记 PLATFORM）
 - model            # 「厂商:模型名」标识（R3-1 起）：deepseek:<m> / qwen:<m> / dashscope:<embed-m>；历史行可能是裸 deepseek-flash（无前缀），原样保留不回填
 - prompt_tokens / completion_tokens / total_tokens   # 厂商 usage 原值；embedding 只 total；估算兜底时三者可为 0 而 total=估算值并记 estimated=true 的来源（实现上以 total_tokens>0 为准）
-- charged_tokens   # 扣减的 token 当量（BYOK 对话默认服务费 500 = 1 积分，不等于 total_tokens；历史按当时费率保留）
+- charged_tokens   # 扣减的 token 当量（BYOK 对话按 10% 用量结算，不等于 total_tokens；余额不足时 clamp，历史按当时费率保留）
 - created_at
 
 > 用途：AGENTS.md「明细入 DB」原则下的逐次消耗凭证；支撑 GET /api/user/usage 与未来对账/管理后台。不做修改/删除接口。
@@ -346,3 +346,16 @@ legacy 场保留旧规则：8 不追问、6–7 最多一层、≤5 最多两层
 - 记忆默认关闭；关闭停止后续模型读取与自动整理，保留内容可见可删。共享目标仅用于两者备考背景，角色偏好按 mode 筛选。自动提取与正文同一次调用，内部尾部标记由流过滤器隐藏、从成功历史剔除。存储失败只跳过画像整理，不额外调用模型或伪报保存。
 - 小师内置审核知识卡为项目资源，每次仅匹配少量相关卡并带适用版本/官方来源；不新增向量服务，不改变既有 Lucene 私有索引或 userId 预过滤。它们不构成“某公司高频”证据。
 
+
+## 11. 试推广运营与反馈（2026-10-30）
+
+- 新增4张owner表：operation_grant（补额账本）、product_feedback（每账号一份反馈及一次奖励标记）、product_event（白名单产品事件）、analytics_preference（可选前端分析/报告邀请状态）。均遵循@TenantId和显式owner谓词，owner表总数从14变18；V7迁移。
+- ADMIN先鉴权，再通过OperationsTransactions切换root新Session执行受控账号枚举/聚合查询；写入前回到目标租户并新开事务，禁止root persist。额度增加和账本原子提交；用户行锁串行补额/审核，唯一requestId和反馈奖励关联防重复。
+- 管理端不暴露简历、面试回答、陪聊原文、Key或JWT；只返回必要经营元数据。反馈正文为用户主动提交给开发者的内容，单独控制保留期限。
+- 新赠送默认200积分；PLATFORM按真实token，自带DeepSeek按用量10%收服务当量，1积分仍为500内部token。旧余额与旧流水不重算。应扣dueTokens和实扣chargedTokens分别记录，余额不足时可减免最后调用超出部分。
+- LlmUsageLog新增callId、sessionId、billingVersion、platformCostMicros、pricingVersion、status、attemptCount；V8允许旧行新增字段为空。调用ID去重不等于业务请求幂等，新模型调用继续计费。资料导入用量单列，无sessionId不伪造归因。
+- platform_budget_day/platform_budget_reservation为2张全局平台运营金额表，不属于owner表；只存日期、金额和调用ID，无用户内容。独立事务预留在途最大估算，按北京时间日预算收口对话和向量化。未知失败不按零成本处理，崩溃预留首版保留待人工对账；估算不是厂商现金账单。
+- 活跃=核心操作成功用户；漏斗按同一注册队列、各阶段去重用户；次日/7日回访只计算观察期完整的账号。前端报告查看等可选事件缺失不代表用户必未查看，需结合采集开关解释。
+- 产品事件滚动保留90天；反馈内容180天、联系方式90天后清理，奖励标记保留。首版未建设长期匿名历史数据仓库，不能承诺90天以外的事件分析。
+- 首批短问卷主动填写：体验阶段单选、具体经历必填、障碍多选（NONE/UNSURE互斥）、平台建议选填、后续联系自愿。审核后一次赠200积分；报告非模态邀请、账号页、积分不足可选入口。
+- HTTP访问限制：注册10次/小时/IP、登录30次/分钟/IP、登录写操作60次/分钟/账号；同账号主要模型操作串行、10分钟租约。prod走Redis且不可用拒绝新工作，dev为有界单进程兜底。请求体最多1MiB、单资料20000字符、批量JD10条、资料总量100万字符；均可经app.launch.limits配置调整。前置代理可信地址需按部署网络配置，禁止直接信任客户端X-Forwarded-For。

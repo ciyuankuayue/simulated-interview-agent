@@ -26,6 +26,7 @@ function account(token) {
     if (!accounts.has(token)) accounts.set(token, {
         jd: [], resumes: [], reports: [], streams: new Set(), events: [], answerCount: 0,
         mode: 'PLATFORM', provider: 'DEEPSEEK', last4: '', due: true,
+        pref: { enabled: true, reportInvitationSeen: false }, grants: [], feedback: null,
         memory: { enabled: false, revision: 0, entries: [], blockedKeys: [] }
     });
     return accounts.get(token);
@@ -52,14 +53,14 @@ const server = http.createServer(async (req, res) => {
             res.setHeader('Content-Type', 'application/javascript'); res.end(fs.readFileSync(process.env.FRONTEND_VUE_RUNTIME)); return;
         }
         const file = endpoint === '/' ? 'templates/index.html' :
-            endpoint === '/app.js' ? 'static/app.js' : endpoint === '/style.css' ? 'static/style.css' : null;
+            endpoint === '/app.js' ? 'static/app.js' : endpoint === '/launch-panels.js' ? 'static/launch-panels.js' : endpoint === '/style.css' ? 'static/style.css' : null;
         if (!file) { res.writeHead(404); res.end(); return; }
         let text = fs.readFileSync(path.join(root, 'src/main/resources', file), 'utf8');
         if (endpoint === '/') {
-            text = text.replace('th:href="@{/style.css}"', 'href="/style.css"').replace('th:src="@{/app.js}"', 'src="/app.js"');
+            text = text.replace('th:href="@{/style.css}"', 'href="/style.css"').replace('th:src="@{/app.js}"', 'src="/app.js"').replace('th:src="@{/launch-panels.js}"', 'src="/launch-panels.js"');
             if (process.env.FRONTEND_VUE_RUNTIME) text = text.replace('https://unpkg.com/vue@3/dist/vue.global.prod.js', '/vue.global.prod.js');
         }
-        res.setHeader('Content-Type', endpoint === '/app.js' ? 'application/javascript' : endpoint === '/style.css' ? 'text/css' : 'text/html; charset=utf-8');
+        res.setHeader('Content-Type', ['/app.js','/launch-panels.js'].includes(endpoint) ? 'application/javascript' : endpoint === '/style.css' ? 'text/css' : 'text/html; charset=utf-8');
         res.end(text); return;
     }
     let body = '';
@@ -70,9 +71,24 @@ const server = http.createServer(async (req, res) => {
     calls.push({ endpoint, method: req.method, data, token });
     const route = req.method + ' ' + endpoint;
     if (route === 'POST /api/auth/login' || route === 'POST /api/auth/register') {
-        json(res, { token: 'fixture-' + data.username, username: data.username, userId: 1 }, route.endsWith('register') ? 201 : 200); return;
+        json(res, { token: 'fixture-' + data.username, username: data.username, userId: 1, role: data.username.includes('admin') ? 'ADMIN' : 'USER' }, route.endsWith('register') ? 201 : 200); return;
     }
     if (!token) { json(res, { message: '请先登录' }, 401); return; }
+    if (route === 'GET /api/user/billing-policy') { json(res, { signupBonusPoints:200,tokensPerPoint:500,byokTokensPerPoint:5000,feedbackRewardPoints:200,billingVersion:'fixture' }); return; }
+    if (route === 'GET /api/user/analytics-preference') { json(res, a.pref); return; }
+    if (route === 'PUT /api/user/analytics-preference') { Object.assign(a.pref,data); json(res,a.pref); return; }
+    if (route === 'POST /api/product-events/batch') { json(res,{accepted:a.pref.enabled?data.events.length:0}); return; }
+    if (route === 'GET /api/user/grants') { json(res,{items:a.grants,page:0,size:10,total:a.grants.length}); return; }
+    if (route === 'GET /api/feedback') { json(res,{feedback:a.feedback,rewardPoints:200}); return; }
+    if (route === 'POST /api/feedback' || route === 'PUT /api/feedback') { a.feedback={...data,id:77,status:'PENDING',createdAt:'2026-10-30T03:00:00Z'}; json(res,a.feedback); return; }
+    if (route === 'GET /api/admin/overview') { json(res,{days:7,registeredUsers:3,activeUsers:2,interviewsStarted:2,reportsGenerated:1,reportsViewed:1,chargedPoints:20,platformEstimatedCostCny:.2,paidAmountCny:9.9,pendingFeedback:1}); return; }
+    if (route === 'GET /api/admin/users') { json(res,{items:[{id:1,username:'user_a',createdAt:'2026-10-30T03:00:00Z',lastActiveAt:'2026-10-30T03:05:00Z',chatProvider:'DEEPSEEK',effectiveKeyMode:'BYOK',remainingPoints:200,sevenDayTokens:1000,interviewCount:1,reportCount:1}],page:0,size:20,total:1}); return; }
+    if (route === 'GET /api/admin/users/1/activity') { json(res,{user:{id:1,username:'user_a',remainingPoints:200},usage:[],events:[{id:1,name:'REPORT_GENERATED',page:'history',createdAt:'2026-10-30T03:00:00Z'}],grants:[]}); return; }
+    if (route === 'GET /api/admin/grants') { json(res,{items:a.grants,page:0,size:20,total:a.grants.length}); return; }
+    if (route === 'POST /api/admin/grants') { const g={...data,id:a.grants.length+1,createdAt:'2026-10-30T03:00:00Z'};a.grants.push(g);json(res,{grant:g,quota:{remainingTokens:100000}});return; }
+    if (route === 'GET /api/admin/feedback') { json(res,{items:[{id:77,userId:1,username:'user_a',progress:'START_FAILED',experience:'切换模型后不清楚使用方式',blockers:['CONFUSING','ERROR'],suggestions:'显示当前模型',status:'PENDING',followUp:false}],page:0,size:20,total:1});return; }
+    if (route === 'POST /api/admin/feedback/77/review') { json(res,{feedback:{id:77,status:data.action==='REWARD'?'REWARDED':'NEEDS_INFO'},grant:null});return; }
+    if (route === 'GET /api/admin/analytics') { json(res,{funnel:[{name:'REGISTERED',count:3},{name:'REPORT_GENERATED',count:1}],models:[{model:'deepseek:deepseek-flash',calls:3,tokens:1000,platformEstimatedCostCny:.2,failedCalls:1,retryAttempts:2,unknownPlatformCostCalls:1}],scenes:[{scene:'CRITIC',calls:1,tokens:800,platformEstimatedCostCny:.15,retryAttempts:1}],feedbackFunnel:[{name:'提交反馈',count:1}],errors:[],retention:{day1:{eligible:2,returned:1,rate:.5},day7:{eligible:0,returned:0,rate:null}},daily:[],cost:{platformEstimatedCostCny:.2,byokTokens:1234,unattributedCalls:1,sessionMedianCny:.1,sessionP90Cny:.2},sources:[]});return; }
     if (route === 'GET /api/user/quota') {
         const remaining = a.remaining ?? (token.includes('user_b') ? 12345 : 499000);
         const respond = () => json(res, { totalTokens: 500000, usedTokens: 500000 - remaining, remainingTokens: remaining });
@@ -278,32 +294,60 @@ async function main() {
         await sleep(100);
         assert.ok(calls.some(call => call.endpoint === '/api/resume/10/activate'));
         pass('resume save, list reuse and activation');
-        await nav('账号与设置'); await click('刷新设置与用量');
-        assert.ok((await page.locator('.balance-pill').innerText()).includes('998'));
-        const usageRows = page.locator('.usage-surface tbody tr');
-        await usageRows.first().waitFor();
+        await nav('我的账号'); await click('刷新账号信息');
+        assert.ok((await page.locator('.quota-value').innerText()).includes('998'));
+        assert.equal(await page.locator('.balance-pill').count(),0);
+        await click('使用记录');
+        const usageRows = page.locator('.usage-surface tbody tr'); await usageRows.first().waitFor();
         assert.equal(await usageRows.first().locator('td').last().innerText(), '1');
         assert.equal(await usageRows.nth(1).locator('td').last().innerText(), '0.002');
-        assert.equal(/tokens?/i.test(await page.locator('body').innerText()), false);
-        account('fixture-user_a').remaining = 1;
-        await click('刷新设置与用量');
-        await page.waitForFunction(() => document.querySelector('.balance-pill').innerText.includes('0.002'));
-        delete account('fixture-user_a').remaining;
-        await click('刷新设置与用量');
-        pass('points: existing balance preserved, BYOK fee 1, fractional balance/usage 0.002 visible, raw tokens hidden');
-        await click('通义千问');
-        await page.locator('.setting-choices button[aria-pressed="true"]').filter({ hasText: '通义千问' }).waitFor();
-        failSettings = true; await click('DeepSeek');
-        await page.getByText('模型切换失败，请重试', { exact: true }).waitFor();
-        assert.equal(await page.locator('.setting-choices button[aria-pressed="true"]').innerText(), '通义千问');
-        failSettings = false;
-        await page.getByLabel('DeepSeek API Key', { exact: true }).fill('sk-fixture-not-a-real-key-1234');
-        await click('保存并启用自带 Key');
-        await page.getByText('已保存，末四位 1234', { exact: true }).waitFor();
-        assert.ok(calls.some(call => call.endpoint === '/api/user/api-key' && call.method === 'PUT'));
-        assert.ok(calls.some(call => call.endpoint === '/api/user/settings' && call.data.keyMode === 'BYOK'));
-        await click('删除 Key'); await page.getByText('尚未保存自带 Key', { exact: true }).waitFor();
-        pass('settings persist after success; failure does not fake selection; BYOK lifecycle');
+        await click('账号与积分'); account('fixture-user_a').remaining=1;
+        await click('刷新账号信息'); await page.waitForFunction(() => document.querySelector('.quota-value').innerText.includes('0.002'));
+        delete account('fixture-user_a').remaining; await click('刷新账号信息');
+        pass('account-only balance; historical and fractional actual deductions preserved');
+        await click('模型与 API'); await click('通义千问');
+        assert.equal(account('fixture-user_a').provider,'DEEPSEEK');
+        await click('保存设置'); await sleep(100); assert.equal(account('fixture-user_a').provider,'QWEN');
+        failSettings=true; await click('DeepSeek'); await click('保存设置');
+        await page.getByText('模型切换失败，请重试',{exact:true}).waitFor(); assert.equal(account('fixture-user_a').provider,'QWEN');
+        failSettings=false; await click('我的 DeepSeek API');
+        await page.getByLabel('DeepSeek API Key',{exact:true}).fill('sk-fixture-not-a-real-key-1234');
+        failSettings=true; await click('保存并使用 DeepSeek API');
+        await page.getByText(/Key 已保存，但尚未启用/).waitFor();
+        assert.equal(account('fixture-user_a').provider,'QWEN'); assert.equal(account('fixture-user_a').last4,'1234');
+        failSettings=false; await click('保存设置'); await sleep(100);
+        assert.equal(account('fixture-user_a').mode,'BYOK'); assert.equal(account('fixture-user_a').provider,'DEEPSEEK');
+        await click('通义千问'); assert.equal(await page.locator('#byok-key').count(),0);
+        await click('保存设置'); await sleep(100); assert.equal(account('fixture-user_a').mode,'PLATFORM');
+        await click('DeepSeek'); await click('我的 DeepSeek API');
+        await click('删除 Key'); await page.getByText('DeepSeek Key 已删除。',{exact:true}).waitFor(); assert.equal(account('fixture-user_a').last4,''); await click('我的 DeepSeek API'); await page.getByText('尚未保存自己的 Key',{exact:true}).waitFor();
+        pass('explicit three-combination settings; key partial failure; Qwen uses platform without exposing Key');
+        await click('账号与积分'); await page.getByRole('button',{name:'分享体验，审核后获赠 200 积分',exact:true}).click();
+        const feedbackDialog=page.getByRole('dialog',{name:'分享使用体验，获赠 200 积分'}); await feedbackDialog.waitFor();
+        await feedbackDialog.getByLabel('尝试开始，但没能顺利使用',{exact:true}).check();
+        await feedbackDialog.locator('#feedback-experience').fill('切换千问后不清楚自己的 Key 是否被使用');
+        await feedbackDialog.getByRole('button',{name:'关闭反馈',exact:true}).click();
+        await page.getByRole('button',{name:'分享体验，审核后获赠 200 积分',exact:true}).click();
+        await feedbackDialog.waitFor();
+        assert.equal(await feedbackDialog.locator('#feedback-experience').inputValue(),'切换千问后不清楚自己的 Key 是否被使用');
+        await feedbackDialog.getByLabel('不太清楚怎么操作',{exact:true}).check();
+        await feedbackDialog.getByLabel('出现报错或中断',{exact:true}).check();
+        await feedbackDialog.getByLabel('没有什么障碍，愿意继续使用',{exact:true}).check();
+        assert.equal(await feedbackDialog.getByLabel('不太清楚怎么操作',{exact:true}).isChecked(),false);
+        await feedbackDialog.getByLabel('不太清楚怎么操作',{exact:true}).check();
+        await feedbackDialog.getByLabel('出现报错或中断',{exact:true}).check();
+        await feedbackDialog.locator('#feedback-suggestions').fill('请显示当前使用方式');
+        await feedbackDialog.getByRole('button',{name:'提交反馈',exact:true}).click();
+        await feedbackDialog.getByRole('heading',{name:'已收到，等待审核',exact:true}).waitFor();
+        assert.deepEqual(account('fixture-user_a').feedback.blockers,['CONFUSING','ERROR']);
+        assert.equal(account('fixture-user_a').feedback.suggestions,'请显示当前使用方式');
+        await feedbackDialog.getByRole('button',{name:'完成',exact:true}).click();
+        await page.getByRole('checkbox',{name:'允许可选使用情况统计',exact:true}).uncheck();
+        await sleep(100); const eventCount=calls.filter(c=>c.endpoint==='/api/product-events/batch').length;
+        await nav('开始练习'); await nav('我的账号'); await sleep(100);
+        assert.equal(calls.filter(c=>c.endpoint==='/api/product-events/batch').length,eventCount);
+        await page.getByRole('checkbox',{name:'允许可选使用情况统计',exact:true}).check();
+        pass('four-question survey, exclusive blockers, pending reward, suggestions, analytics opt-out');
         await nav('开始练习'); await click('开始模拟面试');
         await page.getByRole('heading', { name: '面试练习', exact: true }).waitFor();
         await page.getByLabel('你的回答', { exact: true }).waitFor({ state: 'visible' });
@@ -338,7 +382,10 @@ async function main() {
         assert.ok(contactBounds.x >= 0 && contactBounds.x + contactBounds.width <= 360);
         await screenshot('mobile-beta-quota');
         await page.setViewportSize({ width: 1440, height: 1050 });
-        await click('查看积分与设置'); await nav('面试工作区');
+        await quotaDialog.getByRole('button',{name:'查看我的反馈',exact:true}).click();
+        await page.getByRole('dialog',{name:'分享使用体验，获赠 200 积分'}).waitFor();
+        await page.getByRole('button',{name:'关闭反馈',exact:true}).click();
+        await nav('我的账号'); await nav('面试工作区');
         assert.equal(await page.getByLabel('你的回答', { exact: true }).inputValue(), '控制变量并选择相同的观察窗口。');
         failAnswer = false;
         await click('提交回答'); await page.getByRole('button', { name: '查看本场报告', exact: true }).waitFor();
@@ -380,7 +427,7 @@ async function main() {
         assert.equal(await page.getByLabel('想对小暖说的话').inputValue(), '面试有点紧张。');
         failCompanion = false; quotaCompanion = true; await click('发送');
         await page.getByRole('dialog', { name: '本次调用的积分不足' }).getByText('13481264947', { exact: true }).waitFor();
-        await click('查看积分与设置');
+        await click('前往我的账号');
         await page.locator('.quota-surface').getByText('13481264947', { exact: true }).waitFor();
         await nav('陪考小暖');
         assert.equal(await page.getByLabel('想对小暖说的话').inputValue(), '面试有点紧张。');
@@ -452,7 +499,7 @@ async function main() {
         const quotaBeforePartialFailure = calls.filter(call => call.endpoint === '/api/user/quota').length;
         await page.getByLabel('想问小师的问题').fill('这次连接会中断'); await click('发送');
         await coachPage.getByText('以下是未完成的回复，重试后会替换。', { exact: true }).waitFor();
-        await page.waitForFunction(() => document.querySelector('.balance-pill').innerText.includes('997'));
+        await page.waitForFunction(() => document.querySelector('.quota-value').innerText.includes('997'));
         assert.ok(calls.filter(call => call.endpoint === '/api/user/quota').length > quotaBeforePartialFailure);
         const userMessages = await coachPage.locator('.companion-message.user').count();
         const assistantMessages = await coachPage.locator('.companion-message.assistant').count();
@@ -467,7 +514,7 @@ async function main() {
         const quotaBeforeEventFailure = calls.filter(call => call.endpoint === '/api/user/quota').length;
         await page.getByLabel('想问小师的问题').fill('回应中遇到忙碌错误'); await click('发送');
         await coachPage.getByText('当前对话正在处理中，请稍后重试。', { exact: true }).waitFor();
-        await page.waitForFunction(() => document.querySelector('.balance-pill').innerText.includes('996'));
+        await page.waitForFunction(() => document.querySelector('.quota-value').innerText.includes('996'));
         assert.ok(calls.filter(call => call.endpoint === '/api/user/quota').length > quotaBeforeEventFailure);
         assert.equal(await page.getByLabel('想问小师的问题').inputValue(), '回应中遇到忙碌错误');
         errorBuddy = false;
@@ -500,28 +547,28 @@ async function main() {
         pass('study coach has independent API/chat/reset and retains failed question; warm conversation unaffected');
         if (await page.getByRole('button', { name: '关闭提示', exact: true }).count()) await click('关闭提示');
         await page.setViewportSize({ width: 390, height: 844 });
-        for (const name of ['开始练习', '面试工作区', '报告与成长', '错题本', '我的资料', '陪考小暖', '通考小师', '账号与设置']) {
+        for (const name of ['开始练习', '面试工作区', '报告与成长', '错题本', '我的资料', '陪考小暖', '通考小师', '我的账号']) {
             await nav(name); await noOverflow('mobile ' + name);
             assert.equal(await page.locator('.workspace-header .buddy-link').count(), 2);
         }
         await nav('开始练习'); await screenshot('mobile-prepare');
         await nav('陪考小暖'); await screenshot('mobile-companion');
         await page.setViewportSize({ width: 360, height: 800 });
-        for (const name of ['开始练习', '面试工作区', '报告与成长', '错题本', '我的资料', '陪考小暖', '通考小师', '账号与设置']) {
+        for (const name of ['开始练习', '面试工作区', '报告与成长', '错题本', '我的资料', '陪考小暖', '通考小师', '我的账号']) {
             await nav(name); await noOverflow('360px ' + name);
         }
         pass('390px and 360px: all eight views have no document overflow and expose both buddy shortcuts');
         delayBuddy = true; await nav('陪考小暖');
         await page.getByLabel('想对小暖说的话').fill('A_PRIVATE_BUDDY_SLOW'); await click('发送');
         await page.waitForFunction(() => document.querySelector('.buddy-page.warm .buddy-chat-status').innerText.includes('正在回应'));
-        delayQuota = true; await nav('账号与设置'); await click('刷新设置与用量'); await sleep(50);
+        delayQuota = true; await nav('我的账号'); await click('刷新账号信息'); await sleep(50);
         await page.getByRole('button', { name: '退出登录', exact: true }).click();
         await login('user_b'); await sleep(1800); delayBuddy = false;
         await nav('报告与成长');
         assert.equal(await page.locator('.report-summary').count(), 0);
         await nav('面试工作区'); assert.equal(await page.locator('.message').count(), 0);
         assert.equal(await page.locator('body').innerText().then(text => /A_PRIVATE/.test(text)), false);
-        assert.ok(await page.locator('.balance-pill').innerText().then(text => text.includes('24.69')));
+        assert.ok(await page.locator('.quota-value').innerText().then(text => text.includes('24.69')));
         await nav('陪考小暖'); assert.equal(await page.locator('.buddy-page.warm .companion-message').count(), 0);
         assert.equal(await page.getByLabel('想对小暖说的话').inputValue(), '');
         await nav('通考小师'); assert.equal(await page.locator('.buddy-page.study .companion-message').count(), 0);
@@ -556,6 +603,38 @@ async function main() {
         await click('结束并出报告'); await page.getByRole('button', { name: '查看本场报告', exact: true }).waitFor();
         assert.equal(calls.filter(call => call.token === 'fixture-user_b' && call.endpoint === '/api/interview/101/end').length, 1);
         pass('question generation failure unlocks manual end; existing end endpoint called once');
+        await click('查看本场报告');
+        await page.locator('.feedback-invitation').waitFor();
+        await page.getByRole('button',{name:'关闭反馈邀请',exact:true}).click();
+        await nav('开始练习'); await nav('报告与成长');
+        assert.equal(await page.locator('.feedback-invitation').count(),0);
+        assert.equal(await page.getByRole('button',{name:'运营管理',exact:true}).count(),0);
+        pass('report invitation is nonmodal, dismissible, persisted once; admin navigation hidden for users');
+        await page.getByRole('button',{name:'退出登录',exact:true}).click(); await login('ops_admin');
+        await nav('运营管理'); await page.getByText('确认付费补额',{exact:true}).waitFor();
+        await screenshot('desktop-admin-overview');
+        await click('用户'); await page.getByRole('button',{name:'详情',exact:true}).click();
+        await page.getByRole('heading',{name:'user_a · 使用详情',exact:true}).waitFor();
+        await page.getByRole('button',{name:'补积分',exact:true}).click();
+        await page.getByLabel('原因（用户可见）',{exact:true}).fill('有效体验反馈补偿');
+        await click('预览补额'); await click('确认补充积分');
+        await page.getByText('积分已补充，记录已保存。',{exact:true}).waitFor();
+        assert.equal(calls.filter(c=>c.endpoint==='/api/admin/grants'&&c.method==='POST').length,1);
+        assert.equal(calls.find(c=>c.endpoint==='/api/admin/grants'&&c.method==='POST').data.points,200);
+        await click('反馈审核'); await page.getByRole('button',{name:'通过并赠 200 积分',exact:true}).click();
+        await page.getByText('审核通过，200 积分已到账。',{exact:true}).waitFor();
+        await click('产品与成本'); await page.getByRole('heading',{name:'体验漏斗',exact:true}).waitFor();
+        await screenshot('desktop-admin-analytics');
+        pass('admin users metadata, grant preview and submit, review200, funnel/retention/cost display');
+        await page.setViewportSize({width:360,height:800});
+        for (const name of ['运营概览','用户','补额记录','反馈审核','产品与成本']) { await click(name); await noOverflow('admin 360px '+name); }
+        await click('反馈审核'); await screenshot('mobile-admin-feedback');
+        await nav('我的账号'); await click('账号与积分');
+        await page.getByRole('button',{name:'分享体验，审核后获赠 200 积分',exact:true}).click();
+        await page.getByRole('dialog',{name:'分享使用体验，获赠 200 积分'}).waitFor();
+        await noOverflow('feedback 360px'); await screenshot('mobile-feedback-form');
+        await page.getByRole('button',{name:'关闭反馈',exact:true}).click();
+        pass('360px admin five views and survey have no document overflow');
         assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
         assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
         pass('zero unexpected API routes, zero browser runtime errors, no persistent token storage');

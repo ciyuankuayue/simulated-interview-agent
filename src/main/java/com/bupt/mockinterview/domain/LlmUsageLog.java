@@ -14,11 +14,11 @@ import java.time.Instant;
  * LLM / embedding 调用用量流水（R2）。
  * <p>
  * 每次触发计费的调用成功后落一条：厂商 usage 原值 + 实际扣减 token 当量。
- * BYOK 对话时 totalTokens 是真实烧在用户 key 上的量（仅展示），chargedTokens 才是服务费扣减。
+ * BYOK totalTokens为用户Key的真实用量，dueTokens为按比例应扣，chargedTokens为受余额限制后的实扣。
  * 只增不改不删。
  */
 @Entity
-@Table(name = "llm_usage_log",
+@Table(name = "llm_usage_log", uniqueConstraints = @UniqueConstraint(name = "uk_usage_user_call", columnNames = {"user_id", "call_id"}),
         indexes = {
                 @Index(name = "idx_usage_user", columnList = "user_id"),
                 @Index(name = "idx_usage_user_created", columnList = "user_id,created_at")
@@ -61,9 +61,26 @@ public class LlmUsageLog {
     @Column(name = "total_tokens", nullable = false)
     private long totalTokens;
 
-    /** 实际从 quota 扣减的 token 当量（BYOK 对话=服务费；其余=totalTokens）。 */
+    /** 实际从quota扣减的token当量；不得用应扣或真实用量代替余额不足时的实扣。 */
     @Column(name = "charged_tokens", nullable = false)
     private long chargedTokens;
+
+    @Column(name = "due_tokens")
+    private Long dueTokens;
+    @Column(name = "call_id", length = 64)
+    private String callId;
+    @Column(name = "session_id")
+    private Long sessionId;
+    @Column(name = "billing_version", length = 40)
+    private String billingVersion;
+    @Column(name = "platform_cost_micros")
+    private Long platformCostMicros;
+    @Column(name = "pricing_version", length = 40)
+    private String pricingVersion;
+    @Column(name = "status", length = 20)
+    private String status;
+    @Column(name = "attempt_count")
+    private Integer attemptCount;
 
     /** true=厂商未回 usage，totalTokens 为字符估算兜底值。 */
     @Column(name = "estimated", nullable = false)
