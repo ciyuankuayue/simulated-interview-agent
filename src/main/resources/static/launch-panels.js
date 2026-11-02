@@ -1,7 +1,6 @@
 /* Account and operations views. Factories share the app's in-memory account lifecycle. */
 'use strict';
-window.createLaunchPanels = function ({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track }) {
-    const uuid = () => crypto.randomUUID();
+window.createLaunchPanels = function ({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track, uuid }) {
     const rows = data => data?.items || [];
     const money = value => value == null ? '—' : Number(value).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 4 });
     const sceneLabels = {JD_PARSE:'解析岗位',FOLLOWUP:'面试提问',SCORE:'回答评价',CRITIC:'面试报告',CHAT:'陪考对话',EMBED_INGEST:'资料处理',EMBED_QUERY:'资料检索'};

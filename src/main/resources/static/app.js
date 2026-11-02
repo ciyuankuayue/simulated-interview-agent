@@ -4,6 +4,15 @@
 (function () {
     'use strict';
     const { createApp, reactive, nextTick } = Vue;
+    // randomUUID requires a secure context; getRandomValues also works on HTTP IP access.
+    const uuid = () => {
+        if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    };
     const buddyState = () => ({ messages: [], input: '', busy: false, error: '', status: '', nextId: 0, retry: null, following: true });
     const initialState = () => ({
         token: null, username: '', role: 'USER', accountEpoch: 0, view: 'prepare', notice: null,
@@ -126,7 +135,7 @@
             if (sessionId == null || lastReportView === sessionId) return;
             lastReportView = sessionId;
         }
-        const event = { eventId: crypto.randomUUID(), name, page, sessionId, durationMs: null,
+        const event = { eventId: uuid(), name, page, sessionId, durationMs: null,
             source: ['account','report','quota'].includes(source) ? source : null,
             device: window.innerWidth < 700 ? 'MOBILE' : 'DESKTOP' };
         api('/api/product-events/batch', 'POST', { events: [event] }).catch(() => {});
@@ -954,7 +963,7 @@
 <aside class="companion-aside"><template v-if="mode==='companion'"><span class="eyebrow">不急，我们慢慢来</span><h2>先照顾好自己，<br>再面对下一题。</h2><p>想倾诉，我们就先听你说；想找方向，我们就一起理一理。你可以随时告诉小暖，怎样陪你更舒服。</p><p class="buddy-boundary">AI 陪伴不替代专业心理支持，不做诊断。情绪聊天不会自动加入资料库；当前对话只短期保留。</p></template><template v-else><span class="eyebrow">一点点弄懂，就在进步</span><h2>不怕暂时不会，<br>我们从这里开始。</h2><p>先用例子建立直觉，再回到原理和面试考点。答不上来也没关系，可以看提示、看答案，或今天先不测。</p><p class="buddy-boundary">小师参考你发来的内容。也可以从报告或错题选择片段带来，不会自动读取全部资料；当前对话只短期保留。</p><button class="text-button" @click="store.view='history'">查看我的练习报告<app-icon name="arrow"/></button></template><buddy-memory :mode="mode"/><hr><template v-if="mode==='companion'"><h3>想把难点弄明白？</h3><p>让小师陪你讲清知识、拆解题目，找到下一步的学习方向。</p><button class="secondary" @click="goBuddy('coach')"><buddy-avatar tone="study"/>去找通考小师<app-icon name="arrow"/></button></template><template v-else><h3>累了，先缓一缓</h3><p>学不进去时也不必苛责自己。小暖在另一边，愿意听你说。</p><button class="secondary" @click="goBuddy('companion')"><buddy-avatar tone="warm"/>去找陪考小暖<app-icon name="arrow"/></button></template></aside></div></section>`
     };
 
-    const { SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel, openFeedback } = window.createLaunchPanels({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track });
+    const { SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel, openFeedback } = window.createLaunchPanels({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track, uuid });
     const QuotaContact = {
         template: `<div class="quota-contact"><p>平台目前处于内测阶段，请联系工作人员补充额度。</p><div class="support-wechat"><span>工作人员微信</span><strong>13481264947</strong></div></div>`
     };

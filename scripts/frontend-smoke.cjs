@@ -242,6 +242,10 @@ async function main() {
     ].find(candidate => fs.existsSync(candidate));
     const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1050 }, acceptDownloads: true });
+    // Reproduce HTTP/IP environments where crypto.randomUUID is unavailable.
+    await context.addInitScript(() => {
+        Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true });
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     const errors = [];
@@ -267,6 +271,7 @@ async function main() {
     }
     try {
         await page.goto(base);
+        assert.equal(await page.evaluate(() => typeof crypto.randomUUID), 'undefined');
         await page.getByRole('heading', { name: '欢迎回到练习室' }).waitFor();
         await noOverflow('desktop welcome'); await screenshot('welcome');
         await page.setViewportSize({ width: 390, height: 844 });
