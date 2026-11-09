@@ -1,0 +1,48 @@
+{
+  "scope" : "one synthetic case; real DeepSeek; local H2/RAM index; not production quality evaluation",
+  "firstQuestion" : "在你的 Python 异步报表练习里，任务之间是怎么用 asyncio 组织并发、又是怎么处理单个任务报错的？",
+  "events" : [ "score", "followup", "await_answer" ],
+  "turns" : [ {
+    "metadata" : "{\"action\":\"ASK_MAIN\",\"role\":\"TECH_DIGGER\",\"question\":\"在你的 Python 异步报表练习里，任务之间是怎么用 asyncio 组织并发、又是怎么处理单个任务报错的？\",\"goal\":\"核实 asyncio 并发组织与错误处理机制的真实理解\",\"reason\":\"简历仅声明做过异步报表练习，尚未考察 asyncio 机制，需从其自述经历切入\",\"plan\":[\"asyncio 并发组织与错误处理：待考察（本问）\",\"任务取消机制：待考察\",\"本人贡献边界与测量依据：待考察\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成测试资料】我做过Python异步报表练习，负责调度和日志；没有线上高并发量级、性能提升百分比或生产事故经历。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":1657,\"tokens\":1261}",
+    "answer" : "这部分机制我还不熟悉，无法准确解释；我只写过报表调度和日志，没有测量线上量级或性能提升。",
+    "seq" : 1,
+    "question" : "在你的 Python 异步报表练习里，任务之间是怎么用 asyncio 组织并发、又是怎么处理单个任务报错的？"
+  }, {
+    "metadata" : "{\"action\":\"PROBE\",\"role\":\"TECH_DIGGER\",\"question\":\"那换成更基础的一点：你写的调度代码里，多个报表任务是同一时刻并行发出去的，还是一个接一个按顺序执行的？你当时是怎么安排先后顺序的？\",\"goal\":\"在追问层内核实候选人对并发与顺序执行的基本区分，判断其对调度编排的真实理解程度\",\"reason\":\"主问题预算已满，不能在追问层换角色开新主问题；只能延续当前技术考点做降难度追问，确认是否具备最低限度的并发概念，以便判断该考点是彻底缺失还是表述问题\",\"plan\":[\"asyncio 并发组织与错误处理：已问，明确不会；本追问降难度核实是否具备并发/顺序基本区分\",\"任务取消机制：待考察（受主问题预算限制，仅能在现有考点内追问）\",\"本人贡献边界与测量依据：待考察\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成测试资料】我做过Python异步报表练习，负责调度和日志；没有线上高并发量级、性能提升百分比或生产事故经历。\"}],\"tools\":[],\"modelCalls\":2,\"toolCalls\":0,\"elapsedMs\":3866,\"tokens\":3457}",
+    "answer" : "",
+    "seq" : 2,
+    "question" : "那换成更基础的一点：你写的调度代码里，多个报表任务是同一时刻并行发出去的，还是一个接一个按顺序执行的？你当时是怎么安排先后顺序的？"
+  } ],
+  "report" : {
+    "perTurnReview" : "[{\"turnSeq\":1,\"question\":\"在你的 Python 异步报表练习里，任务之间是怎么用 asyncio 组织并发、又是怎么处理单个任务报错的？\",\"score\":1,\"track\":\"tech\",\"explanation\":\"asyncio用create_task/gather把多个协程并发提交；gather默认遇首个异常即向上传播，return_exceptions=True可收集全部异常；单任务需try/except隔离并记录日志。候选人未展开机制。\",\"correction\":\"直接回答“不熟悉”虽诚实，但未展示并发/顺序基本区分和异常隔离思路；也未说明调度与日志的具体实现边界。\",\"knowledgeSupplement\":\"补充：create_task后要await；gather返回值顺序与入参一致；测试/QA场景需验证单任务失败不阻断汇总，并记录可追踪日志。\",\"exemplarAnswer\":\"我的练习负责调度和日志，具体调用方式[待回看代码确认]。机制上：用create_task/gather并发提交；gather默认首个异常向上传播，需收集全部错误时设return_exceptions=True；单个任务用try/except记录日志，避免影响其他任务。未测线上量级。\"},{\"turnSeq\":2,\"question\":\"那换成更基础的一点：你写的调度代码里，多个报表任务是同一时刻并行发出去的，还是一个接一个按顺序执行的？你当时是怎么安排先后顺序的？\",\"score\":null,\"track\":\"tech\",\"explanation\":\"该题降难度核实顺序/并发：循环await是顺序，gather/create_task是并发；先后顺序可由依赖、限流、汇总需求决定。候选人未作答，无法判断。\",\"correction\":\"未作答导致无法评估；空白比“不确定”更损失信息，应说明判断方法和待确认点。\",\"knowledgeSupplement\":\"补充：口头回答先给结论，再举代码特征（await位置、gather/create_task），最后说明依赖/限流如何排序。\",\"exemplarAnswer\":\"我的练习负责调度和日志，具体写法[待回看代码确认]。判断上：循环await是顺序执行；用gather/create_task是并发提交。先后顺序按报表依赖和限流安排，[本人实际排序规则待补充]。未测线上量级。\"}]",
+    "matchScore" : 30,
+    "overallNotes" : "已考察：turn1 asyncio并发组织与错误处理，明确不会；turn2未答，基础并发/顺序无法判断。证据缺口：任务取消、本人贡献边界、日志与失败处理未评估；简历声明未核实。不能由两题推断完整岗位能力。改进：turn1用gather/return_exceptions+3任务含1异常复测；turn2口头区分顺序/并发并用调度伪代码复测；补充测试/QA异步任务失败日志验证练习。"
+  },
+  "usage" : [ {
+    "scene" : "CRITIC",
+    "tokens" : 5345,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 5345
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1849,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1849
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1608,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1608
+  }, {
+    "scene" : "SCORE",
+    "tokens" : 1195,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1195
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1261,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1261
+  } ],
+  "totalTokens" : 11258
+}

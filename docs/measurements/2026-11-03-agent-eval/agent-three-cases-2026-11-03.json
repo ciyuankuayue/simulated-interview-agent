@@ -1,0 +1,145 @@
+[ {
+  "id" : "python-junior-unknown",
+  "jobType" : "Python 初级后端",
+  "jd" : "Python 初级后端，考察 asyncio 任务调度、取消和异常处理，以及本人贡献。",
+  "selectedResume" : "【合成资料】做过 Python 异步报表练习，负责调度和日志；没有线上指标或生产事故。",
+  "roles" : [ "技术深挖官" ],
+  "answer" : "这部分机制我不熟悉，无法准确解释。我做过调度和日志，但没有线上指标。",
+  "startedUtc" : "2026-11-03T15:45:45.943159300Z",
+  "firstQuestionMs" : 2653.4182,
+  "firstQuestion" : "你在异步报表练习里负责调度，能具体讲一下这个调度是怎么实现的吗：用 asyncio 的什么结构、并发度怎么控制？",
+  "answerMs" : 6084.2496,
+  "events" : [ "score", "followup", "await_answer" ],
+  "endMs" : 14953.4686,
+  "reportGenerated" : true,
+  "matchScore" : 20,
+  "overallNotes" : "已考察 asyncio 调度机制、异常/卡住处理与本人贡献边界；turn1 0分显示机制缺失，turn2 未作答，缺代码、日志、指标等证据。未评估完整后端能力、生产经验与协作抗压；不能由两题推断岗位全貌。",
+  "perTurnReview" : "[{\"turnSeq\":1,\"question\":\"你在异步报表练习里负责调度，能具体讲一下这个调度是怎么实现的吗：用 asyncio 的什么结构、并发度怎么控制？\",\"score\":0,\"track\":\"tech\",\"explanation\":\"考察 asyncio 调度：可用 create_task/gather/as_completed/TaskGroup/Queue 组织任务；并发度用 Semaphore 或固定 worker；取消用 cancel/wait_for，异常用 try/except 或 gather(return_exceptions=True)。\",\"correction\":\"回答只说不熟悉，未说明负责的调度范围、已知结构或日志动作；无法判断实际参与深度。\",\"knowledgeSupplement\":\"应展开：任务创建与等待方式、并发上限设置、超时取消、异常收集与日志记录。\",\"exemplarAnswer\":\"我在异步报表练习中负责调度和日志。调度用[待补充：create_task/gather/Queue]组织，并发度用[待补充：Semaphore/固定worker]控制；异常处理为[待补充]。没有线上指标，效果未量化。\"},{\"turnSeq\":2,\"question\":\"明白机制细节不容易描述。那换个更具体的角度：在你那次异步报表练习里，如果某个报表任务执行中报错或卡住，你们当时的代码或流程是怎么处理的？你本人具体做了哪一步？\",\"score\":null,\"track\":\"tech\",\"explanation\":\"本题考察异常与卡住场景：如何捕获任务异常、设置超时/取消、记录日志并继续调度；同时核实本人具体操作边界。\",\"correction\":\"未作答，无法评估异常处理流程与本人贡献；不能据此推断经历真假，但证据缺口明显。\",\"knowledgeSupplement\":\"应说明：gather(return_exceptions=True) 收集异常、wait_for 超时、Task.cancel、try/except 记录并隔离失败任务。\",\"exemplarAnswer\":\"某任务报错或卡住时，我[待补充：捕获异常/超时取消/记录日志]，并[待补充：隔离失败任务/通知流程]。我负责调度和日志，[待补充：未参与部分]。无线上指标，未量化。\"}]",
+  "turns" : [ {
+    "seq" : 1,
+    "question" : "你在异步报表练习里负责调度，能具体讲一下这个调度是怎么实现的吗：用 asyncio 的什么结构、并发度怎么控制？",
+    "answer" : "这部分机制我不熟悉，无法准确解释。我做过调度和日志，但没有线上指标。",
+    "metadata" : "{\"action\":\"ASK_MAIN\",\"role\":\"TECH_DIGGER\",\"question\":\"你在异步报表练习里负责调度，能具体讲一下这个调度是怎么实现的吗：用 asyncio 的什么结构、并发度怎么控制？\",\"goal\":\"核实本人对 asyncio 任务调度机制的实际理解与实现\",\"reason\":\"首轮无前文，需从简历中最核心的'调度'入手确认技术真实性与深度\",\"plan\":[\"asyncio 调度实现方式与并发控制：待核实\",\"取消与异常处理机制：待核实\",\"本人贡献边界：待核实\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成资料】做过 Python 异步报表练习，负责调度和日志；没有线上指标或生产事故。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":2484,\"tokens\":1230}"
+  }, {
+    "seq" : 2,
+    "question" : "明白机制细节不容易描述。那换个更具体的角度：在你那次异步报表练习里，如果某个报表任务执行中报错或卡住，你们当时的代码或流程是怎么处理的？你本人具体做了哪一步？",
+    "answer" : null,
+    "metadata" : "{\"action\":\"PROBE\",\"role\":\"TECH_DIGGER\",\"question\":\"明白机制细节不容易描述。那换个更具体的角度：在你那次异步报表练习里，如果某个报表任务执行中报错或卡住，你们当时的代码或流程是怎么处理的？你本人具体做了哪一步？\",\"goal\":\"在候选人无法讲清机制时，转而核实其对异常/卡住场景的实际处理方式与本人操作边界\",\"reason\":\"首轮回答明确表示不熟悉机制，属有效回答；按规则低分不必追满机制，改从异常场景切入，同时探本人贡献\",\"plan\":[\"asyncio 调度实现方式与并发控制：已问，候选人明确不熟悉机制\",\"取消与异常处理机制：本轮转向异常/卡住场景的实际处理与本人操作\",\"本人贡献边界：本轮附带核实本人具体做了哪一步\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成资料】做过 Python 异步报表练习，负责调度和日志；没有线上指标或生产事故。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":2215,\"tokens\":1628}"
+  } ],
+  "success" : true,
+  "calls" : [ {
+    "scene" : "CRITIC",
+    "tokens" : 4729,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1628,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "SCORE",
+    "tokens" : 1152,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1230,
+    "model" : "deepseek:deepseek-flash"
+  } ],
+  "totalTokens" : 8739,
+  "totalMs" : 23718.3241
+}, {
+  "id" : "java-mid-project",
+  "jobType" : "Java 中级后端",
+  "jd" : "Java 中级后端，考察库存一致性、MySQL 条件更新、个人贡献和验证方法。",
+  "selectedResume" : "【合成资料】课程订单项目中负责库存扣减接口，用 MySQL 条件 UPDATE 防止库存扣成负数；其他模块由队友实现，没有线上压测或故障经历。",
+  "roles" : [ "项目质疑官" ],
+  "answer" : "我们用数据库保证库存一致性，我参与了这个模块。具体怎么验证的，我还没有说清楚。",
+  "startedUtc" : "2026-11-03T15:46:09.684833600Z",
+  "firstQuestionMs" : 1746.6473,
+  "firstQuestion" : "请以你负责的库存扣减接口为例，具体说说你在其中承担了哪些工作：需求是怎么确定的，SQL 条件更新这条路径是你自己设计并实现的，还是照搬队友的方案？",
+  "answerMs" : 5081.3866,
+  "events" : [ "score", "followup", "await_answer" ],
+  "endMs" : 11553.7711,
+  "reportGenerated" : true,
+  "matchScore" : 28,
+  "overallNotes" : "本场仅考察贡献边界与方案归属两轮，条件更新机制、一致性验证、并发异常处理未被评估，不能推断完整岗位能力。简历称负责库存扣减接口，但现场未给出SQL、表字段与思路来源，turn2未作答属证据缺口，不判为虚假。主要改进：按“需求来源—我的SQL—影响行数判断—验证方式”练习陈述，并用3分钟口述+追问复测，要求当场写出SQL与rowcount处理。",
+  "perTurnReview" : "[{\"turnSeq\":1,\"question\":\"请以你负责的库存扣减接口为例，具体说说你在其中承担了哪些工作：需求是怎么确定的，SQL 条件更新这条路径是你自己设计并实现的，还是照搬队友的方案？\",\"score\":1,\"track\":\"tech\",\"explanation\":\"考点是贡献边界与方案归属：条件UPDATE把并发判断下推到数据库（WHERE num>=?），靠影响行数判成败，须在事务内并检查rowcount，同时要说清谁提需求、谁写SQL。\",\"correction\":\"只答“参与了这个模块”，既未说需求来源与归属，也未给SQL原文、表字段和本人具体动作，属回避式偏答。\",\"knowledgeSupplement\":\"应展开：UPDATE stock SET num=num-? WHERE sku_id=? AND num>=?；影响行数为0即库存不足；事务边界、重复扣减与回滚处理。\",\"exemplarAnswer\":\"库存扣减接口我负责扣减这一步：SQL是 UPDATE stock SET num=num-? WHERE sku_id=? AND num>=?，执行后看影响行数，为0就返回库存不足。需求由[待补充]提出；这思路是[本人设计/参考资料/队友给出，待补充]。刷新校验只到[待补充]，其他模块由队友实现。\"},{\"turnSeq\":2,\"question\":\"你提到参与了这个模块——那请只说你自己动手写的那部分：你写过的 SQL 语句是什么样子，改了哪张表的哪个字段？条件更新的思路是你自己想出来的，还是有人给你或者有资料给你？\",\"score\":null,\"track\":\"tech\",\"explanation\":\"本题考查SQL原文、改动表字段与思路来源，是核实贡献的关键追问；未作答即证据缺失，不能据此推断经历虚假。\",\"correction\":\"本轮无作答，无法核实本人动作与方案归属；不应补分或称其造假，只能标记为未核实。\",\"knowledgeSupplement\":\"应准备：表名、字段名、SQL原文、影响行数判断、思路来源（自研/队友/教程）三句话讲清。\",\"exemplarAnswer\":\"表是stock，字段是num，SQL为 UPDATE stock SET num=num-? WHERE sku_id=? AND num>=?；影响行数=1才提交，=0回滚并提示库存不足。思路来源[待补充：本人/队友/教程]。我没有线上压测，验证只做到[待补充]。其他模块由队友实现。\"}]",
+  "turns" : [ {
+    "seq" : 1,
+    "question" : "请以你负责的库存扣减接口为例，具体说说你在其中承担了哪些工作：需求是怎么确定的，SQL 条件更新这条路径是你自己设计并实现的，还是照搬队友的方案？",
+    "answer" : "我们用数据库保证库存一致性，我参与了这个模块。具体怎么验证的，我还没有说清楚。",
+    "metadata" : "{\"action\":\"ASK_MAIN\",\"role\":\"PROJECT_CHALLENGER\",\"question\":\"请以你负责的库存扣减接口为例，具体说说你在其中承担了哪些工作：需求是怎么确定的，SQL 条件更新这条路径是你自己设计并实现的，还是照搬队友的方案？\",\"goal\":\"澄清库存扣减接口中候选人的本人职责边界与方案来源\",\"reason\":\"简历只写负责库存扣减接口与条件UPDATE，未说明本人具体动作与方案归属，需先固定贡献\",\"plan\":[\"本人贡献与方案归属：待核实（本轮主问题）\",\"MySQL条件更新的机制与边界：待考察\",\"库存一致性验证方法：待考察\",\"并发/异常场景处理：待考察（简历未记载，需以假设方式提问）\"],\"evidenceIds\":[\"resume#2#snapshot\"],\"evidence\":[{\"id\":\"resume#2#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"2\",\"content\":\"【合成资料】课程订单项目中负责库存扣减接口，用 MySQL 条件 UPDATE 防止库存扣成负数；其他模块由队友实现，没有线上压测或故障经历。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":1720,\"tokens\":1298}"
+  }, {
+    "seq" : 2,
+    "question" : "你提到参与了这个模块——那请只说你自己动手写的那部分：你写过的 SQL 语句是什么样子，改了哪张表的哪个字段？条件更新的思路是你自己想出来的，还是有人给你或者有资料给你？",
+    "answer" : null,
+    "metadata" : "{\"action\":\"PROBE\",\"role\":\"PROJECT_CHALLENGER\",\"question\":\"你提到参与了这个模块——那请只说你自己动手写的那部分：你写过的 SQL 语句是什么样子，改了哪张表的哪个字段？条件更新的思路是你自己想出来的，还是有人给你或者有资料给你？\",\"goal\":\"核实本人在条件 UPDATE 扣减中的具体动作与方案归属\",\"reason\":\"上一轮未回答本人动作与方案来源，按项目质疑角色继续澄清贡献边界，未换考点\",\"plan\":[\"本人贡献与方案归属：追问中（本轮聚焦SQL原文与思路来源）\",\"MySQL条件更新的机制与边界：待考察\",\"库存一致性验证方法：待考察\",\"并发/异常场景处理：待考察（简历未记载，需以假设方式提问）\"],\"evidenceIds\":[\"resume#2#snapshot\"],\"evidence\":[{\"id\":\"resume#2#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"2\",\"content\":\"【合成资料】课程订单项目中负责库存扣减接口，用 MySQL 条件 UPDATE 防止库存扣成负数；其他模块由队友实现，没有线上压测或故障经历。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":1758,\"tokens\":1690}"
+  } ],
+  "success" : true,
+  "calls" : [ {
+    "scene" : "CRITIC",
+    "tokens" : 3709,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1690,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "SCORE",
+    "tokens" : 1123,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1298,
+    "model" : "deepseek:deepseek-flash"
+  } ],
+  "totalTokens" : 7820,
+  "totalMs" : 18401.8527
+}, {
+  "id" : "java-mid-behavior",
+  "jobType" : "Java 中级后端",
+  "jd" : "Java 中级后端，重视跨团队沟通、冲突解决和复盘反思。",
+  "selectedResume" : "【合成资料】课程项目临近交付时与前端同学对接口字段有分歧；没有记录本人具体行动或量化结果。",
+  "roles" : [ "行为面试官" ],
+  "answer" : "当时双方意见不同，后来继续讨论了。我还没有讲清楚我本人做了什么，结果也没有量化。",
+  "startedUtc" : "2026-11-03T15:46:28.093876200Z",
+  "firstQuestionMs" : 1779.9857,
+  "firstQuestion" : "简历里提到课程项目临近交付时你和前端同学在接口字段上有过分歧，能具体讲讲当时的情况吗——分歧点是什么、你是怎么处理的、最后结果如何？",
+  "answerMs" : 5425.3699,
+  "events" : [ "score", "followup", "await_answer" ],
+  "endMs" : 24682.2655,
+  "reportGenerated" : true,
+  "matchScore" : 15,
+  "overallNotes" : "已考察跨团队冲突处理与沟通表达；证据仅支持“曾与前端有接口字段分歧并继续讨论”，本人行动、结果量化、复盘反思均未核实，turn2未答使Action无法评估。按前端方向复盘；JD文本为Java后端，方向不一致，matchScore仅低置信参考；技术能力未评估，不能由局部行为推断完整岗位能力。",
+  "perTurnReview" : "[{\"turnSeq\":1,\"question\":\"简历里提到课程项目临近交付时你和前端同学在接口字段上有过分歧，能具体讲讲当时的情况吗——分歧点是什么、你是怎么处理的、最后结果如何？\",\"score\":1,\"track\":\"behavior\",\"explanation\":\"STAR复盘：S/T仅“课程项目临近交付”，未说明接口字段争议与双方方案；A以“双方”带过，本人行动不可见；R未量化；无反思。表达抽象，抗压无证据。\",\"correction\":\"把过程归为“双方”，未讲本人判断与沟通动作；结果与反思缺失。\",\"knowledgeSupplement\":\"应展开：争议字段及两方案、我的沟通步骤、如何达成一致、结果与复盘收获。\",\"exemplarAnswer\":\"STAR骨架：S课程项目临近交付，我与前端就某接口字段意见不同；T需交付前推动一致；A我[本人具体沟通动作/方案依据/让步条件]；R[待补充结果]；反思[待补充收获与改进]。\"},{\"turnSeq\":2,\"question\":\"先不谈结果，聚焦一个点：那次接口字段分歧，你本人具体做了什么动作——比如你怎么提出自己的方案、怎么去和前端同学沟通的？请只讲你自己做的部分。\",\"score\":null,\"track\":\"behavior\",\"explanation\":\"STAR复盘：追问只聚焦Action，但未作答，本人行动无法核实；S/T/R与反思仍缺失。score为null不补分；表达与抗压无证据，不能据此认定经历虚假。\",\"correction\":\"未回应追问，关键行动证据空缺；应说明自己做了什么，或明确记不清。\",\"knowledgeSupplement\":\"应覆盖：我如何提出方案、如何倾听回应、是否请第三方裁决、如何决策落地。\",\"exemplarAnswer\":\"STAR骨架（Action追问）：当时我[本人提出的字段方案及理由]，随后[本人沟通动作]，并[本人确认/让步/决策动作]；结果[待补充]；反思[待补充]。\"}]",
+  "turns" : [ {
+    "seq" : 1,
+    "question" : "简历里提到课程项目临近交付时你和前端同学在接口字段上有过分歧，能具体讲讲当时的情况吗——分歧点是什么、你是怎么处理的、最后结果如何？",
+    "answer" : "当时双方意见不同，后来继续讨论了。我还没有讲清楚我本人做了什么，结果也没有量化。",
+    "metadata" : "{\"action\":\"ASK_MAIN\",\"role\":\"BEHAVIOR_INTERVIEWER\",\"question\":\"简历里提到课程项目临近交付时你和前端同学在接口字段上有过分歧，能具体讲讲当时的情况吗——分歧点是什么、你是怎么处理的、最后结果如何？\",\"goal\":\"用STAR了解一次真实跨角色冲突：情境、本人行动、结果\",\"reason\":\"简历仅记录分歧存在、未记录本人行动与结果，需候选人补充完整STAR；本场仅有行为面试官角色，主问题以该角色开场\",\"plan\":[\"跨团队冲突处理：待考察（开场主问题，STAR完整性与本人角色）\",\"复盘反思：待补充\",\"沟通表达清晰度：待观察\"],\"evidenceIds\":[\"resume#3#snapshot\"],\"evidence\":[{\"id\":\"resume#3#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"3\",\"content\":\"【合成资料】课程项目临近交付时与前端同学对接口字段有分歧；没有记录本人具体行动或量化结果。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":1757,\"tokens\":1261}"
+  }, {
+    "seq" : 2,
+    "question" : "先不谈结果，聚焦一个点：那次接口字段分歧，你本人具体做了什么动作——比如你怎么提出自己的方案、怎么去和前端同学沟通的？请只讲你自己做的部分。",
+    "answer" : null,
+    "metadata" : "{\"action\":\"PROBE\",\"role\":\"BEHAVIOR_INTERVIEWER\",\"question\":\"先不谈结果，聚焦一个点：那次接口字段分歧，你本人具体做了什么动作——比如你怎么提出自己的方案、怎么去和前端同学沟通的？请只讲你自己做的部分。\",\"goal\":\"澄清候选人在该冲突中的本人具体行动（STAR的Action）\",\"reason\":\"首次回答评分低且Action缺失，仅描述“双方继续讨论”；追问预算内先聚焦本人行动，不换考点\",\"plan\":[\"跨团队冲突处理：已问主问题，STAR 情境/任务/行动/结果均缺失；追问中核实本人具体行动\",\"复盘反思：待考察\",\"沟通表达清晰度：持续观察\"],\"evidenceIds\":[\"resume#3#snapshot\"],\"evidence\":[{\"id\":\"resume#3#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"3\",\"content\":\"【合成资料】课程项目临近交付时与前端同学对接口字段有分歧；没有记录本人具体行动或量化结果。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":2718,\"tokens\":1628}"
+  } ],
+  "success" : true,
+  "calls" : [ {
+    "scene" : "CRITIC",
+    "tokens" : 6348,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1628,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "SCORE",
+    "tokens" : 1135,
+    "model" : "deepseek:deepseek-flash"
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1261,
+    "model" : "deepseek:deepseek-flash"
+  } ],
+  "totalTokens" : 10372,
+  "totalMs" : 31907.7003
+} ]

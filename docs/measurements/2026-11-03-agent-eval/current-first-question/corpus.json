@@ -1,0 +1,6 @@
+{
+  "directory" : "ByteBuffersDirectory; setup and ingest timing excluded",
+  "corpusSha256" : "d4d34f866265abb373a600c07be226810344171ac9a4c9b198a7ee1a6b00e539",
+  "chunksBeforeCandidate" : 18,
+  "referenceSources" : 18
+}

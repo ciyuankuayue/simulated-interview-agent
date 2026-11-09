@@ -1,0 +1,201 @@
+[ {
+  "tokens" : 35,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 96,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 32,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 35,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 28,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 21,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 21,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 23,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 23,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 24,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 37,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 29,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 25,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 26,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 31,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 30,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 34,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 30,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 49,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-0-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-0-fast",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-2-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "mysql-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 55,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 47,
+  "sampleId" : "redis-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 47,
+  "sampleId" : "redis-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 47,
+  "sampleId" : "redis-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 47,
+  "sampleId" : "redis-2-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 48,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 45,
+  "sampleId" : "concurrency-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 45,
+  "sampleId" : "concurrency-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 45,
+  "sampleId" : "concurrency-2-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 45,
+  "sampleId" : "concurrency-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 64,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 44,
+  "sampleId" : "project-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 44,
+  "sampleId" : "project-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 44,
+  "sampleId" : "project-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 44,
+  "sampleId" : "project-2-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 50,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 41,
+  "sampleId" : "behavior-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 41,
+  "sampleId" : "behavior-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 41,
+  "sampleId" : "behavior-2-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 41,
+  "sampleId" : "behavior-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 46,
+  "sampleId" : "setup",
+  "estimated" : false
+}, {
+  "tokens" : 55,
+  "sampleId" : "python-1-thinking",
+  "estimated" : false
+}, {
+  "tokens" : 55,
+  "sampleId" : "python-1-fast",
+  "estimated" : false
+}, {
+  "tokens" : 55,
+  "sampleId" : "python-2-fast",
+  "estimated" : false
+}, {
+  "tokens" : 55,
+  "sampleId" : "python-2-thinking",
+  "estimated" : false
+} ]

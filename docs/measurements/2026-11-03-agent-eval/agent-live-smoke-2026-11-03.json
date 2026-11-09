@@ -1,0 +1,48 @@
+{
+  "scope" : "one synthetic case; real DeepSeek; local H2/RAM index; not production quality evaluation",
+  "firstQuestion" : "你在异步报表练习中负责调度，请讲一下你是如何用asyncio创建并发任务、在什么位置等待它们完成的？",
+  "events" : [ "score", "followup", "await_answer" ],
+  "turns" : [ {
+    "question" : "你在异步报表练习中负责调度，请讲一下你是如何用asyncio创建并发任务、在什么位置等待它们完成的？",
+    "metadata" : "{\"action\":\"ASK_MAIN\",\"role\":\"TECH_DIGGER\",\"question\":\"你在异步报表练习中负责调度，请讲一下你是如何用asyncio创建并发任务、在什么位置等待它们完成的？\",\"goal\":\"核实对asyncio协程调度的实际掌握程度，明确本人实际写法\",\"reason\":\"简历仅写负责调度和日志，未说明asyncio具体实现，需先追机制与本人代码事实\",\"plan\":[\"asyncio协程调度实现：待核实（本题）\",\"任务取消机制：待考察\",\"错误处理与异常传播：待考察\",\"本人贡献边界：待澄清\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成测试资料】我做过Python异步报表练习，负责调度和日志；没有线上高并发量级、性能提升百分比或生产事故经历。\"}],\"tools\":[],\"modelCalls\":1,\"toolCalls\":0,\"elapsedMs\":2658,\"tokens\":1271}",
+    "answer" : "这部分机制我还不熟悉，无法准确解释；我只写过报表调度和日志，没有测量线上量级或性能提升。",
+    "seq" : 1
+  }, {
+    "question" : "调度部分既然不熟悉，那你实际动手写的是哪一部分代码？请具体说明文件或函数里你自己实现的内容。",
+    "metadata" : "{\"action\":\"PROBE\",\"role\":\"TECH_DIGGER\",\"question\":\"调度部分既然不熟悉，那你实际动手写的是哪一部分代码？请具体说明文件或函数里你自己实现的内容。\",\"goal\":\"澄清本人贡献边界，区分本人代码与借用/教程内容\",\"reason\":\"主问题预算已满，只能追问；沿用技术深挖角色澄清本人实际实现范围\",\"plan\":[\"asyncio协程调度实现：已问，候选人明确不熟悉，记为未掌握\",\"本人贡献边界：追问本人实际写的代码\",\"任务取消机制：待考察\",\"错误处理与异常传播：待考察\"],\"evidenceIds\":[\"resume#1#snapshot\"],\"evidence\":[{\"id\":\"resume#1#snapshot\",\"sourceType\":\"resume\",\"sourceId\":\"1\",\"content\":\"【合成测试资料】我做过Python异步报表练习，负责调度和日志；没有线上高并发量级、性能提升百分比或生产事故经历。\"}],\"tools\":[],\"modelCalls\":2,\"toolCalls\":0,\"elapsedMs\":3117,\"tokens\":3485}",
+    "answer" : "",
+    "seq" : 2
+  } ],
+  "report" : {
+    "overallNotes" : "本场仅考察asyncio调度机制与本人贡献边界：turn1 score 0显示核心机制未掌握；turn2未答，贡献边界无法核实，形成主要证据缺口。任务取消、异常传播及测试/QA异步用例未评估，不能推断完整岗位能力。建议围绕create_task/gather写最小练习并用代码走查复测；贡献边界按文件/函数+本人改动说明。局部题目不代表全部能力。",
+    "perTurnReview" : "[{\"turnSeq\":1,\"question\":\"你在异步报表练习中负责调度，请讲一下你是如何用asyncio创建并发任务、在什么位置等待它们完成的？\",\"score\":0,\"track\":\"tech\",\"explanation\":\"考察asyncio创建并发任务及await完成位置；候选人明确不熟悉，未说明create_task/gather等，也未讲本人代码，score 0对应机制未掌握。\",\"correction\":\"直接承认不熟可以，但未给出已知边界；不应把“负责调度”当作掌握证据，应说明可核对代码与待核实点。\",\"knowledgeSupplement\":\"应掌握create_task建任务、gather/as_completed等待、asyncio.run入口；取消用task.cancel并处理CancelledError。\",\"exemplarAnswer\":\"通用机制是create_task建任务、gather/as_completed等待；我练习中只确认负责调度和日志，具体API与await位置需核对代码[待核实]，不能把通用机制当本人实现；线上量级/性能数据未测量。\"},{\"turnSeq\":2,\"question\":\"调度部分既然不熟悉，那你实际动手写的是哪一部分代码？请具体说明文件或函数里你自己实现的内容。\",\"score\":null,\"track\":\"tech\",\"explanation\":\"追问本人贡献边界，候选人未作答，score null不补分；无法核实文件/函数及本人实现，仅记证据缺口，不能推断经历虚假。\",\"correction\":\"未答使贡献边界未澄清；应具体到文件或函数、自己写的逻辑、参考来源与未做部分，不能只写“负责调度”。\",\"knowledgeSupplement\":\"贡献表达可用：功能目标—自己写的函数/输入输出—参考教程/他人部分—调试记录—未完成项，均需可核对。\",\"exemplarAnswer\":\"我在异步报表练习中负责调度和日志，具体在[文件名/函数]实现[本人实际行动]，输入[待补充]、输出[待补充]；[参考教程/他人部分待核实]。调度机制细节我不熟，不能展开。\"}]",
+    "matchScore" : 30
+  },
+  "usage" : [ {
+    "scene" : "CRITIC",
+    "tokens" : 5320,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 5320
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1834,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1834
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1651,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1651
+  }, {
+    "scene" : "SCORE",
+    "tokens" : 1120,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1120
+  }, {
+    "scene" : "FOLLOWUP",
+    "tokens" : 1271,
+    "model" : "deepseek:deepseek-flash",
+    "charged" : 1271
+  } ],
+  "totalTokens" : 11196
+}

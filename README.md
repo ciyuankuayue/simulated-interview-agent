@@ -1,126 +1,88 @@
-# simulated-interview-agent（AI 模拟面试官）
+# AI 模拟面试练习室
 
-## 项目简介
+一个支持本地运行和服务器部署的模拟面试应用。用户可以保存岗位描述和个人资料，选择面试官角色进行动态问答，查看复盘报告，并通过错题本安排复习。应用还提供备考答疑与陪伴对话。
 
-一个可本地运行、也可部署到服务器的 AI 模拟面试官。用户粘贴岗位 JD、上传简历与项目资料后，系统自动解析考点，由多个面试官 Agent 轮番提问与追问（技术深挖、项目质疑、行为面试），并在每场结束后生成 Critic 复盘报告与错题本。用户私有的简历、笔记、项目文档、真实面试记录会被向量化入库，用于检索增强（RAG），使追问更贴合个人背景。
+## 功能
 
-## 核心功能
+- **动态模拟面试**：结合岗位、所选简历和本场回答选择考点，按需追问、澄清或结束。支持技术、项目和行为面试角色，并限制题量、追问层数与模型调用预算。
+- **资料与检索**：管理岗位描述、多个简历版本、项目文档、笔记和面试记录；资料切块后建立向量索引，检索时按账号隔离。
+- **复盘与复习**：生成逐轮评价、岗位匹配分析和整体报告；低分知识点进入错题本，支持间隔复习。
+- **备考陪伴**：通考小师提供知识答疑，陪考小暖提供对话陪伴。两种角色的对话历史隔离；可选记忆可查看、编辑和删除。
+- **模型与积分**：对话可选 DeepSeek 或通义千问。DeepSeek 支持平台提供或自带 API Key；千问使用平台 Key。向量化使用平台提供的通义模型。
+- **反馈与运营**：用户可从账号页、首次查看报告后的邀请或积分不足提示提交反馈。管理员可查看使用概况、审核反馈、补充积分和记录人工付费；行为分析只采集限定的元数据，用户可关闭可选分析。
 
-- **资料入库与 RAG 检索**：JD 自动抽取关键词与岗位类型；简历（支持多版本）、项目文档、笔记、真实面试记录切块后经向量模型嵌入，按用户隔离检索。
-- **多面试官角色**：技术深挖官、项目质疑官、行为面试官，可在开始前勾选启用哪些角色；Critic 始终在场生成复盘。
-- **Agent 动态面试**：结合岗位、所选简历和现场回答，按需检索资料、核对前文，决定追问、澄清、换考点或结束；分数是决策依据之一，后端约束权限、题量和追问预算。旧会话保留兼容流程。
-- **可配置主问题数**：每场 1–8 道，答完最后一题自动出报告，也可随时手动结束。
-- **Critic 复盘报告**：逐轮讲解（纠正 / 补充 / 示范）、共性塌点、表达问题、整体注意事项、岗位匹配度评分。
-- **错题本与间隔重复**：低分知识点按知识点入队，按固定天阶梯提示复习。
-- **多模型对话**：支持 DeepSeek 与通义千问两种对话厂商，用户可在设置中切换；向量化统一使用通义 embedding。
-- **积分与计费**：默认注册赠 100 积分（1 积分=500 token 当量）；平台按实际用量折算，DeepSeek BYOK 每次模型调用收 1 积分服务费；Qwen 和 embedding 始终按平台用量扣减。DB/API 保留 token 单位。
-- **鉴权**：基于 JWT 的注册 / 登录，令牌存于内存，不落本地存储。
-- **LLM 故障降级**：判分 / 追问 / 报告任意一步失败都有降级策略，整场不会因单次模型故障报废。
+## 积分规则
 
-## 技术栈
+页面以积分展示，接口和数据库以 token 当量记录；**1 积分 = 500 token 当量**。新注册账号默认赠送 **200 积分**，可通过环境变量调整，已有账号余额不重置。
 
-| 层 | 选型 |
+| 使用方式 | 扣费规则 |
 |---|---|
-| 框架 | Spring Boot 3.3.5，Java 17 编译目标（构建时使用 JDK 21，JDK 24 被拒绝） |
-| 构建 | Maven（项目自带 mvnw 包装器，无需预装 Maven） |
-| 存储 | MySQL 8 + Redis 7（生产 / Docker）；本地默认 H2 内存库零依赖启动 |
-| 检索 | 通义文本嵌入模型（1024 维），向量索引使用 Lucene FSDirectory 落盘持久化 |
-| LLM | DeepSeek（追问非思考 / 判分与报告思考），或通义千问；向量化使用通义 embedding |
-| 前端 | Vue 3 CDN + Spring/Thymeleaf 页面（fetch / EventSource SSE），尚未迁移 Vite |
-| HTTP | OkHttp 单例，统一 LLM 调用与超时重试 |
+| 平台 DeepSeek 或通义千问 | 按模型实际 token 用量扣除积分 |
+| 自带 DeepSeek API Key | 模型费用由 Key 持有人承担；每 5,000 模型 token 扣 1 服务积分 |
+| 资料向量化与检索 | 使用平台 Key，按用量扣除积分 |
 
-分层约束：领域与编排逻辑不直接调用 LLM，统一走 `llm` 层；Controller 只做协议适配，事件全部由编排器生产。
+每个账号可提交体验反馈；审核通过后可获赠一次 **200 积分**。补额和反馈奖励由管理员处理，当前没有站内自动支付。具体规则见 [计费说明](docs/launch-billing.md) 和 [API 契约](docs/api.md)。
 
-## 环境要求
+## 技术结构
 
-- **操作系统**：Windows（脚本使用 PowerShell 与 `.\mvnw.cmd`）；Linux / macOS 可改用对应的 mvnw 脚本。
-- **Java**：构建使用 JDK 21（mvnw 自动选择，无需手动设置 JAVA_HOME）；不要使用 JDK 24。
-- **Docker（可选）**：生产形态需要，用于本地起 MySQL 与 Redis。
-- **大模型密钥**：DeepSeek API Key 与阿里云百炼（DashScope）API Key。未配置时相关功能降级，但应用可正常启动。
+| 部分 | 实现 |
+|---|---|
+| 后端 | Java 17 编译目标、Spring Boot 3.3.5、Maven Wrapper |
+| 前端 | Vue 3、Thymeleaf 页面、SSE 流式交互 |
+| 数据 | MySQL 8、Redis 7；本地默认使用 H2 内存库 |
+| 检索 | 通义文本嵌入模型、Lucene FSDirectory 持久化索引 |
+| 模型调用 | DeepSeek / 通义千问，OkHttp 统一调用 |
+| 鉴权与隔离 | JWT 登录、按账号分区的数据访问 |
 
-## 部署与启动
+模型调用收口于 `llm` 层；生产数据库结构由 Flyway 迁移。前端运行时从 CDN 加载 Vue，访问环境需要能获取该资源。
 
-### 方式一：零依赖体验（H2 内存库）
+## 本地启动
 
-无需 Docker、无需密钥即可启动验证：
+准备 JDK 21。项目自带 Maven Wrapper，无需另外安装 Maven。默认使用 H2 内存库，重启会清空本地数据。
 
 ```powershell
 .\mvnw.cmd spring-boot:run
 ```
 
-启动后访问 http://localhost:8080 。注意 H2 数据重启即清空，仅用于本地验证。
-
-### 方式二：本地真实依赖联调（MySQL 8 + Redis 7）
-
-先启动依赖（默认 MySQL 容器映射到宿主 3307、Redis 映射到 6379，账号见 docker-compose.yml）：
+启动后在浏览器打开本机的 8080 端口。如需使用 MySQL 和 Redis，在项目根目录先启动依赖，再以 `mysql` profile 运行应用：
 
 ```powershell
 docker compose up -d
-```
-
-再启动应用（启用 mysql profile）：
-
-```powershell
 $env:SPRING_PROFILES_ACTIVE="mysql"
 .\mvnw.cmd spring-boot:run
 ```
 
-依赖探活：访问 http://localhost:8080/api/health/deps ，当 `database` 与 `redis` 均为 `ok` 时环境就绪。
+依赖状态可通过 `/api/health/deps` 查看。Linux 或 macOS 可使用对应的 `./mvnw` 脚本。
 
-### 常用命令（PowerShell，不要用 Git Bash 执行 mvn）
+## 配置
 
-```powershell
-.\mvnw.cmd -DskipTests package                  # 编译打包
-.\mvnw.cmd test                                  # 全量测试（缺少密钥的真机用例会自动跳过）
-.\mvnw.cmd spring-boot:run "-Dserver.port=8081"  # 端口被占用时换端口
-```
+平台模型密钥通过环境变量提供，不写入代码或配置文件。缺少相应密钥时，依赖该模型的功能无法正常调用。
 
-## 环境配置（环境变量）
+| 环境变量 | 用途 |
+|---|---|
+| `DEEPSEEK_API_KEY` | 平台 DeepSeek 对话 |
+| `DASHSCOPE_API_KEY` | 通义千问对话与资料向量化 |
+| `APP_SIGNUP_BONUS_TOKENS` | 新注册赠送额度，默认 100000 token 当量 |
+| `APP_PLATFORM_DAILY_BUDGET_CNY` | 平台模型每日预算上限，默认 100 元 |
+| `APP_RAG_INDEX_DIR` | 向量索引持久化目录 |
+| `SPRING_PROFILES_ACTIVE` | 本地默认 H2；`mysql` 用于本地依赖联调；`prod` 用于生产 |
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | 启用 DeepSeek 对话 / 判分时必填 | DeepSeek 平台密钥 |
-| `DASHSCOPE_API_KEY` | 启用向量化与通义千问对话时必填 | 阿里云百炼平台密钥，对话与向量化共用 |
-| `SPRING_PROFILES_ACTIVE` | 否（默认 H2） | 本地真依赖用 `mysql`；生产使用 `prod` |
-| `JWT_SECRET` | prod 必填 | 至少 32 字节；生产缺失或过短直接启动失败 |
-| `APP_DATA_KEY` | prod 必填 | Base64 编码的 32 字节用户密钥加密主密钥；生产缺失直接启动失败，升级保留原值 |
-| `MYSQL_HOST` / `MYSQL_PORT` / `REDIS_HOST` / `REDIS_PORT` | 否 | 覆盖默认数据库连接 |
-| `APP_RAG_INDEX_DIR` | 否 | 向量索引目录，多实例部署时需各自独立 |
+生产环境还必须配置 `JWT_SECRET`、`APP_DATA_KEY` 和 MySQL 密码。部署前备份数据库和向量索引卷，再按 [服务器更新指南](docs/server-update-guide.md) 执行迁移。生产使用 `prod` profile；索引目录需要持久化。示例变量见 [.env.example](.env.example)。
 
-配置方式示例（PowerShell）：
+## 使用流程
 
-```powershell
-$env:DEEPSEEK_API_KEY="你的DeepSeek密钥"
-$env:DASHSCOPE_API_KEY="你的百炼密钥"
-$env:SPRING_PROFILES_ACTIVE="mysql"
-.\mvnw.cmd spring-boot:run
-```
+1. 注册并登录，在“我的账号”查看积分、选择模型和配置自己的 DeepSeek Key。
+2. 保存岗位描述，按需添加简历和其他资料，选择面试官角色与主问题数。
+3. 回答面试问题，查看逐轮评价；结束后查看报告。
+4. 在错题本复习，或使用小师、小暖继续练习与交流。
 
-## 使用方式
+登录令牌只保存在当前页面内存中，刷新页面后需要重新登录。
 
-1. 启动后打开 http://localhost:8080 ，注册账号并登录。
-2. 在资料区粘贴岗位 JD（自动解析考点），上传简历、项目文档、笔记等资料，勾选要启用的面试官角色与主问题数量。
-3. 开始面试：系统通过 SSE 实时推送题目，在作答区输入回答；每轮评分后自动决定追问或进入下一题。
-4. 答完最后一题自动生成 Critic 报告，也可随时点「结束」手动出报告。
-5. 低分知识点自动进入错题本，按间隔重复阶梯提示复习；历史面试记录可随时回看报告。
-
-## 使用规则与注意事项
-
-- 必须使用 **PowerShell** 执行 `.\mvnw.cmd`，不要用 Git Bash（Git Bash 下 `.cmd` 不被识别）。
-- 真实调用大模型前必须配置 `DEEPSEEK_API_KEY` 与 `DASHSCOPE_API_KEY`；未配置时 embedding 与对话会降级。
-- 生产部署使用 `prod` profile（Flyway 管 schema、`ddl-auto:none`、租户 strict），必须配置 `JWT_SECRET`、`APP_DATA_KEY` 与 MySQL 密码；升级先备份，再按 [服务器更新指南](docs/server-update-guide.md) 操作。`mysql` profile 仅用于本地联调。
-- 向量索引落盘在本地目录；Docker / 多实例部署时应将该目录挂载为持久卷，并让每个实例使用独立目录。
-- 任何接口都不会回显明文密钥。
-- 端口 8080 被占用时可通过 `-Dserver.port=新端口` 切换，或通过 `netstat` 查找并结束占用进程。
-
-## 测试
+## 构建与测试
 
 ```powershell
+.\mvnw.cmd -DskipTests package
 .\mvnw.cmd test
 ```
 
-测试套件包含离线单元测试与部分真实大模型链路用例；缺少密钥的真机用例会自动跳过，不影响整体结果。
-
-## 项目文档
-
-当前进度、下一原子任务、契约与历史证据见 [文档导航](docs/README.md)。迭代顺序统一维护在 [产品迭代计划](docs/product-experience-iteration-plan.md)。
+部分依赖真实模型或外部服务的测试需要单独配置，普通测试不要求提供模型密钥。更多实现细节见 [领域模型](docs/domain.md)、[API 契约](docs/api.md) 和 [文档导航](docs/README.md)。

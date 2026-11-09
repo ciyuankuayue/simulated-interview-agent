@@ -1,0 +1,97 @@
+[ {
+  "mode" : "thinking",
+  "sampleId" : "python-2-thinking",
+  "blindId" : "Q01"
+}, {
+  "mode" : "fast",
+  "sampleId" : "mysql-2-fast",
+  "blindId" : "Q02"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "concurrency-1-thinking",
+  "blindId" : "Q03"
+}, {
+  "mode" : "fast",
+  "sampleId" : "python-2-fast",
+  "blindId" : "Q04"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "python-1-thinking",
+  "blindId" : "Q05"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "redis-1-thinking",
+  "blindId" : "Q06"
+}, {
+  "mode" : "fast",
+  "sampleId" : "project-2-fast",
+  "blindId" : "Q07"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "project-1-thinking",
+  "blindId" : "Q08"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "project-2-thinking",
+  "blindId" : "Q09"
+}, {
+  "mode" : "fast",
+  "sampleId" : "project-1-fast",
+  "blindId" : "Q10"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "mysql-1-thinking",
+  "blindId" : "Q11"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "behavior-1-thinking",
+  "blindId" : "Q12"
+}, {
+  "mode" : "fast",
+  "sampleId" : "behavior-1-fast",
+  "blindId" : "Q13"
+}, {
+  "mode" : "fast",
+  "sampleId" : "concurrency-2-fast",
+  "blindId" : "Q14"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "mysql-2-thinking",
+  "blindId" : "Q15"
+}, {
+  "mode" : "fast",
+  "sampleId" : "behavior-2-fast",
+  "blindId" : "Q16"
+}, {
+  "mode" : "fast",
+  "sampleId" : "python-1-fast",
+  "blindId" : "Q17"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "redis-2-thinking",
+  "blindId" : "Q18"
+}, {
+  "mode" : "fast",
+  "sampleId" : "redis-2-fast",
+  "blindId" : "Q19"
+}, {
+  "mode" : "fast",
+  "sampleId" : "mysql-1-fast",
+  "blindId" : "Q20"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "concurrency-2-thinking",
+  "blindId" : "Q21"
+}, {
+  "mode" : "fast",
+  "sampleId" : "concurrency-1-fast",
+  "blindId" : "Q22"
+}, {
+  "mode" : "fast",
+  "sampleId" : "redis-1-fast",
+  "blindId" : "Q23"
+}, {
+  "mode" : "thinking",
+  "sampleId" : "behavior-2-thinking",
+  "blindId" : "Q24"
+} ]
