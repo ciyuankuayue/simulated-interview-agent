@@ -111,6 +111,7 @@
                     throw staleError();
                 }
                 if (response.status === 402) {
+                    error.message = '本次调用的积分不足，请前往“我的账号”查看。';
                     store.quotaOpen = true;
                     store.quota = null;
                 }
@@ -166,7 +167,7 @@
                 resetAccount(); notify('登录已过期，请重新登录。', true); throw staleError();
             }
             if (status === 402) { store.quotaOpen = true; store.quota = null; }
-            throw Object.assign(new Error(data?.message || '回应暂未完成，请稍后重试。'), { status, code: data?.code });
+            throw Object.assign(new Error(status === 402 ? '本次调用的积分不足，请前往“我的账号”查看。' : data?.message || '回应暂未完成，请稍后重试。'), { status, code: data?.code });
         };
         try {
             const response = await fetch(path, { method: 'POST', signal: controller.signal,
@@ -324,6 +325,7 @@
                     const text = data.code === 'QUESTION_FAILED'
                         ? '下一步暂未准备成功。已提交的回答会保留，你可以继续生成，或结束本场查看报告。'
                         : data.code === 'SCORE_FAILED' ? '本轮评分暂时不可用，系统会尝试继续练习。'
+                        : data.code === 'QUOTA_EXHAUSTED' ? '本次调用的积分不足，请前往“我的账号”查看。'
                         : data.message || '本轮处理出现异常。';
                     store.messages.push({ kind: 'error', text });
                     if (data.code === 'QUESTION_FAILED') {
@@ -964,9 +966,6 @@
     };
 
     const { SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel, openFeedback } = window.createLaunchPanels({ store, api, loadSettings, loadQuota, notify, fmtTime, formatPoints, track, uuid });
-    const QuotaContact = {
-        template: `<div class="quota-contact"><p>平台目前处于内测阶段，请联系工作人员补充额度。</p><div class="support-wechat"><span>工作人员微信</span><strong>13481264947</strong></div></div>`
-    };
     const App = {
         components: { AuthPanel, PreparePanel, MaterialsPanel, InterviewPanel, ReportPanel, WeakPanel, CompanionPanel, SettingsPanel, FeedbackDialog, FeedbackInvitation, AdminPanel },
         data: () => ({ timer: null, navigation: [
@@ -1017,12 +1016,11 @@
     <footer class="workspace-footer"><span>每一次练习，都算数。</span><span>AI 反馈供练习参考，请结合真实岗位要求判断。</span></footer>
   </main></div>
 </div>
-<dialog v-if="store.quotaOpen" ref="quotaDialog" class="quota-dialog" aria-labelledby="quota-title" @cancel="store.quotaOpen=false"><span class="eyebrow">先休息一下</span><h2 id="quota-title">本次调用的积分不足</h2><p>回答草稿会保留，补充积分后可以继续练习。也可以自愿分享体验，审核后获赠积分。</p><quota-contact/><button class="secondary large" @click="openFeedback('quota')">{{store.feedback?'查看我的反馈':'分享体验，审核赠积分'}}</button><button class="primary large" @click="closeQuota" autofocus>前往我的账号<app-icon name="arrow"/></button></dialog>
+<dialog v-if="store.quotaOpen" ref="quotaDialog" class="quota-dialog" aria-labelledby="quota-title" @cancel="store.quotaOpen=false"><span class="eyebrow">先休息一下</span><h2 id="quota-title">本次调用的积分不足</h2><p>回答草稿会保留。你可以前往“我的账号”查看积分，也可以自愿分享体验，审核后获赠积分。</p><button class="secondary large" @click="openFeedback('quota')">{{store.feedback?'查看我的反馈':'分享体验，审核赠积分'}}</button><button class="primary large" @click="closeQuota" autofocus>前往我的账号<app-icon name="arrow"/></button></dialog>
 <feedback-dialog v-if="store.token && store.feedbackOpen" :key="store.accountEpoch"/>
 </div>`
     };
     const app = createApp(App);
-    app.component('quota-contact', QuotaContact);
     app.component('feedback-invitation', FeedbackInvitation);
     app.component('app-icon', Icon);
     app.component('buddy-avatar', BuddyAvatar);
